@@ -8,6 +8,8 @@ export interface UserProfile {
   userId?: string;         // exchange endpoint only (string "6")
   id?: number;             // profile endpoint only (number 6)
   status?: number;         // profile endpoint only
+  loginType?: string;
+  yid?: string;
 }
 
 export interface UserQuota {

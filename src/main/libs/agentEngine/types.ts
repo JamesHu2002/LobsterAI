@@ -71,6 +71,7 @@ export type CoworkStartOptions = {
 };
 
 export type CoworkContinueOptions = {
+  skipInitialUserMessage?: boolean;
   systemPrompt?: string;
   skillIds?: string[];
   imageAttachments?: CoworkImageAttachment[];

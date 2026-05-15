@@ -14,14 +14,22 @@ vi.mock('electron', () => ({
 
 import { OpenClawRuntimeAdapter, pickPersistedAssistantSegment } from './openclawRuntimeAdapter';
 
-test('pickPersistedAssistantSegment: stream authority keeps previous when same length or longer', () => {
+test('pickPersistedAssistantSegment: stream authority keeps previous only when strictly longer', () => {
   expect(pickPersistedAssistantSegment('aa', 'a', true)).toEqual({
     content: 'aa',
-    reason: 'stream_authority_same_or_longer',
+    reason: 'stream_authority_longer',
+  });
+});
+
+test('pickPersistedAssistantSegment: equal length prefers chat.final (preserves formatting)', () => {
+  // Agent stream may flatten newlines to spaces; chat.final preserves original formatting.
+  expect(pickPersistedAssistantSegment('a b', 'a\nb', true)).toEqual({
+    content: 'a\nb',
+    reason: 'equal_length_prefer_chat_final',
   });
   expect(pickPersistedAssistantSegment('same', 'same', true)).toEqual({
     content: 'same',
-    reason: 'stream_authority_same_or_longer',
+    reason: 'equal_length_prefer_chat_final',
   });
 });
 

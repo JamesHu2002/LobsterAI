@@ -63,12 +63,16 @@ export type PersistedSegmentPickReason =
   | 'both_empty'
   | 'previous_only'
   | 'final_only'
-  | 'stream_authority_same_or_longer'
+  | 'stream_authority_longer'
+  | 'equal_length_prefer_chat_final'
   | 'stream_shorter_prefer_chat_final'
   | 'chat_path_prefer_final';
 
 /**
- * Prefer agent-stream segment text when it is authoritative (longer or equal vs chat.final).
+ * Prefer agent-stream segment text only when it is strictly longer than chat.final.
+ * When equal length, prefer chat.final: agent stream text is a flattened
+ * representation from the gateway that may lose newlines (replaced by spaces),
+ * while chat.final preserves the original content-block formatting.
  * When only the chat path updated the UI, prefer chat.final extraction.
  */
 export function pickPersistedAssistantSegment(
@@ -88,10 +92,13 @@ export function pickPersistedAssistantSegment(
     return { content: prev, reason: 'previous_only' };
   }
   if (hasSeenAgentAssistantStream) {
-    if (prev.length >= fin.length) {
-      return { content: prev, reason: 'stream_authority_same_or_longer' };
+    if (prev.length > fin.length) {
+      return { content: prev, reason: 'stream_authority_longer' };
     }
-    return { content: fin, reason: 'stream_shorter_prefer_chat_final' };
+    // When equal length, prefer chat.final: agent stream text is a flattened
+    // representation from the gateway that may lose newlines (replaced by spaces),
+    // while chat.final preserves the original content-block formatting.
+    return { content: fin, reason: prev.length === fin.length ? 'equal_length_prefer_chat_final' : 'stream_shorter_prefer_chat_final' };
   }
   return { content: fin, reason: 'chat_path_prefer_final' };
 }
@@ -856,34 +863,58 @@ const mergeStreamingText = (
     return { text: previousText, mode };
   }
 
+  let result: { text: string; mode: TextStreamMode };
+  let branch = '';
+
   if (mode === 'snapshot') {
     if (previousText.startsWith(incomingText) && incomingText.length < previousText.length) {
-      return { text: previousText, mode };
+      result = { text: previousText, mode };
+      branch = 'snapshot:keep-previous';
+    } else {
+      result = { text: incomingText, mode };
+      branch = 'snapshot:take-incoming';
     }
-    return { text: incomingText, mode };
-  }
-
-  if (mode === 'delta') {
+  } else if (mode === 'delta') {
     if (incomingText.startsWith(previousText)) {
-      return { text: incomingText, mode: 'snapshot' };
+      result = { text: incomingText, mode: 'snapshot' };
+      branch = 'delta:upgrade-to-snapshot';
+    } else {
+      result = { text: previousText + incomingText, mode: 'delta' };
+      branch = 'delta:append';
     }
-    return { text: previousText + incomingText, mode };
+  } else if (incomingText.startsWith(previousText)) {
+    result = { text: incomingText, mode: 'snapshot' };
+    branch = 'unknown:detect-snapshot';
+  } else if (previousText.startsWith(incomingText)) {
+    result = { text: previousText, mode: 'snapshot' };
+    branch = 'unknown:keep-previous-snapshot';
+  } else if (incomingText.includes(previousText) && incomingText.length > previousText.length) {
+    result = { text: incomingText, mode: 'snapshot' };
+    branch = 'unknown:includes-snapshot';
+  } else {
+    // Overlap detection removed: coincidental suffix-prefix matches (e.g. "...p" + "ptx")
+    // would incorrectly strip characters. Once snapshot detection above has failed,
+    // treat the incoming text as a pure delta append.
+    result = { text: previousText + incomingText, mode: 'delta' };
+    branch = 'unknown:fallback-delta';
   }
 
-  if (incomingText.startsWith(previousText)) {
-    return { text: incomingText, mode: 'snapshot' };
-  }
-  if (previousText.startsWith(incomingText)) {
-    return { text: previousText, mode: 'snapshot' };
-  }
-  if (incomingText.includes(previousText) && incomingText.length > previousText.length) {
-    return { text: incomingText, mode: 'snapshot' };
+  // Diagnostic: detect character loss during merge
+  if (previousText.length > 0 && result.text.length < previousText.length && result.text.length > 0) {
+    console.warn(
+      '[mergeStreamingText:charLoss]',
+      `branch=${branch}`,
+      `mode=${mode}`,
+      `prevLen=${previousText.length}`,
+      `inLen=${incomingText.length}`,
+      `outLen=${result.text.length}`,
+      `prev="${previousText.slice(-80)}"`,
+      `in="${incomingText.slice(0, 80)}"`,
+      `out="${result.text.slice(-80)}"`,
+    );
   }
 
-  // Overlap detection removed: coincidental suffix-prefix matches (e.g. "...p" + "ptx")
-  // would incorrectly strip characters. Once snapshot detection above has failed,
-  // treat the incoming text as a pure delta append.
-  return { text: previousText + incomingText, mode: 'delta' };
+  return result;
 };
 
 const sleep = async (ms: number): Promise<void> => {
@@ -3859,6 +3890,19 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     if (text.length < turn.agentAssistantTextLength
         && turn.agentAssistantTextLength > 5
         && turn.assistantMessageId) {
+      // Diagnostic: distinguish real text reset (new model call) from single-char loss
+      const delta = turn.agentAssistantTextLength - text.length;
+      if (delta <= 3) {
+        console.warn(
+          '[processAgentAssistantText:suspiciousCharLoss]',
+          `sessionId=${sessionId}`,
+          `hwm=${turn.agentAssistantTextLength}`,
+          `newLen=${text.length}`,
+          `delta=${delta}`,
+          `prevTail="${turn.currentText.slice(-100)}"`,
+          `newTail="${text.slice(-100)}"`,
+        );
+      }
       console.debug('[Debug:textReset] detected:', turn.agentAssistantTextLength, '->',
         text.length, 'splitting. prevText:', turn.currentText.slice(0, 80));
       this.splitAssistantSegmentBeforeTool(sessionId, turn);
@@ -3952,6 +3996,14 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     }
     const streamedText = turn.currentText;
     if (previousText && streamedText && streamedText.length < previousText.length) {
+      console.warn(
+        '[handleChatDelta:revert]',
+        `sessionId=${sessionId}`,
+        `lostChars=${previousText.length - streamedText.length}`,
+        `mode=${previousTextStreamMode}->${turn.textStreamMode}`,
+        `prevTail="${previousText.slice(-80)}"`,
+        `newTail="${streamedText.slice(-80)}"`,
+      );
       turn.currentText = previousText;
       turn.currentContentText = previousContentText;
       turn.currentContentBlocks = previousContentBlocks;
@@ -4028,6 +4080,16 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       `finalTextLen=${finalText.length}`,
       `finalText="${truncate(finalText, 200)}"`
     );
+    // Diagnostic: detect character loss in final message vs streamed text
+    if (previousText && finalText && finalText.length < previousText.length && finalText.length > 0) {
+      console.warn(
+        '[handleChatFinal:charLoss]',
+        `sessionId=${sessionId}`,
+        `lostChars=${previousText.length - finalText.length}`,
+        `prevTail="${previousText.slice(-120)}"`,
+        `finalTail="${finalText.slice(-120)}"`,
+      );
+    }
     if (isHeartbeatAckText(finalText)) {
       turn.currentText = finalText;
       turn.currentAssistantSegmentText = '';

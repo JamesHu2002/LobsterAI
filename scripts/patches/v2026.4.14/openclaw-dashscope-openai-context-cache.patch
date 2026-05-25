@@ -1,0 +1,343 @@
+diff --git a/src/agents/pi-embedded-runner/dashscope-context-cache-payload.ts b/src/agents/pi-embedded-runner/dashscope-context-cache-payload.ts
+new file mode 100644
+index 0000000..c7332cf
+--- /dev/null
++++ b/src/agents/pi-embedded-runner/dashscope-context-cache-payload.ts
+@@ -0,0 +1,149 @@
++import type { StreamFn } from "@mariozechner/pi-agent-core";
++import { streamSimple } from "@mariozechner/pi-ai";
++import { streamWithPayloadPatch } from "./stream-payload-utils.js";
++
++const DashScopeContextCacheProvider = {
++  DashScope: "dashscope",
++} as const;
++
++const DashScopeContextCacheMode = {
++  Explicit: "explicit",
++} as const;
++
++const DASHSCOPE_CONTEXT_CACHE_MARKER_LIMIT = 4;
++
++type ChatMessage = {
++  role?: string;
++  content?: unknown;
++};
++
++function hasDashScopeExplicitContextCache(extraParams: Record<string, unknown> | undefined): boolean {
++  return (
++    extraParams?.contextCacheProvider === DashScopeContextCacheProvider.DashScope &&
++    extraParams?.contextCacheMode === DashScopeContextCacheMode.Explicit
++  );
++}
++
++function isTextContentBlock(block: unknown): block is Record<string, unknown> {
++  if (!block || typeof block !== "object") {
++    return false;
++  }
++  const record = block as Record<string, unknown>;
++  return record.type === "text" && typeof record.text === "string";
++}
++
++function countExistingCacheMarkers(messages: ChatMessage[]): number {
++  let count = 0;
++  for (const message of messages) {
++    if (!Array.isArray(message.content)) {
++      continue;
++    }
++    for (const block of message.content) {
++      if (block && typeof block === "object" && "cache_control" in block) {
++        count++;
++      }
++    }
++  }
++  return count;
++}
++
++function markStringContent(message: ChatMessage): boolean {
++  if (typeof message.content !== "string" || !message.content.trim()) {
++    return false;
++  }
++  message.content = [
++    {
++      type: "text",
++      text: message.content,
++      cache_control: { type: "ephemeral" },
++    },
++  ];
++  return true;
++}
++
++function markLastTextBlock(message: ChatMessage): boolean {
++  if (markStringContent(message)) {
++    return true;
++  }
++
++  if (!Array.isArray(message.content)) {
++    return false;
++  }
++
++  for (let idx = message.content.length - 1; idx >= 0; idx--) {
++    const block = message.content[idx];
++    if (!isTextContentBlock(block)) {
++      continue;
++    }
++    if (block.cache_control !== undefined) {
++      return false;
++    }
++    block.cache_control = { type: "ephemeral" };
++    return true;
++  }
++
++  return false;
++}
++
++function markSystemAndDeveloperMessages(messages: ChatMessage[], remainingMarkers: { value: number }): void {
++  for (const message of messages) {
++    if (remainingMarkers.value <= 0) {
++      return;
++    }
++    if (message.role !== "system" && message.role !== "developer") {
++      continue;
++    }
++    if (markLastTextBlock(message)) {
++      remainingMarkers.value--;
++    }
++  }
++}
++
++function markLatestUserMessage(messages: ChatMessage[], remainingMarkers: { value: number }): void {
++  if (remainingMarkers.value <= 0) {
++    return;
++  }
++  for (let idx = messages.length - 1; idx >= 0; idx--) {
++    const message = messages[idx];
++    if (message.role !== "user") {
++      continue;
++    }
++    if (markLastTextBlock(message)) {
++      remainingMarkers.value--;
++    }
++    return;
++  }
++}
++
++export function applyDashScopeExplicitContextCacheMarkers(payloadObj: Record<string, unknown>): void {
++  const messages = payloadObj.messages;
++  if (!Array.isArray(messages)) {
++    return;
++  }
++
++  const chatMessages = messages as ChatMessage[];
++  const remainingMarkers = {
++    value: Math.max(
++      0,
++      DASHSCOPE_CONTEXT_CACHE_MARKER_LIMIT - countExistingCacheMarkers(chatMessages),
++    ),
++  };
++
++  markSystemAndDeveloperMessages(chatMessages, remainingMarkers);
++  markLatestUserMessage(chatMessages, remainingMarkers);
++}
++
++export function createDashScopeOpenAIContextCacheWrapper(
++  baseStreamFn: StreamFn | undefined,
++  extraParams: Record<string, unknown> | undefined,
++): StreamFn {
++  const underlying = baseStreamFn ?? streamSimple;
++  return (model, context, options) => {
++    if (model.api !== "openai-completions" || !hasDashScopeExplicitContextCache(extraParams)) {
++      return underlying(model, context, options);
++    }
++    return streamWithPayloadPatch(underlying, model, context, options, (payloadObj) => {
++      applyDashScopeExplicitContextCacheMarkers(payloadObj);
++    });
++  };
++}
+diff --git a/src/agents/pi-embedded-runner/extra-params.dashscope-context-cache.test.ts b/src/agents/pi-embedded-runner/extra-params.dashscope-context-cache.test.ts
+new file mode 100644
+index 0000000..1025563
+--- /dev/null
++++ b/src/agents/pi-embedded-runner/extra-params.dashscope-context-cache.test.ts
+@@ -0,0 +1,162 @@
++import type { Model } from "@mariozechner/pi-ai";
++import { describe, expect, it } from "vitest";
++import { runExtraParamsCase } from "./extra-params.test-support.js";
++
++type StreamPayload = {
++  messages: Array<{
++    role: string;
++    content: unknown;
++  }>;
++};
++
++const ContextCacheProvider = {
++  DashScope: "dashscope",
++} as const;
++
++const ContextCacheMode = {
++  Explicit: "explicit",
++} as const;
++
++const qwenModel = {
++  api: "openai-completions",
++  provider: "qwen-portal",
++  id: "qwen3.5-plus",
++} as Model<"openai-completions">;
++
++function runDashScopePayload(payload: StreamPayload, withParams = true) {
++  return runExtraParamsCase({
++    cfg: withParams
++      ? {
++          agents: {
++            defaults: {
++              models: {
++                "qwen-portal/qwen3.5-plus": {
++                  params: {
++                    contextCacheProvider: ContextCacheProvider.DashScope,
++                    contextCacheMode: ContextCacheMode.Explicit,
++                  },
++                },
++              },
++            },
++          },
++        }
++      : undefined,
++    model: qwenModel,
++    mockProviderRuntime: true,
++    payload,
++  });
++}
++
++describe("extra-params: DashScope OpenAI explicit context cache", () => {
++  it("injects cache_control into system and latest user text content", () => {
++    const payload = {
++      messages: [
++        { role: "system", content: "system prompt" },
++        { role: "user", content: "hello" },
++      ],
++    };
++
++    runDashScopePayload(payload);
++
++    expect(payload.messages).toEqual([
++      {
++        role: "system",
++        content: [
++          {
++            type: "text",
++            text: "system prompt",
++            cache_control: { type: "ephemeral" },
++          },
++        ],
++      },
++      {
++        role: "user",
++        content: [
++          {
++            type: "text",
++            text: "hello",
++            cache_control: { type: "ephemeral" },
++          },
++        ],
++      },
++    ]);
++  });
++
++  it("leaves payload unchanged when the model params do not opt in", () => {
++    const payload = {
++      messages: [
++        { role: "system", content: "system prompt" },
++        { role: "user", content: "hello" },
++      ],
++    };
++
++    runDashScopePayload(payload, false);
++
++    expect(payload.messages[0].content).toBe("system prompt");
++    expect(payload.messages[1].content).toBe("hello");
++  });
++
++  it("does not inject cache_control for non-chat-completions APIs", () => {
++    const payload = {
++      messages: [
++        { role: "system", content: "system prompt" },
++        { role: "user", content: "hello" },
++      ],
++    };
++
++    runExtraParamsCase({
++      cfg: {
++        agents: {
++          defaults: {
++            models: {
++              "qwen-portal/qwen3.5-plus": {
++                params: {
++                  contextCacheProvider: ContextCacheProvider.DashScope,
++                  contextCacheMode: ContextCacheMode.Explicit,
++                },
++              },
++            },
++          },
++        },
++      },
++      model: {
++        api: "openai-responses",
++        provider: "qwen-portal",
++        id: "qwen3.5-plus",
++      } as Model<"openai-responses">,
++      mockProviderRuntime: true,
++      payload,
++    });
++
++    expect(payload.messages[0].content).toBe("system prompt");
++    expect(payload.messages[1].content).toBe("hello");
++  });
++
++  it("respects the DashScope four-marker request limit", () => {
++    const payload = {
++      messages: [
++        { role: "system", content: "system one" },
++        { role: "developer", content: "developer one" },
++        { role: "developer", content: "developer two" },
++        { role: "developer", content: "developer three" },
++        { role: "user", content: "latest user" },
++      ],
++    };
++
++    runDashScopePayload(payload);
++
++    const markerCount = payload.messages.reduce((count, message) => {
++      if (!Array.isArray(message.content)) {
++        return count;
++      }
++      return count + message.content.filter((block) => (
++        block &&
++        typeof block === "object" &&
++        "cache_control" in block
++      )).length;
++    }, 0);
++
++    expect(markerCount).toBe(4);
++    expect(payload.messages[4].content).toBe("latest user");
++  });
++});
+diff --git a/src/agents/pi-embedded-runner/extra-params.ts b/src/agents/pi-embedded-runner/extra-params.ts
+index 7714d4f..77a5075 100644
+--- a/src/agents/pi-embedded-runner/extra-params.ts
++++ b/src/agents/pi-embedded-runner/extra-params.ts
+@@ -17,6 +17,7 @@ import {
+ } from "./openai-stream-wrappers.js";
+ import { resolveCacheRetention } from "./prompt-cache-retention.js";
+ import { createOpenRouterSystemCacheWrapper } from "./proxy-stream-wrappers.js";
++import { createDashScopeOpenAIContextCacheWrapper } from "./dashscope-context-cache-payload.js";
+ import { streamWithPayloadPatch } from "./stream-payload-utils.js";
+ 
+ const defaultProviderRuntimeDeps = {
+@@ -355,6 +356,7 @@ function applyPostPluginStreamWrappers(
+ ): void {
+   ctx.agent.streamFn = createOpenRouterSystemCacheWrapper(ctx.agent.streamFn);
+   ctx.agent.streamFn = createOpenAIStringContentWrapper(ctx.agent.streamFn);
++  ctx.agent.streamFn = createDashScopeOpenAIContextCacheWrapper(ctx.agent.streamFn, ctx.effectiveExtraParams);
+ 
+   if (!ctx.providerWrapperHandled) {
+     // Guard Google-family payloads against invalid negative thinking budgets

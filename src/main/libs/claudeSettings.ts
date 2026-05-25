@@ -43,6 +43,15 @@ type ProviderModelInputConfig = {
   contextWindow?: number;
 };
 
+export type ServerModelMetadata = {
+  modelId: string;
+  modelName?: string;
+  provider?: string;
+  apiFormat?: string;
+  supportsImage?: boolean;
+  explicitContextCache?: boolean;
+};
+
 export type ApiConfigResolution = {
   config: CoworkApiConfig | null;
   error?: string;
@@ -78,26 +87,40 @@ export function setServerBaseUrlGetter(getter: () => string): void {
 }
 
 // Cached server model metadata (populated when auth:getModels is called)
-// Keyed by modelId → { supportsImage }
-let serverModelMetadataCache: Map<string, { supportsImage?: boolean }> = new Map();
+// Keyed by modelId → metadata returned by the LobsterAI server.
+let serverModelMetadataCache: Map<string, Omit<ServerModelMetadata, 'modelId'>> = new Map();
 
 const serializeServerModelMetadata = (
-  models: Array<{ modelId: string; supportsImage?: boolean }>,
+  models: ServerModelMetadata[],
 ): string => JSON.stringify(
   models
     .map((model) => ({
       modelId: model.modelId,
+      modelName: model.modelName,
+      provider: model.provider,
+      apiFormat: model.apiFormat,
       supportsImage: model.supportsImage,
+      explicitContextCache: model.explicitContextCache,
     }))
     .sort((a, b) => a.modelId.localeCompare(b.modelId)),
 );
 
-export function updateServerModelMetadata(models: Array<{ modelId: string; supportsImage?: boolean }>): boolean {
+export function updateServerModelMetadata(models: ServerModelMetadata[]): boolean {
   const previous = serializeServerModelMetadata(getAllServerModelMetadata());
-  const nextCache = new Map(models.map(m => [m.modelId, { supportsImage: m.supportsImage }]));
+  const nextCache = new Map(models.map(m => [m.modelId, {
+    modelName: m.modelName,
+    provider: m.provider,
+    apiFormat: m.apiFormat,
+    supportsImage: m.supportsImage,
+    explicitContextCache: m.explicitContextCache,
+  }]));
   const next = serializeServerModelMetadata(Array.from(nextCache.entries()).map(([modelId, meta]) => ({
     modelId,
+    modelName: meta.modelName,
+    provider: meta.provider,
+    apiFormat: meta.apiFormat,
     supportsImage: meta.supportsImage,
+    explicitContextCache: meta.explicitContextCache,
   })));
   serverModelMetadataCache = nextCache;
   return previous !== next;
@@ -107,17 +130,21 @@ export function clearServerModelMetadata(): void {
   serverModelMetadataCache.clear();
 }
 
-export function getAllServerModelMetadata(): Array<{ modelId: string; supportsImage?: boolean }> {
+export function getAllServerModelMetadata(): ServerModelMetadata[] {
   return Array.from(serverModelMetadataCache.entries()).map(([modelId, meta]) => ({
     modelId,
+    modelName: meta.modelName,
+    provider: meta.provider,
+    apiFormat: meta.apiFormat,
     supportsImage: meta.supportsImage,
+    explicitContextCache: meta.explicitContextCache,
   }));
 }
 
 function buildServerFallbackModels(effectiveModelId: string): NonNullable<LocalProviderConfig['models']> {
   const models = getAllServerModelMetadata().map((model) => ({
     id: model.modelId,
-    name: model.modelId,
+    name: model.modelName || model.modelId,
     supportsImage: model.supportsImage,
   }));
 
@@ -125,7 +152,7 @@ function buildServerFallbackModels(effectiveModelId: string): NonNullable<LocalP
     const cachedMeta = serverModelMetadataCache.get(effectiveModelId);
     models.unshift({
       id: effectiveModelId,
-      name: effectiveModelId,
+      name: cachedMeta?.modelName || effectiveModelId,
       supportsImage: cachedMeta?.supportsImage,
     });
   }
@@ -208,6 +235,7 @@ function tryLobsteraiServerFallback(modelId?: string): MatchedProvider | null {
     apiFormat: 'openai',
     baseURL,
     supportsImage: cachedMeta?.supportsImage,
+    modelName: cachedMeta?.modelName,
   };
 }
 

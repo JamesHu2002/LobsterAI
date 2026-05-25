@@ -16,7 +16,14 @@ vi.mock('electron', () => ({
 
 const mockRuntimeState = vi.hoisted(() => ({
   proxyPort: null as number | null,
-  serverModels: [] as Array<{ modelId: string; supportsImage?: boolean }>,
+  serverModels: [] as Array<{
+    modelId: string;
+    modelName?: string;
+    provider?: string;
+    apiFormat?: string;
+    supportsImage?: boolean;
+    explicitContextCache?: boolean;
+  }>,
   enabledProviders: [] as Array<{
     providerName: string;
     baseURL: string;
@@ -315,9 +322,9 @@ describe('OpenClawConfigSync runtime config output', () => {
   test('merges all server models into existing lobsterai provider and updates image input', async () => {
     mockRuntimeState.proxyPort = 56646;
     mockRuntimeState.serverModels = [
-      { modelId: 'qwen3.5-plus-YoudaoInner', supportsImage: true },
-      { modelId: 'qwen3.6-plus-YoudaoInner', supportsImage: true },
-      { modelId: 'deepseek-v3.2-YoudaoInner', supportsImage: false },
+      { modelId: 'qwen3.5-plus-YoudaoInner', modelName: 'Qwen3.5 Plus', provider: 'qwen', apiFormat: 'openai', supportsImage: true },
+      { modelId: 'qwen3.6-plus-YoudaoInner', modelName: 'Qwen3.6 Plus', provider: 'qwen', apiFormat: 'openai', supportsImage: true },
+      { modelId: 'deepseek-v3.2-YoudaoInner', modelName: 'DeepSeek V3.2', provider: 'deepseek', apiFormat: 'openai', supportsImage: false },
     ];
     mockRuntimeState.rawApiConfig = {
       config: {
@@ -334,7 +341,7 @@ describe('OpenClawConfigSync runtime config output', () => {
       },
     };
 
-    const { OpenClawConfigSync } = await import('./openclawConfigSync');
+    const { OpenClawConfigSync, OpenClawContextCacheMode, OpenClawContextCacheProvider } = await import('./openclawConfigSync');
 
     const sync = new OpenClawConfigSync({
       engineManager: {
@@ -381,18 +388,128 @@ describe('OpenClawConfigSync runtime config output', () => {
     expect(provider.models).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: 'qwen3.5-plus-YoudaoInner',
+        name: 'Qwen3.5 Plus',
         input: ['text', 'image'],
       }),
       expect.objectContaining({
         id: 'qwen3.6-plus-YoudaoInner',
+        name: 'Qwen3.6 Plus',
         input: ['text', 'image'],
       }),
       expect.objectContaining({
         id: 'deepseek-v3.2-YoudaoInner',
+        name: 'DeepSeek V3.2',
         input: ['text'],
       }),
     ]));
     expect(provider.models).toHaveLength(3);
+    expect(config.agents.defaults.models).toMatchObject({
+      'lobsterai-server/qwen3.5-plus-YoudaoInner': {
+        params: {
+          contextCacheProvider: OpenClawContextCacheProvider.DashScope,
+          contextCacheMode: OpenClawContextCacheMode.Explicit,
+        },
+      },
+      'lobsterai-server/qwen3.6-plus-YoudaoInner': {
+        params: {
+          contextCacheProvider: OpenClawContextCacheProvider.DashScope,
+          contextCacheMode: OpenClawContextCacheMode.Explicit,
+        },
+      },
+    });
+    expect(config.agents.defaults.models['lobsterai-server/deepseek-v3.2-YoudaoInner']).toBeUndefined();
+  });
+
+  test('marks qwen and dashscope custom OpenAI models for explicit context cache', async () => {
+    const { ProviderName } = await import('../../shared/providers');
+    const { OpenClawConfigSync, OpenClawContextCacheMode, OpenClawContextCacheProvider } = await import('./openclawConfigSync');
+    mockRuntimeState.rawApiConfig = {
+      config: {
+        baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+        apiKey: 'sk-qwen',
+        model: 'qwen3.5-plus',
+        apiType: 'openai',
+      },
+      providerMetadata: {
+        providerName: ProviderName.Qwen,
+        codingPlanEnabled: false,
+        supportsImage: true,
+        modelName: 'Qwen3.5 Plus',
+      },
+    };
+    mockRuntimeState.enabledProviders = [
+      {
+        providerName: ProviderName.Qwen,
+        baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+        apiKey: 'sk-qwen',
+        apiType: 'openai',
+        codingPlanEnabled: false,
+        models: [{ id: 'qwen3.5-plus', name: 'Qwen3.5 Plus', supportsImage: true }],
+      },
+      {
+        providerName: ProviderName.Custom,
+        baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+        apiKey: 'sk-custom-qwen',
+        apiType: 'openai',
+        codingPlanEnabled: false,
+        models: [{ id: 'private-qwen-coder', name: 'Private Qwen Coder', supportsImage: false }],
+      },
+    ];
+
+    const sync = new OpenClawConfigSync({
+      engineManager: {
+        getConfigPath: () => configPath,
+        getGatewayToken: () => 'gateway-token',
+        getStateDir: () => stateDir,
+        getBaseDir: () => tmpDir,
+      } as never,
+      getCoworkConfig: () => ({
+        workingDirectory: tmpDir,
+        systemPrompt: '',
+        executionMode: 'local',
+        agentEngine: 'openclaw',
+        memoryEnabled: false,
+        memoryImplicitUpdateEnabled: false,
+        memoryLlmJudgeEnabled: false,
+        memoryGuardLevel: 'balanced',
+        memoryUserMemoriesMaxItems: 100,
+        skipMissedJobs: false,
+      }),
+      isEnterprise: () => false,
+      getTelegramInstances: () => [],
+      getDiscordOpenClawConfig: () => null,
+      getDingTalkInstances: () => [],
+      getFeishuInstances: () => [],
+      getQQInstances: () => [],
+      getWecomConfig: () => null,
+      getWecomInstances: () => [],
+      getPopoInstances: () => [],
+      getNimConfig: () => null,
+      getNeteaseBeeChanConfig: () => null,
+      getWeixinConfig: () => null,
+      getIMSettings: () => null,
+      getSkillsList: () => [],
+      getAgents: () => [],
+    });
+
+    const result = sync.sync('qwen-context-cache');
+    expect(result.ok).toBe(true);
+
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(config.agents.defaults.models).toMatchObject({
+      'qwen-portal/qwen3.5-plus': {
+        params: {
+          contextCacheProvider: OpenClawContextCacheProvider.DashScope,
+          contextCacheMode: OpenClawContextCacheMode.Explicit,
+        },
+      },
+      'custom/private-qwen-coder': {
+        params: {
+          contextCacheProvider: OpenClawContextCacheProvider.DashScope,
+          contextCacheMode: OpenClawContextCacheMode.Explicit,
+        },
+      },
+    });
   });
 
   test('maps OpenAI OAuth mode to the OpenAI Codex provider', async () => {

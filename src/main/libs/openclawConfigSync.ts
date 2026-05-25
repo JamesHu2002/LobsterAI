@@ -135,6 +135,67 @@ const mapApiTypeToOpenClawApi = (
  */
 const isDashScopeUrl = (url?: string): boolean => !!url && /dashscope\.aliyuncs\.com/i.test(url);
 
+export const OpenClawContextCacheProvider = {
+  DashScope: 'dashscope',
+} as const;
+export type OpenClawContextCacheProvider = typeof OpenClawContextCacheProvider[keyof typeof OpenClawContextCacheProvider];
+
+export const OpenClawContextCacheMode = {
+  Explicit: 'explicit',
+} as const;
+export type OpenClawContextCacheMode = typeof OpenClawContextCacheMode[keyof typeof OpenClawContextCacheMode];
+
+type OpenClawAgentModelParamEntry = {
+  params: {
+    contextCacheProvider: OpenClawContextCacheProvider;
+    contextCacheMode: OpenClawContextCacheMode;
+  };
+};
+
+const DASHSCOPE_EXPLICIT_CONTEXT_CACHE_PARAMS: OpenClawAgentModelParamEntry = {
+  params: {
+    contextCacheProvider: OpenClawContextCacheProvider.DashScope,
+    contextCacheMode: OpenClawContextCacheMode.Explicit,
+  },
+};
+
+const normalizeLowercase = (value?: string): string => value?.trim().toLowerCase() ?? '';
+
+const isLikelyQwenModelId = (modelId?: string): boolean => /^qwen(?:[-_.\d]|$)/i.test(modelId?.trim() ?? '');
+
+const shouldEnableDashScopeExplicitContextCache = (options: {
+  providerName?: string;
+  baseURL?: string;
+  modelId?: string;
+  api?: OpenClawProviderApi;
+  serverProvider?: string;
+  serverApiFormat?: string;
+  explicitContextCache?: boolean;
+}): boolean => {
+  if (options.api !== OpenClawApiConst.OpenAICompletions) {
+    return false;
+  }
+  if (options.explicitContextCache === true) {
+    return true;
+  }
+
+  const providerName = normalizeLowercase(options.providerName);
+  if (providerName === ProviderName.Qwen || isDashScopeUrl(options.baseURL)) {
+    return true;
+  }
+
+  if (providerName === ProviderName.LobsteraiServer) {
+    const serverProvider = normalizeLowercase(options.serverProvider);
+    const serverApiFormat = normalizeLowercase(options.serverApiFormat);
+    if (serverProvider === ProviderName.Qwen && (!serverApiFormat || serverApiFormat === 'openai')) {
+      return true;
+    }
+    return isLikelyQwenModelId(options.modelId);
+  }
+
+  return false;
+};
+
 /**
  * When a DashScope Anthropic URL is forced to OpenAI format, rewrite the base
  * URL to the corresponding OpenAI-compatible endpoint so the request actually
@@ -1129,6 +1190,32 @@ export class OpenClawConfigSync {
     let allProvidersMap: Record<string, OpenClawProviderSelection['providerConfig']> = {};
     let primaryModel = '';
     let providerSelection: OpenClawProviderSelection | null = null;
+    const dashScopeContextCacheModels: Record<string, OpenClawAgentModelParamEntry> = {};
+
+    const markDashScopeContextCacheModel = (
+      selection: OpenClawProviderSelection,
+      source: {
+        providerName?: string;
+        baseURL?: string;
+        serverProvider?: string;
+        serverApiFormat?: string;
+        explicitContextCache?: boolean;
+      },
+    ): void => {
+      const model = selection.providerConfig.models[0];
+      if (!shouldEnableDashScopeExplicitContextCache({
+        providerName: source.providerName,
+        baseURL: source.baseURL ?? selection.providerConfig.baseUrl,
+        modelId: selection.sessionModelId,
+        api: model?.api,
+        serverProvider: source.serverProvider,
+        serverApiFormat: source.serverApiFormat,
+        explicitContextCache: source.explicitContextCache,
+      })) {
+        return;
+      }
+      dashScopeContextCacheModels[selection.primaryModel] = DASHSCOPE_EXPLICIT_CONTEXT_CACHE_PARAMS;
+    };
 
     if (apiResolution.config) {
       const { baseURL, apiKey, model, apiType } = apiResolution.config;
@@ -1155,6 +1242,10 @@ export class OpenClawConfigSync {
         contextWindow: apiResolution.providerMetadata?.contextWindow,
       });
       primaryModel = providerSelection.primaryModel;
+      markDashScopeContextCacheModel(providerSelection, {
+        providerName: apiResolution.providerMetadata?.providerName,
+        baseURL,
+      });
 
       for (const p of resolveAllEnabledProviderConfigs()) {
         for (const m of p.models) {
@@ -1169,6 +1260,10 @@ export class OpenClawConfigSync {
             supportsImage: m.supportsImage,
             modelName: m.name,
             contextWindow: m.contextWindow,
+          });
+          markDashScopeContextCacheModel(sel, {
+            providerName: p.providerName,
+            baseURL: p.baseURL,
           });
           if (!allProvidersMap[sel.providerId]) {
             allProvidersMap[sel.providerId] = { ...sel.providerConfig, models: [] };
@@ -1207,6 +1302,13 @@ export class OpenClawConfigSync {
             apiType: 'openai',
             providerName: ProviderName.LobsteraiServer,
             supportsImage: serverModels[0]?.supportsImage,
+            modelName: serverModels[0]?.modelName || firstServerModelId,
+          });
+          markDashScopeContextCacheModel(firstServerSel, {
+            providerName: ProviderName.LobsteraiServer,
+            serverProvider: serverModels[0]?.provider,
+            serverApiFormat: serverModels[0]?.apiFormat,
+            explicitContextCache: serverModels[0]?.explicitContextCache,
           });
           const lobsteraiProviderConfig =
             allProvidersMap[providerId] ?? {
@@ -1226,7 +1328,13 @@ export class OpenClawConfigSync {
                 apiType: 'openai',
                 providerName: ProviderName.LobsteraiServer,
                 supportsImage: sm.supportsImage,
-                modelName: sm.modelId,
+                modelName: sm.modelName || sm.modelId,
+              });
+              markDashScopeContextCacheModel(serverSel, {
+                providerName: ProviderName.LobsteraiServer,
+                serverProvider: sm.provider,
+                serverApiFormat: sm.apiFormat,
+                explicitContextCache: sm.explicitContextCache,
               });
               upsertProviderModel(lobsteraiProviderConfig, serverSel.providerConfig.models[0]);
             }
@@ -1352,6 +1460,9 @@ export class OpenClawConfigSync {
           model: {
             primary: primaryModel,
           },
+          ...(Object.keys(dashScopeContextCacheModels).length > 0
+            ? { models: dashScopeContextCacheModels }
+            : {}),
           sandbox: {
             mode: sandboxMode,
           },

@@ -1,5 +1,5 @@
-import { app, session } from 'electron';
 import { exec, spawn } from 'child_process';
+import { app, session } from 'electron';
 import fs from 'fs';
 import path from 'path';
 import { Readable } from 'stream';
@@ -24,6 +24,53 @@ export function cancelActiveDownload(): boolean {
     return true;
   }
   return false;
+}
+
+export function buildWindowsUpdateLauncherArgs(scriptPath: string): string[] {
+  return [
+    '-NoProfile',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-WindowStyle',
+    'Hidden',
+    '-File',
+    scriptPath,
+  ];
+}
+
+export function spawnDetachedWindowsUpdateLauncher(scriptPath: string): Promise<number | undefined> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: unknown, pid?: number) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(pid);
+    };
+
+    let launcher: ReturnType<typeof spawn>;
+    try {
+      launcher = spawn('powershell.exe', buildWindowsUpdateLauncherArgs(scriptPath), {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+    } catch (error) {
+      finish(error);
+      return;
+    }
+
+    launcher.once('error', error => finish(error));
+    launcher.once('spawn', () => {
+      launcher.unref();
+      finish(undefined, launcher.pid);
+    });
+  });
 }
 
 /** Escape a string for safe use as a single-quoted POSIX shell argument. */
@@ -365,11 +412,12 @@ async function installWindowsNsis(exePath: string): Promise<void> {
   console.log(`[AppUpdate]   installer: ${exePath}`);
   console.log(`[AppUpdate]   appPid: ${process.pid}`);
 
-  // We must NOT spawn the installer directly as a child of the app, because
-  // the NSIS customInit macro runs `taskkill /IM "LobsterAI.exe" /F /T`
-  // which kills the entire process tree — including child processes.
+  // We must NOT run the installer before the app finishes quitting, because
+  // the NSIS customInit macro stops running LobsterAI processes before it
+  // replaces files. Launching through a detached waiter avoids racing app
+  // shutdown and file-handle release.
   //
-  // Strategy: use a tiny PowerShell script (launched via hidden VBS) that
+  // Strategy: use a tiny hidden PowerShell script that
   // waits for the app to fully exit, then opens the installer with its
   // normal UI (no /S silent flag). This lets NSIS handle everything:
   // desktop shortcuts, start menu entries, "Run after finish", etc.
@@ -377,7 +425,6 @@ async function installWindowsNsis(exePath: string): Promise<void> {
   const tempDir = app.getPath('temp');
   const logPath = path.join(tempDir, `lobsterai-update-${ts}.log`);
   const scriptPath = path.join(tempDir, `lobsterai-update-${ts}.ps1`);
-  const vbsPath = path.join(tempDir, `lobsterai-update-${ts}.vbs`);
 
   console.log(`[AppUpdate] Script log: ${logPath}`);
 
@@ -420,17 +467,9 @@ async function installWindowsNsis(exePath: string): Promise<void> {
 
   await fs.promises.writeFile(scriptPath, '\ufeff' + psScript, 'utf-8');
 
-  const vbsScript = `CreateObject("WScript.Shell").Run "powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File ""${scriptPath}""", 0, False`;
-  await fs.promises.writeFile(vbsPath, vbsScript, 'utf-8');
+  console.log('[AppUpdate] Launching installer via hidden PowerShell script...');
+  const launcherPid = await spawnDetachedWindowsUpdateLauncher(scriptPath);
 
-  console.log('[AppUpdate] Launching installer via wscript.exe...');
-
-  const launcher = spawn('wscript.exe', [vbsPath], {
-    detached: true,
-    stdio: 'ignore',
-  });
-  launcher.unref();
-
-  console.log(`[AppUpdate] Launcher PID: ${launcher.pid}, calling app.quit()`);
+  console.log(`[AppUpdate] Launcher PID: ${launcherPid ?? 'unknown'}, calling app.quit()`);
   app.quit();
 }

@@ -7,9 +7,12 @@
  */
 
 import { BrowserWindow, net } from 'electron';
+import type { V2NIM } from 'nim-web-sdk-ng/dist/nodejs/nim';
+
+import type { CoworkImageAttachment } from './agentEngine/types';
+
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const NIM = require('nim-web-sdk-ng/dist/nodejs/nim.js').default;
-import type { V2NIM } from 'nim-web-sdk-ng/dist/nodejs/nim';
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -60,7 +63,7 @@ const pendingCreates = new Map<string, Promise<{ electronTaskId: string } | null
 
 interface IosCoworkCallbacks {
   createSession: (taskId: string, title: string) => Promise<{ sessionId: string }>;
-  continueSession: (sessionId: string, text: string) => Promise<void>;
+  continueSession: (sessionId: string, text: string, imageAttachments?: CoworkImageAttachment[]) => Promise<void>;
   setPinned: (sessionId: string, pinned: boolean) => void;
   rename: (sessionId: string, title: string) => void;
   deleteSession: (sessionId: string) => void;
@@ -180,6 +183,79 @@ async function doSendMessage(text: string, ext?: object): Promise<string | undef
   return serverId;
 }
 
+type IosImageAttachmentPayload = {
+  url: string;
+  thumbnailURL?: string;
+  name?: string;
+  mimeType?: string;
+};
+
+function parseIosImageAttachments(ext: any): IosImageAttachmentPayload[] {
+  const raw = ext?.imageAttachments;
+  if (!Array.isArray(raw)) return [];
+
+  return raw.flatMap((item): IosImageAttachmentPayload[] => {
+    if (!item || typeof item !== 'object') return [];
+    const url = typeof item.url === 'string' ? item.url.trim() : '';
+    if (!url) return [];
+    return [{
+      url,
+      thumbnailURL: typeof item.thumbnailURL === 'string' ? item.thumbnailURL : undefined,
+      name: typeof item.name === 'string' ? item.name : undefined,
+      mimeType: typeof item.mimeType === 'string' ? item.mimeType : undefined,
+    }];
+  });
+}
+
+function inferImageMimeType(payload: IosImageAttachmentPayload): string {
+  if (payload.mimeType?.startsWith('image/')) return payload.mimeType;
+
+  const source = `${payload.name ?? ''} ${payload.url}`.toLowerCase();
+  if (source.includes('.png')) return 'image/png';
+  if (source.includes('.gif')) return 'image/gif';
+  if (source.includes('.webp')) return 'image/webp';
+  return 'image/jpeg';
+}
+
+function inferImageName(payload: IosImageAttachmentPayload, index: number): string {
+  if (payload.name?.trim()) return payload.name.trim();
+
+  try {
+    const pathname = new URL(payload.url).pathname;
+    const lastPathComponent = pathname.split('/').filter(Boolean).at(-1);
+    if (lastPathComponent) return decodeURIComponent(lastPathComponent);
+  } catch {
+    // Keep the deterministic fallback below.
+  }
+
+  return `ios-image-${index + 1}.jpg`;
+}
+
+async function downloadIosImageAttachments(
+  payloads: IosImageAttachmentPayload[],
+): Promise<CoworkImageAttachment[]> {
+  const attachments: CoworkImageAttachment[] = [];
+
+  for (const [index, payload] of payloads.entries()) {
+    try {
+      const response = await net.fetch(payload.url);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const buffer = Buffer.from(await response.arrayBuffer());
+      attachments.push({
+        name: inferImageName(payload, index),
+        mimeType: inferImageMimeType(payload),
+        base64Data: buffer.toString('base64'),
+      });
+    } catch (error) {
+      console.error('[YdNimClient] download iOS image failed:', payload.url, (error as Error)?.message);
+    }
+  }
+
+  return attachments;
+}
+
 // ── iOS cowork integration ─────────────────────────────────────────────────
 
 /**
@@ -266,7 +342,8 @@ async function handleCreateConversation(_msg: any, ext: any): Promise<void> {
 
 async function handleNormalMessage(msg: any, ext: any): Promise<void> {
   const taskId = ext?.taskId;
-  console.log('=== [iOS-NIM] NORMAL 收到消息 | iosTaskId:', taskId ?? 'none', '| text:', String(msg.text ?? '').slice(0, 50), '===');
+  const imagePayloads = parseIosImageAttachments(ext);
+  console.log('=== [iOS-NIM] NORMAL 收到消息 | iosTaskId:', taskId ?? 'none', '| text:', String(msg.text ?? '').slice(0, 50), '| imagePayloads:', imagePayloads.length, '===');
   broadcastToRenderer('yd-nim:log', { text: `处理普通消息: taskId=${taskId ?? 'none'}`, time: Date.now() });
 
   const sendErrorReply = async (reason: string) => {
@@ -323,14 +400,30 @@ async function handleNormalMessage(msg: any, ext: any): Promise<void> {
       return;
     }
 
-    broadcastToRenderer('yd-nim:action', { action: 'normal', taskId, electronTaskId, text: msg.text });
+    let imageAttachments: CoworkImageAttachment[] = [];
+    if (imagePayloads.length > 0) {
+      broadcastToRenderer('yd-nim:log', { text: `下载 iOS 图片附件: ${imagePayloads.length} 张`, time: Date.now() });
+      imageAttachments = await downloadIosImageAttachments(imagePayloads);
+      if (imageAttachments.length === 0) {
+        await sendErrorReply('图片下载失败，请重新发送');
+        return;
+      }
+    }
+
+    broadcastToRenderer('yd-nim:action', {
+      action: 'normal',
+      taskId,
+      electronTaskId,
+      text: msg.text,
+      imageAttachmentCount: imageAttachments.length,
+    });
 
     // ── Step 2: run agent ──────────────────────────────────────────────────
     // continueSession throws if the local session is missing — catch it here
     // so we can send an error reply before the message is saved.
     if (coworkCallbacks) {
       try {
-        await coworkCallbacks.continueSession(electronTaskId, msg.text ?? '');
+        await coworkCallbacks.continueSession(electronTaskId, msg.text ?? '', imageAttachments);
       } catch (agentErr: any) {
         const reason = agentErr?.message ?? String(agentErr);
         console.error('=== [iOS-NIM] NORMAL 错误: continueSession 失败 | electronTaskId:', electronTaskId, '| 原因:', reason, '===');
@@ -340,12 +433,13 @@ async function handleNormalMessage(msg: any, ext: any): Promise<void> {
     }
 
     // ── Step 3: save user message (independent of agent result) ───────────
-    if (taskId && msg.text) {
+    if (taskId && (msg.text || imageAttachments.length > 0)) {
       try {
+        const content = msg.text || (imageAttachments.length > 0 ? '[图片]' : '');
         await saveConversationMessages(taskId, [{
           messageId: msg.messageClientId ?? `user-${Date.now()}`,
           role: 'user',
-          content: msg.text,
+          content,
           timestamp: msg.createTime ?? Date.now(),
         }]);
         broadcastToRenderer('yd-nim:log', { text: `✓ 用户消息已上报: taskId=${taskId}`, time: Date.now() });
@@ -454,7 +548,8 @@ async function routeIncomingMessage(msg: any): Promise<void> {
   }
 
   const action = ext?.action;
-  console.log('[YdNimClient] routeMessage — action:', action ?? '(none)', 'from:', msg.senderId, 'text:', msg.text);
+  const imagePayloads = parseIosImageAttachments(ext);
+  console.log('[YdNimClient] routeMessage — action:', action ?? '(none)', 'from:', msg.senderId, 'text:', msg.text, 'imagePayloads:', imagePayloads.length);
 
   // Broadcast raw received event to renderer (debug UI)
   broadcastToRenderer('yd-nim:message-received', {
@@ -463,6 +558,7 @@ async function routeIncomingMessage(msg: any): Promise<void> {
     serverId: msg.messageServerId,
     time: msg.createTime ?? Date.now(),
     ext,
+    imageAttachmentCount: imagePayloads.length,
   });
 
   // Route by action

@@ -7138,7 +7138,7 @@ end tell'`, { timeout: 5000 });
         return { sessionId: session.id };
       },
 
-      continueSession: async (sessionId, text) => {
+      continueSession: async (sessionId, text, imageAttachments = []) => {
         const store = getCoworkStore();
         const session = store.getSession(sessionId);
         if (!session) {
@@ -7146,7 +7146,12 @@ end tell'`, { timeout: 5000 });
           throw new Error(`本地 session 不存在 (electronTaskId=${sessionId})，请重新从 iOS 发起任务`);
         }
         store.updateSession(sessionId, { status: 'running' });
-        const addedUserMessage = store.addMessage(sessionId, { type: 'user', content: text });
+        const userMessageMetadata = imageAttachments.length > 0 ? { imageAttachments } : undefined;
+        const addedUserMessage = store.addMessage(sessionId, {
+          type: 'user',
+          content: text,
+          metadata: userMessageMetadata,
+        });
         BrowserWindow.getAllWindows().forEach(win => {
           if (!win.isDestroyed()) {
             win.webContents.send('cowork:stream:message', {
@@ -7162,11 +7167,12 @@ end tell'`, { timeout: 5000 });
           systemPrompt,
           workspaceRoot: session.cwd || config.workingDirectory,
           confirmationMode: 'modal' as const,
+          imageAttachments: imageAttachments.length > 0 ? imageAttachments : undefined,
         };
         const userMessages = store.getSession(sessionId)?.messages?.filter(m => m.type === 'user') ?? [];
         const isFirst = userMessages.length <= 1;
         const runtime = getCoworkEngineRouter();
-        console.log('[iOS] continueSession — sessionId:', sessionId, 'isFirst:', isFirst);
+        console.log('[iOS] continueSession — sessionId:', sessionId, 'isFirst:', isFirst, 'imageAttachments:', imageAttachments.length);
         if (isFirst) {
           runtime.startSession(sessionId, text, options).catch(err => {
             console.error('[iOS] startSession error:', (err as Error)?.message);

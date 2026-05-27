@@ -735,7 +735,8 @@ contextBridge.exposeInMainWorld('electron', {
   },
   githubCopilot: {
     requestDeviceCode: () =>
-      ipcRenderer.invoke('github-copilot:request-device-code') as Promise<{        userCode: string;
+      ipcRenderer.invoke('github-copilot:request-device-code') as Promise<{
+        userCode: string;
         verificationUri: string;
         deviceCode: string;
         interval: number;
@@ -781,6 +782,7 @@ contextBridge.exposeInMainWorld('electron', {
         | { loggedIn: true; email: string | null; accountId: string | null; expiresAt: number }
         | { loggedIn: false }
       >,
+  },
   ydNim: {
     sendMessage: (text: string, ext?: object) =>
       ipcRenderer.invoke('yd-nim:send-message', text, ext) as Promise<{ success: boolean; error?: string }>,

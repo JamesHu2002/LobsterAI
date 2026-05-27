@@ -42,8 +42,8 @@ import {
 } from './store/selectors/coworkSelectors';
 import { setDraftPrompt } from './store/slices/coworkSlice';
 import { IosCommView, IosSimView } from './components/iosComm';
-import { checkForAppUpdate, type AppUpdateDownloadProgress } from './services/appUpdate';
-import { setAvailableModels, setSelectedModel } from './store/slices/modelSlice';
+import AgentsView from './components/agent/AgentsView';
+import { setAvailableModels, setDefaultSelectedModel } from './store/slices/modelSlice';
 import { clearSelection } from './store/slices/quickActionSlice';
 import type { CoworkPermissionResult } from './types/cowork';
 
@@ -322,10 +322,6 @@ const App: React.FC = () => {
 
   const handleShowMcp = useCallback(() => {
     setMainView('mcp');
-  }, []);
-
-  const handleShowAgents = useCallback(() => {
-    setMainView('agents');
   }, []);
 
   const handleShowIosComm = useCallback(() => {
@@ -803,7 +799,6 @@ const App: React.FC = () => {
           onShowCowork={handleShowCowork}
           onShowScheduledTasks={handleShowScheduledTasks}
           onShowMcp={handleShowMcp}
-          onShowAgents={handleShowAgents}
           onShowIosComm={handleShowIosComm}
           onShowIosSim={handleShowIosSim}
           onNewChat={handleNewChat}
@@ -843,7 +838,6 @@ const App: React.FC = () => {
                 isSidebarCollapsed={isSidebarCollapsed}
                 onToggleSidebar={handleToggleSidebar}
                 onNewChat={handleNewChat}
-                onShowCowork={handleShowCowork}
                 updateBadge={isSidebarCollapsed ? updateBadge : null}
               />
             ) : mainView === 'iosComm' ? (

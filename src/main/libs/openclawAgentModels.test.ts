@@ -92,7 +92,7 @@ describe('buildAgentEntry', () => {
     });
   });
 
-  test('emits per-agent cwd when a working directory is configured', () => {
+  test('does not emit cwd key (removed in newer OpenClaw)', () => {
     const result = buildAgentEntry({
       id: 'docs',
       name: 'Docs',
@@ -111,10 +111,7 @@ describe('buildAgentEntry', () => {
       updatedAt: 0,
     }, 'anthropic/claude-sonnet-4');
 
-    expect(result).toMatchObject({
-      id: 'docs',
-      cwd: path.resolve('/tmp/docs-project'),
-    });
+    expect(result).not.toHaveProperty('cwd');
   });
 
   test('does not forward designed avatar metadata as an OpenClaw emoji', () => {

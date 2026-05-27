@@ -1461,7 +1461,6 @@ const bindCoworkRuntimeForwarder = (): void => {
   // and on 'complete' for the final reply.
   const pendingIosAssistantText = new Map<string, string>();
 
-  runtime.on('message', (sessionId: string, message: unknown) => {
   runtime.on('message', (sessionId: string, message: unknown, beforeMessageId?: string) => {
     const safeMessage = sanitizeCoworkMessageForIpc(message);
     const windows = BrowserWindow.getAllWindows();
@@ -7129,7 +7128,7 @@ end tell'`, { timeout: 5000 });
         const store = getCoworkStore();
         const config = store.getConfig();
         const cwd = resolveTaskWorkingDirectory(config.workingDirectory || process.env.HOME || '.');
-        const systemPrompt = mergeCoworkSystemPrompt(resolveCoworkAgentEngine(), config.systemPrompt);
+        const systemPrompt = mergeCoworkSystemPrompt(config.systemPrompt);
         const session = store.createSession(title, cwd, systemPrompt, config.executionMode || 'local', [], 'main');
         console.log('[iOS] createSession — taskId:', taskId, 'sessionId:', session.id);
         BrowserWindow.getAllWindows().forEach(win => {
@@ -7161,7 +7160,7 @@ end tell'`, { timeout: 5000 });
           }
         });
         const config = store.getConfig();
-        const systemPrompt = mergeCoworkSystemPrompt(resolveCoworkAgentEngine(), session.systemPrompt ?? config.systemPrompt);
+        const systemPrompt = mergeCoworkSystemPrompt(session.systemPrompt ?? config.systemPrompt);
         const options = {
           skipInitialUserMessage: true as const,
           systemPrompt,

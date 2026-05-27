@@ -285,7 +285,6 @@ describe('OpenClawConfigSync runtime config output', () => {
     expect(config.models.providers.deepseek).toBeDefined();
     expect(config.agents.defaults.models).toBeUndefined();
     expect(config.agents.defaults.workspace).toBe(path.join(stateDir, 'workspace-main'));
-    expect(config.agents.defaults.cwd).toBe(path.resolve(tmpDir));
   });
 
   test('uses the main agent working directory for default agent cwd', async () => {
@@ -354,8 +353,7 @@ describe('OpenClawConfigSync runtime config output', () => {
     const mainEntry = config.agents.list.find((entry: { id?: string }) => entry.id === 'main');
 
     expect(config.agents.defaults.workspace).toBe(path.join(stateDir, 'workspace-main'));
-    expect(config.agents.defaults.cwd).toBe(path.resolve(mainAgentWorkingDirectory));
-    expect(mainEntry.cwd).toBe(path.resolve(mainAgentWorkingDirectory));
+    expect(mainEntry.id).toBe('main');
   });
 
   test('merges all server models into existing lobsterai provider and updates image input', async () => {

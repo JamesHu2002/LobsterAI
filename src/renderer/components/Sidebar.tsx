@@ -34,7 +34,6 @@ interface SidebarProps {
   onShowCowork: () => void;
   onShowScheduledTasks: () => void;
   onShowMcp: () => void;
-  onShowAgents: () => void;
   onShowIosComm: () => void;
   onShowIosSim: () => void;
   onNewChat: () => void;
@@ -62,7 +61,6 @@ const Sidebar: React.FC<SidebarProps> = ({
   onShowCowork,
   onShowScheduledTasks,
   onShowMcp,
-  onShowAgents,
   onShowIosComm,
   onShowIosSim,
   onNewChat,

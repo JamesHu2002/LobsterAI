@@ -9,7 +9,6 @@ export interface UserProfile {
   id?: number;             // profile endpoint only (number 6)
   status?: number;         // profile endpoint only
   loginType?: string;
-  yid?: string;
 }
 
 export interface UserQuota {

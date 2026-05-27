@@ -1482,7 +1482,6 @@ export class OpenClawConfigSync {
             mode: sandboxMode,
           },
           workspace: path.resolve(mainWorkspacePath),
-          ...(taskWorkingDirectory ? { cwd: path.resolve(taskWorkingDirectory) } : {}),
           ...(coworkConfig.embeddingEnabled ? {
             memorySearch: {
               enabled: true,

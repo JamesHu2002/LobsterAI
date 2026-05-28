@@ -436,11 +436,15 @@ async function handleNormalMessage(msg: any, ext: any): Promise<void> {
     if (taskId && (msg.text || imageAttachments.length > 0)) {
       try {
         const content = msg.text || (imageAttachments.length > 0 ? '[图片]' : '');
+        const attachments = imagePayloads.length > 0
+          ? imagePayloads.map(p => ({ type: 'image', url: p.url }))
+          : undefined;
         await saveConversationMessages(taskId, [{
           messageId: msg.messageClientId ?? `user-${Date.now()}`,
           role: 'user',
           content,
           timestamp: msg.createTime ?? Date.now(),
+          attachments,
         }]);
         broadcastToRenderer('yd-nim:log', { text: `✓ 用户消息已上报: taskId=${taskId}`, time: Date.now() });
       } catch (saveErr: any) {
@@ -875,6 +879,7 @@ export interface NimMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp: number;
+  attachments?: Array<{ type: string; url: string }>;
 }
 
 /**

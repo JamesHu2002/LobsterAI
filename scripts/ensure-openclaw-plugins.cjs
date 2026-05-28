@@ -825,6 +825,8 @@ function ${patchMarker}(name) {
     }
   } else {
     log('dingtalk-connector not found, skipping file:// URL patch');
+  }
+
   // --- Post-install patch: openclaw-nim-channel plugin ID fix + deferred startup loading ---
   // The openclaw-nim-channel plugin has two issues:
   // 1. Its openclaw.plugin.json declares id="nimsuite-openclaw-nim-channel" but LobsterAI's

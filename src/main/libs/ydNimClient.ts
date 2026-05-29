@@ -104,32 +104,6 @@ export function getNimEventHistory(): Array<{ channel: string; data: unknown }> 
   return nimEventHistory.slice();
 }
 
-// ── Lobster server API ──────────────────────────────────────────────────────
-
-async function callLobsterApi(path: string, body: object): Promise<any> {
-  const url = `${LOBSTER_API_BASE}${path}`;
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  const tokens = getTokensFn?.();
-  if (tokens?.accessToken) {
-    headers['Authorization'] = `Bearer ${tokens.accessToken}`;
-  }
-  console.log('[YdNimClient] callLobsterApi →', path, body);
-  console.log('[YdNimClient] callLobsterApi headers:', JSON.stringify({
-    ...headers,
-    Authorization: headers['Authorization']
-      ? headers['Authorization'].slice(0, 20) + '…(len=' + headers['Authorization'].length + ')'
-      : '(none)',
-  }));
-  const resp = await net.fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
-  const result = await resp.json() as { code: number; msg?: string; data?: any };
-  console.log('[YdNimClient] callLobsterApi ←', path, 'code:', result.code);
-  // Server uses code=0 for success (some endpoints may use 200)
-  if (result.code !== 0 && result.code !== 200) {
-    throw new Error(`Lobster API ${path} error ${result.code}: ${result.msg}`);
-  }
-  return result.data;
-}
-
 // ── HardEar server API ──────────────────────────────────────────────────────
 
 async function callHardwareApi(path: string, body: object): Promise<any> {
@@ -266,7 +240,7 @@ async function resolveElectronTaskId(taskId: string): Promise<string | undefined
   const cached = taskIdCache.get(taskId);
   if (cached) return cached.electronTaskId;
   console.log('=== [iOS-NIM] RESOLVE 缓存未命中，查询 server | iosTaskId:', taskId, '===');
-  const data = await callLobsterApi('/lobster/conversation/get', { taskId });
+  const data = await callHardwareApi('/lobster/conversation/get', { taskId });
   const electronTaskId: string | undefined = data.conversation?.electronTaskId;
   console.log('=== [iOS-NIM] RESOLVE server 返回 electronTaskId:', electronTaskId ?? 'none', '| iosTaskId:', taskId, '===');
   if (electronTaskId) {
@@ -303,7 +277,7 @@ async function handleCreateConversation(_msg: any, ext: any): Promise<void> {
 
       // Step 2: register mapping on server
       console.log('=== [iOS-NIM] CREATE 上报关联关系 → server | iosTaskId:', taskId, '| electronTaskId:', electronTaskId, '===');
-      await callLobsterApi('/lobster/conversation/electron-task-id/update', { taskId, electronTaskId });
+      await callHardwareApi('/lobster/conversation/electron-task-id/update', { taskId, electronTaskId });
       console.log('=== [iOS-NIM] CREATE 上报关联关系 ✓ 完成 | iosTaskId:', taskId, '| electronTaskId:', electronTaskId, '===');
 
       // Cache the mapping for subsequent messages
@@ -367,7 +341,7 @@ async function handleNormalMessage(msg: any, ext: any): Promise<void> {
         broadcastToRenderer('yd-nim:log', { text: `[本地缓存] electronTaskId=${electronTaskId}`, time: Date.now() });
       } else {
         console.log('=== [iOS-NIM] NORMAL 缓存未命中，查询 server | iosTaskId:', taskId, '===');
-        const data = await callLobsterApi('/lobster/conversation/get', { taskId });
+        const data = await callHardwareApi('/lobster/conversation/get', { taskId });
         electronTaskId = data.conversation?.electronTaskId;
         console.log('=== [iOS-NIM] NORMAL server 返回 electronTaskId:', electronTaskId ?? 'none', '| iosTaskId:', taskId, '===');
         if (electronTaskId) {
@@ -464,7 +438,7 @@ async function handleUpdateConversation(_msg: any, ext: any): Promise<void> {
   console.log('[YdNimClient] handleUpdate — taskId:', taskId, 'title:', title);
   try {
     const electronTaskId = await resolveElectronTaskId(taskId);
-    await callLobsterApi('/lobster/conversation/update', { taskId, title });
+    await callHardwareApi('/lobster/conversation/update', { taskId, title });
     if (electronTaskId) coworkCallbacks?.rename(electronTaskId, title);
     broadcastToRenderer('yd-nim:action', { action: 'update', taskId, electronTaskId, title });
     broadcastToRenderer('yd-nim:log', { text: `✓ update处理完成: taskId=${taskId}`, time: Date.now() });
@@ -481,7 +455,7 @@ async function handlePinConversation(_msg: any, ext: any): Promise<void> {
   try {
     const electronTaskId = await resolveElectronTaskId(taskId);
     await Promise.all([
-      callLobsterApi('/lobster/conversation/pin', { taskId }),
+      callHardwareApi('/lobster/conversation/pin', { taskId }),
       electronTaskId ? Promise.resolve(coworkCallbacks?.setPinned(electronTaskId, true)) : Promise.resolve(),
     ]);
     broadcastToRenderer('yd-nim:action', { action: 'pin', taskId, electronTaskId });
@@ -499,7 +473,7 @@ async function handleUnpinConversation(_msg: any, ext: any): Promise<void> {
   try {
     const electronTaskId = await resolveElectronTaskId(taskId);
     await Promise.all([
-      callLobsterApi('/lobster/conversation/unpin', { taskId }),
+      callHardwareApi('/lobster/conversation/unpin', { taskId }),
       electronTaskId ? Promise.resolve(coworkCallbacks?.setPinned(electronTaskId, false)) : Promise.resolve(),
     ]);
     broadcastToRenderer('yd-nim:action', { action: 'unpin', taskId, electronTaskId });
@@ -516,7 +490,7 @@ async function handleDeleteConversation(_msg: any, ext: any): Promise<void> {
   console.log('[YdNimClient] handleDelete — taskId:', taskId);
   try {
     const electronTaskId = taskIdCache.get(taskId)?.electronTaskId;
-    await callLobsterApi('/lobster/conversation/delete', { taskId });
+    await callHardwareApi('/lobster/conversation/delete', { taskId });
     taskIdCache.delete(taskId);
     if (electronTaskId) {
       electronTaskIdToTaskId.delete(electronTaskId);
@@ -833,7 +807,7 @@ export async function resolveIosTaskIdForElectronSession(electronTaskId: string)
 
   try {
     console.log('=== [iOS-NIM] REVERSE-LOOKUP 查询 server | electronTaskId:', electronTaskId, '===');
-    const data = await callLobsterApi('/lobster/conversation/getByElectronTaskId', { electronTaskId });
+    const data = await callHardwareApi('/lobster/conversation/getByElectronTaskId', { electronTaskId });
     // Support both { conversation: { taskId } } and { taskId } response shapes.
     const iosTaskId: string | undefined = data?.conversation?.taskId ?? data?.taskId;
     console.log('=== [iOS-NIM] REVERSE-LOOKUP server 返回 iosTaskId:', iosTaskId ?? 'none', '| electronTaskId:', electronTaskId, '===');
@@ -867,7 +841,7 @@ export async function remapElectronTaskId(oldElectronTaskId: string, newElectron
   electronTaskIdToTaskId.set(newElectronTaskId, iosTaskId);
   taskIdCache.set(iosTaskId, { electronTaskId: newElectronTaskId });
   console.log('=== [iOS-NIM] REMAP 上报新关联关系 → server | iosTaskId:', iosTaskId, '| old electronTaskId:', oldElectronTaskId, '→ new electronTaskId:', newElectronTaskId, '===');
-  await callLobsterApi('/lobster/conversation/electron-task-id/update', {
+  await callHardwareApi('/lobster/conversation/electron-task-id/update', {
     taskId: iosTaskId,
     electronTaskId: newElectronTaskId,
   });
@@ -889,7 +863,11 @@ export interface NimMessage {
  */
 export async function saveConversationMessages(taskId: string, messages: NimMessage[]): Promise<void> {
   console.log('[YdNimClient] saveConversationMessages — taskId:', taskId, 'count:', messages.length);
-  await callLobsterApi('/lobster/conversation/message/save', { taskId, messages });
+  const payload = messages.map(m => ({
+    ...m,
+    attachments: m.attachments ? JSON.stringify(m.attachments) : undefined,
+  }));
+  await callHardwareApi('/lobster/conversation/message/save', { taskId, messages: payload });
   console.log('[YdNimClient] saveConversationMessages ✓');
 }
 

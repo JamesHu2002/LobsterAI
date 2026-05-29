@@ -2306,7 +2306,6 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       options.systemPrompt ?? session.systemPrompt,
       agentId,
     );
-    const runCwd = session.cwd?.trim() ? path.resolve(session.cwd.trim()) : undefined;
     const completionPromise = new Promise<void>((resolve, reject) => {
       this.pendingTurns.set(sessionId, { resolve, reject });
     });
@@ -2375,7 +2374,6 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         message: outboundMessage,
         deliver: false,
         idempotencyKey: runId,
-        ...(runCwd ? { cwd: runCwd } : {}),
         ...(attachments ? { attachments } : {}),
       }, { timeoutMs: 90_000 });
       const chatSendElapsedMs = Date.now() - chatSendStartMs;

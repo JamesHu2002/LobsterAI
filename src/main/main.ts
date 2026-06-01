@@ -1456,10 +1456,26 @@ const bindCoworkRuntimeForwarder = (): void => {
   if (coworkRuntimeForwarderBound) return;
   const runtime = getCoworkEngineRouter();
 
-  // Tracks the current streaming assistant text per iOS session.
-  // Flushed to NIM whenever a tool_use message arrives (same split point as chatbox)
-  // and on 'complete' for the final reply.
-  const pendingIosAssistantText = new Map<string, string>();
+  // Tracks the content of the last assistant text we already sent to NIM, per session.
+  // Deduplicates by content (not message id) because syncFinalAssistant can re-persist the
+  // same assistant text under a new message id after 'complete' fires — causing id-based dedup
+  // to miss the match and send the same text twice. Content-based dedup handles this correctly.
+  // Cleared at complete so the next round always starts fresh.
+  const lastSentIosAssistantContent = new Map<string, string>();
+
+  // Read the latest non-thinking assistant message from the store and send it to NIM,
+  // but only if its content differs from what we last sent (dedup by content).
+  // Called at tool_use (intermediate flush) and complete (final reply).
+  const flushIosAssistantText = (sessionId: string, iosTaskId: string): void => {
+    const lastAssistant = getCoworkStore().getSession(sessionId)?.messages
+      .filter(m => m.type === 'assistant' && !m.metadata?.isThinking)
+      .at(-1);
+    if (!lastAssistant?.content) return;
+    if (lastAssistant.content === lastSentIosAssistantContent.get(sessionId)) return;
+    sendExtYdNimMessage(lastAssistant.content, { action: 'normal', taskId: iosTaskId })
+      .catch(e => console.error('[iOS NIM] reply failed:', (e as Error)?.message));
+    lastSentIosAssistantContent.set(sessionId, lastAssistant.content);
+  };
 
   runtime.on('message', (sessionId: string, message: unknown, beforeMessageId?: string) => {
     const safeMessage = sanitizeCoworkMessageForIpc(message);
@@ -1482,16 +1498,11 @@ const bindCoworkRuntimeForwarder = (): void => {
     const msg = message as { type?: string; content?: string; metadata?: { isThinking?: boolean; toolName?: string; toolInput?: unknown } };
     const iosTaskId = getTaskIdForElectronSession(sessionId);
     if (iosTaskId) {
-      if (msg?.type === 'assistant' && !msg?.metadata?.isThinking && msg?.content) {
-        pendingIosAssistantText.set(sessionId, msg.content);
-      } else if (msg?.type === 'tool_use') {
-        // Same split point as chatbox: flush accumulated assistant text then send the tool call
-        const assistantContent = pendingIosAssistantText.get(sessionId);
-        pendingIosAssistantText.delete(sessionId);
-        if (assistantContent) {
-          sendExtYdNimMessage(assistantContent, { action: 'normal', taskId: iosTaskId })
-            .catch(e => console.error('[iOS NIM] intermediate reply failed:', (e as Error)?.message));
-        }
+      if (msg?.type === 'tool_use') {
+        // Flush any assistant text that preceded this tool call (TEXT+TOOL pattern),
+        // then send the tool-use notification. The store is authoritative here because
+        // the assistant message (including its text) is persisted before tool execution starts.
+        flushIosAssistantText(sessionId, iosTaskId);
         const toolName = String(msg.metadata?.toolName ?? 'unknown');
         const toolInput = msg.metadata?.toolInput;
         let toolDetail = '';
@@ -1526,10 +1537,8 @@ const bindCoworkRuntimeForwarder = (): void => {
         console.error('Failed to forward cowork message update:', error);
       }
     });
-    // messageUpdate carries cumulative content — last one before 'complete' = full text
-    if (getTaskIdForElectronSession(sessionId)) {
-      pendingIosAssistantText.set(sessionId, content);
-    }
+    // messageUpdate carries cumulative streaming content — forwarded to chatbox only.
+    // iOS NIM sending is driven by store reads at tool_use / complete flush points instead.
   });
 
   runtime.on('sessionStatus', (sessionId: string, status: string) => {
@@ -1608,15 +1617,17 @@ const bindCoworkRuntimeForwarder = (): void => {
     console.log('[iOS NIM] complete hook — sessionId:', sessionId, 'iosTaskId:', iosTaskId ?? 'none');
     if (iosTaskId) {
       try {
-        const pendingContent = pendingIosAssistantText.get(sessionId);
-        pendingIosAssistantText.delete(sessionId);
-        const content = pendingContent ??
-          getCoworkStore().getSession(sessionId)?.messages
-            .filter(m => m.type === 'assistant' && !m.metadata?.isThinking)
-            .at(-1)?.content;
+        // Flush the final assistant reply via store read (deduped by message id).
+        // The store is guaranteed current here: syncFinalAssistant persists the assistant
+        // message before 'complete' fires.
+        flushIosAssistantText(sessionId, iosTaskId);
+        lastSentIosAssistantContent.delete(sessionId);
+
+        // Read final content from store for server-side save (authoritative source).
+        const content = getCoworkStore().getSession(sessionId)?.messages
+          .filter(m => m.type === 'assistant' && !m.metadata?.isThinking)
+          .at(-1)?.content;
         if (content) {
-          sendExtYdNimMessage(content, { action: 'normal', taskId: iosTaskId })
-            .catch(e => console.error('[iOS NIM] reply failed:', (e as Error)?.message));
           saveConversationMessages(iosTaskId, [{
             messageId: `assistant-${Date.now()}`,
             role: 'assistant',

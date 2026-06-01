@@ -157,45 +157,67 @@ async function doSendMessage(text: string, ext?: object): Promise<string | undef
   return serverId;
 }
 
-type IosImageAttachmentPayload = {
+type IosAttachment = {
+  type: 'image' | 'file' | 'audio' | 'video';
   url: string;
-  thumbnailURL?: string;
   name?: string;
   mimeType?: string;
+  width?: number;
+  height?: number;
+  size?: number;
 };
 
-function parseIosImageAttachments(ext: any): IosImageAttachmentPayload[] {
-  const raw = ext?.imageAttachments;
-  if (!Array.isArray(raw)) return [];
+function parseIosAttachments(ext: any): { images: IosAttachment[]; files: IosAttachment[] } {
+  const raw = ext?.attachments;
+  if (!Array.isArray(raw)) return { images: [], files: [] };
 
-  return raw.flatMap((item): IosImageAttachmentPayload[] => {
-    if (!item || typeof item !== 'object') return [];
+  const images: IosAttachment[] = [];
+  const files: IosAttachment[] = [];
+
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
     const url = typeof item.url === 'string' ? item.url.trim() : '';
-    if (!url) return [];
-    return [{
-      url,
-      thumbnailURL: typeof item.thumbnailURL === 'string' ? item.thumbnailURL : undefined,
-      name: typeof item.name === 'string' ? item.name : undefined,
-      mimeType: typeof item.mimeType === 'string' ? item.mimeType : undefined,
-    }];
-  });
+    if (!url) continue;
+
+    if (item.type === 'image') {
+      images.push({
+        type: 'image',
+        url,
+        name: typeof item.name === 'string' ? item.name : undefined,
+        mimeType: typeof item.mimeType === 'string' ? item.mimeType : undefined,
+        width: typeof item.width === 'number' ? item.width : undefined,
+        height: typeof item.height === 'number' ? item.height : undefined,
+      });
+    } else if (item.type === 'file') {
+      files.push({
+        type: 'file',
+        url,
+        name: typeof item.name === 'string' ? item.name : undefined,
+        mimeType: typeof item.mimeType === 'string' ? item.mimeType : undefined,
+        size: typeof item.size === 'number' ? item.size : undefined,
+      });
+    }
+    // audio/video types are parsed but not handled yet — silently skip for now
+  }
+
+  return { images, files };
 }
 
-function inferImageMimeType(payload: IosImageAttachmentPayload): string {
-  if (payload.mimeType?.startsWith('image/')) return payload.mimeType;
+function inferImageMimeType(att: IosAttachment): string {
+  if (att.mimeType?.startsWith('image/')) return att.mimeType;
 
-  const source = `${payload.name ?? ''} ${payload.url}`.toLowerCase();
+  const source = `${att.name ?? ''} ${att.url}`.toLowerCase();
   if (source.includes('.png')) return 'image/png';
   if (source.includes('.gif')) return 'image/gif';
   if (source.includes('.webp')) return 'image/webp';
   return 'image/jpeg';
 }
 
-function inferImageName(payload: IosImageAttachmentPayload, index: number): string {
-  if (payload.name?.trim()) return payload.name.trim();
+function inferImageName(att: IosAttachment, index: number): string {
+  if (att.name?.trim()) return att.name.trim();
 
   try {
-    const pathname = new URL(payload.url).pathname;
+    const pathname = new URL(att.url).pathname;
     const lastPathComponent = pathname.split('/').filter(Boolean).at(-1);
     if (lastPathComponent) return decodeURIComponent(lastPathComponent);
   } catch {
@@ -206,28 +228,28 @@ function inferImageName(payload: IosImageAttachmentPayload, index: number): stri
 }
 
 async function downloadIosImageAttachments(
-  payloads: IosImageAttachmentPayload[],
+  attachments: IosAttachment[],
 ): Promise<CoworkImageAttachment[]> {
-  const attachments: CoworkImageAttachment[] = [];
+  const result: CoworkImageAttachment[] = [];
 
-  for (const [index, payload] of payloads.entries()) {
+  for (const [index, att] of attachments.entries()) {
     try {
-      const response = await net.fetch(payload.url);
+      const response = await net.fetch(att.url);
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
       const buffer = Buffer.from(await response.arrayBuffer());
-      attachments.push({
-        name: inferImageName(payload, index),
-        mimeType: inferImageMimeType(payload),
+      result.push({
+        name: inferImageName(att, index),
+        mimeType: inferImageMimeType(att),
         base64Data: buffer.toString('base64'),
       });
     } catch (error) {
-      console.error('[YdNimClient] download iOS image failed:', payload.url, (error as Error)?.message);
+      console.error('[YdNimClient] download iOS image failed:', att.url, (error as Error)?.message);
     }
   }
 
-  return attachments;
+  return result;
 }
 
 // ── iOS cowork integration ─────────────────────────────────────────────────
@@ -316,8 +338,8 @@ async function handleCreateConversation(_msg: any, ext: any): Promise<void> {
 
 async function handleNormalMessage(msg: any, ext: any): Promise<void> {
   const taskId = ext?.taskId;
-  const imagePayloads = parseIosImageAttachments(ext);
-  console.log('=== [iOS-NIM] NORMAL 收到消息 | iosTaskId:', taskId ?? 'none', '| text:', String(msg.text ?? '').slice(0, 50), '| imagePayloads:', imagePayloads.length, '===');
+  const { images: imageAttachments_ios, files: fileAttachments_ios } = parseIosAttachments(ext);
+  console.log('=== [iOS-NIM] NORMAL 收到消息 | iosTaskId:', taskId ?? 'none', '| text:', String(msg.text ?? '').slice(0, 50), '| images:', imageAttachments_ios.length, '| files:', fileAttachments_ios.length, '===');
   broadcastToRenderer('yd-nim:log', { text: `处理普通消息: taskId=${taskId ?? 'none'}`, time: Date.now() });
 
   const sendErrorReply = async (reason: string) => {
@@ -374,14 +396,25 @@ async function handleNormalMessage(msg: any, ext: any): Promise<void> {
       return;
     }
 
-    let imageAttachments: CoworkImageAttachment[] = [];
-    if (imagePayloads.length > 0) {
-      broadcastToRenderer('yd-nim:log', { text: `下载 iOS 图片附件: ${imagePayloads.length} 张`, time: Date.now() });
-      imageAttachments = await downloadIosImageAttachments(imagePayloads);
-      if (imageAttachments.length === 0) {
+    let downloadedImages: CoworkImageAttachment[] = [];
+    if (imageAttachments_ios.length > 0) {
+      broadcastToRenderer('yd-nim:log', { text: `下载 iOS 图片附件: ${imageAttachments_ios.length} 张`, time: Date.now() });
+      downloadedImages = await downloadIosImageAttachments(imageAttachments_ios);
+      if (downloadedImages.length === 0) {
         await sendErrorReply('图片下载失败，请重新发送');
         return;
       }
+    }
+
+    // Build prompt text: user text + file references (files are not downloaded/inlined)
+    let promptText = msg.text ?? '';
+    if (fileAttachments_ios.length > 0) {
+      const fileRefs = fileAttachments_ios.map((f, i) => {
+        const name = f.name || `file-${i + 1}`;
+        const sizeStr = f.size !== undefined ? `${(f.size / 1024).toFixed(1)}KB` : 'unknown size';
+        return `[文件: ${name} (${f.mimeType || 'unknown'}, ${sizeStr})]`;
+      }).join('\n');
+      promptText = promptText ? `${promptText}\n\n${fileRefs}` : fileRefs;
     }
 
     broadcastToRenderer('yd-nim:action', {
@@ -389,7 +422,8 @@ async function handleNormalMessage(msg: any, ext: any): Promise<void> {
       taskId,
       electronTaskId,
       text: msg.text,
-      imageAttachmentCount: imageAttachments.length,
+      imageAttachmentCount: downloadedImages.length,
+      fileAttachmentCount: fileAttachments_ios.length,
     });
 
     // ── Step 2: run agent ──────────────────────────────────────────────────
@@ -397,7 +431,7 @@ async function handleNormalMessage(msg: any, ext: any): Promise<void> {
     // so we can send an error reply before the message is saved.
     if (coworkCallbacks) {
       try {
-        await coworkCallbacks.continueSession(electronTaskId, msg.text ?? '', imageAttachments);
+        await coworkCallbacks.continueSession(electronTaskId, promptText, downloadedImages);
       } catch (agentErr: any) {
         const reason = agentErr?.message ?? String(agentErr);
         console.error('=== [iOS-NIM] NORMAL 错误: continueSession 失败 | electronTaskId:', electronTaskId, '| 原因:', reason, '===');
@@ -407,18 +441,35 @@ async function handleNormalMessage(msg: any, ext: any): Promise<void> {
     }
 
     // ── Step 3: save user message (independent of agent result) ───────────
-    if (taskId && (msg.text || imageAttachments.length > 0)) {
+    const hasContent = !!(msg.text || imageAttachments_ios.length > 0 || fileAttachments_ios.length > 0);
+    if (taskId && hasContent) {
       try {
-        const content = msg.text || (imageAttachments.length > 0 ? '[图片]' : '');
-        const attachments = imagePayloads.length > 0
-          ? imagePayloads.map(p => ({ type: 'image', url: p.url }))
-          : undefined;
+        const content = msg.text
+          || (imageAttachments_ios.length > 0 ? '[图片]' : '')
+          || (fileAttachments_ios.length > 0 ? '[文件]' : '');
+        const allAttachments: NimAttachment[] = [
+          ...imageAttachments_ios.map(a => ({
+            type: 'image' as const,
+            url: a.url,
+            name: a.name,
+            mimeType: a.mimeType,
+            width: a.width,
+            height: a.height,
+          })),
+          ...fileAttachments_ios.map(a => ({
+            type: 'file' as const,
+            url: a.url,
+            name: a.name,
+            mimeType: a.mimeType,
+            size: a.size,
+          })),
+        ];
         await saveConversationMessages(taskId, [{
           messageId: msg.messageClientId ?? `user-${Date.now()}`,
           role: 'user',
           content,
           timestamp: msg.createTime ?? Date.now(),
-          attachments,
+          attachments: allAttachments.length > 0 ? allAttachments : undefined,
         }]);
         broadcastToRenderer('yd-nim:log', { text: `✓ 用户消息已上报: taskId=${taskId}`, time: Date.now() });
       } catch (saveErr: any) {
@@ -526,8 +577,8 @@ async function routeIncomingMessage(msg: any): Promise<void> {
   }
 
   const action = ext?.action;
-  const imagePayloads = parseIosImageAttachments(ext);
-  console.log('[YdNimClient] routeMessage — action:', action ?? '(none)', 'from:', msg.senderId, 'text:', msg.text, 'imagePayloads:', imagePayloads.length);
+  const { images: iosImages, files: iosFiles } = parseIosAttachments(ext);
+  console.log('[YdNimClient] routeMessage — action:', action ?? '(none)', 'from:', msg.senderId, 'text:', msg.text, 'images:', iosImages.length, 'files:', iosFiles.length);
 
   // Broadcast raw received event to renderer (debug UI)
   broadcastToRenderer('yd-nim:message-received', {
@@ -536,7 +587,8 @@ async function routeIncomingMessage(msg: any): Promise<void> {
     serverId: msg.messageServerId,
     time: msg.createTime ?? Date.now(),
     ext,
-    imageAttachmentCount: imagePayloads.length,
+    imageAttachmentCount: iosImages.length,
+    fileAttachmentCount: iosFiles.length,
   });
 
   // Route by action
@@ -848,12 +900,22 @@ export async function remapElectronTaskId(oldElectronTaskId: string, newElectron
   console.log('=== [iOS-NIM] REMAP 上报完成 ✓ | iosTaskId:', iosTaskId, '| electronTaskId:', newElectronTaskId, '===');
 }
 
+export interface NimAttachment {
+  type: 'image' | 'file' | 'audio' | 'video';
+  url: string;
+  name?: string;
+  mimeType?: string;
+  width?: number;
+  height?: number;
+  size?: number;
+}
+
 export interface NimMessage {
   messageId: string;
   role: 'user' | 'assistant';
   content: string;
   timestamp: number;
-  attachments?: Array<{ type: string; url: string }>;
+  attachments?: NimAttachment[];
 }
 
 /**

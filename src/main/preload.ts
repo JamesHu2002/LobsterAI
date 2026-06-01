@@ -786,7 +786,7 @@ contextBridge.exposeInMainWorld('electron', {
   ydNim: {
     sendMessage: (text: string, ext?: object) =>
       ipcRenderer.invoke('yd-nim:send-message', text, ext) as Promise<{ success: boolean; error?: string }>,
-    saveMessages: (taskId: string, messages: Array<{ messageId: string; role: string; content: string; timestamp: number }>) =>
+    saveMessages: (taskId: string, messages: Array<{ messageId: string; role: string; content: string; timestamp: number; attachments?: Array<{ type: string; url: string; name?: string; mimeType?: string; width?: number; height?: number; size?: number }> }>) =>
       ipcRenderer.invoke('yd-nim:save-messages', taskId, messages) as Promise<{ success: boolean; error?: string }>,
     simulateIosMessage: (params: { action?: string; taskId?: string; title?: string; text?: string }) =>
       ipcRenderer.invoke('yd-nim:simulate-ios-message', params) as Promise<{ success: boolean; error?: string }>,

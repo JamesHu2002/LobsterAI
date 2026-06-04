@@ -3,7 +3,6 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nati
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { initYdNimClient, destroyYdNimClient, sendYdNimMessage, sendExtYdNimMessage, setYdNimServerContext, setYdNimCoworkCallbacks, getTaskIdForElectronSession, resolveIosTaskIdForElectronSession, saveConversationMessages, simulateIncomingMessage, getNimEventHistory } from './libs/ydNimClient';
 
 import type { OpenClawSessionPatch } from '../common/openclawSession';
 import { buildSessionTitleFromInput } from '../common/sessionTitle';
@@ -69,6 +68,7 @@ import { generateSessionTitle, getElectronNodeRuntimePath, probeCoworkModelReadi
 import { getServerApiBaseUrl, getSkillStoreUrl, refreshEndpointsTestMode } from './libs/endpoints';
 import { mergeEnterpriseOpenclawConfig, resolveEnterpriseConfigPath, syncEnterpriseConfig } from './libs/enterpriseConfigSync';
 import { createOfficePreviewSession, createPreviewSession, destroyPreviewSession, isPreviewServerUrl, stopHtmlPreviewServer } from './libs/htmlPreviewServer';
+import { bindIosNimCoworkBridge } from './libs/iosNimCoworkBridge';
 import { getKeyfromAttribution, initializeKeyfromAttribution } from './libs/keyfromAttribution';
 import { exportLogsZip } from './libs/logExport';
 import { McpBridgeServer } from './libs/mcpBridgeServer';
@@ -118,6 +118,19 @@ import {
   restoreOriginalProxyEnv,
   setSystemProxyEnabled,
 } from './libs/systemProxy';
+import {
+  destroyYdNimClient,
+  getNimEventHistory,
+  getTaskIdForElectronSession,
+  initYdNimClient,
+  resolveIosTaskIdForElectronSession,
+  saveConversationMessages,
+  sendExtYdNimMessage,
+  sendYdNimMessage,
+  setYdNimCoworkCallbacks,
+  setYdNimServerContext,
+  simulateIncomingMessage,
+} from './libs/ydNimClient';
 import { getLogFilePath, getRecentMainLogEntries, initLogger } from './logger';
 import type { McpServerFormData } from './mcpStore';
 import { McpStore } from './mcpStore';
@@ -1456,26 +1469,13 @@ const bindCoworkRuntimeForwarder = (): void => {
   if (coworkRuntimeForwarderBound) return;
   const runtime = getCoworkEngineRouter();
 
-  // Tracks the content of the last assistant text we already sent to NIM, per session.
-  // Deduplicates by content (not message id) because syncFinalAssistant can re-persist the
-  // same assistant text under a new message id after 'complete' fires — causing id-based dedup
-  // to miss the match and send the same text twice. Content-based dedup handles this correctly.
-  // Cleared at complete so the next round always starts fresh.
-  const lastSentIosAssistantContent = new Map<string, string>();
-
-  // Read the latest non-thinking assistant message from the store and send it to NIM,
-  // but only if its content differs from what we last sent (dedup by content).
-  // Called at tool_use (intermediate flush) and complete (final reply).
-  const flushIosAssistantText = (sessionId: string, iosTaskId: string): void => {
-    const lastAssistant = getCoworkStore().getSession(sessionId)?.messages
-      .filter(m => m.type === 'assistant' && !m.metadata?.isThinking)
-      .at(-1);
-    if (!lastAssistant?.content) return;
-    if (lastAssistant.content === lastSentIosAssistantContent.get(sessionId)) return;
-    sendExtYdNimMessage(lastAssistant.content, { action: 'normal', taskId: iosTaskId })
-      .catch(e => console.error('[iOS NIM] reply failed:', (e as Error)?.message));
-    lastSentIosAssistantContent.set(sessionId, lastAssistant.content);
-  };
+  bindIosNimCoworkBridge({
+    runtime,
+    getCoworkStore,
+    getTaskIdForElectronSession,
+    sendExtMessage: sendExtYdNimMessage,
+    saveConversationMessages,
+  });
 
   runtime.on('message', (sessionId: string, message: unknown, beforeMessageId?: string) => {
     const safeMessage = sanitizeCoworkMessageForIpc(message);
@@ -1495,35 +1495,6 @@ const bindCoworkRuntimeForwarder = (): void => {
         console.error('Failed to forward cowork message:', error);
       }
     });
-    const msg = message as { type?: string; content?: string; metadata?: { isThinking?: boolean; toolName?: string; toolInput?: unknown } };
-    const iosTaskId = getTaskIdForElectronSession(sessionId);
-    if (iosTaskId) {
-      if (msg?.type === 'tool_use') {
-        // Flush any assistant text that preceded this tool call (TEXT+TOOL pattern),
-        // then send the tool-use notification. The store is authoritative here because
-        // the assistant message (including its text) is persisted before tool execution starts.
-        flushIosAssistantText(sessionId, iosTaskId);
-        const toolName = String(msg.metadata?.toolName ?? 'unknown');
-        const toolInput = msg.metadata?.toolInput;
-        let toolDetail = '';
-        if (toolInput && typeof toolInput === 'object') {
-          const inp = toolInput as Record<string, unknown>;
-          const simpleVal = typeof inp.command === 'string' ? inp.command.trim()
-            : typeof inp.file_path === 'string' ? inp.file_path.trim()
-            : typeof inp.path === 'string' ? inp.path.trim()
-            : typeof inp.url === 'string' ? inp.url.trim()
-            : null;
-          if (simpleVal) {
-            toolDetail = ' ' + (simpleVal.length > 120 ? simpleVal.slice(0, 120) + '…' : simpleVal);
-          } else {
-            const json = JSON.stringify(toolInput);
-            toolDetail = ' ' + (json.length > 120 ? json.slice(0, 120) + '…' : json);
-          }
-        }
-        sendExtYdNimMessage(`● ${toolName}${toolDetail}`, { action: 'normal_tool_use', taskId: iosTaskId, toolName })
-          .catch(e => console.error('[iOS NIM] tool_use message failed:', (e as Error)?.message));
-      }
-    }
   });
 
   runtime.on('messageUpdate', (sessionId: string, messageId: string, content: string, metadata?: Record<string, unknown>) => {
@@ -1611,37 +1582,6 @@ const bindCoworkRuntimeForwarder = (): void => {
       }
     } catch {
       // ignore
-    }
-    // iOS hook: send final NIM reply + normal_finish + save assistant message to server
-    const iosTaskId = getTaskIdForElectronSession(sessionId);
-    console.log('[iOS NIM] complete hook — sessionId:', sessionId, 'iosTaskId:', iosTaskId ?? 'none');
-    if (iosTaskId) {
-      try {
-        // Flush the final assistant reply via store read (deduped by message id).
-        // The store is guaranteed current here: syncFinalAssistant persists the assistant
-        // message before 'complete' fires.
-        flushIosAssistantText(sessionId, iosTaskId);
-        lastSentIosAssistantContent.delete(sessionId);
-
-        // Read final content from store for server-side save (authoritative source).
-        const content = getCoworkStore().getSession(sessionId)?.messages
-          .filter(m => m.type === 'assistant' && !m.metadata?.isThinking)
-          .at(-1)?.content;
-        if (content) {
-          saveConversationMessages(iosTaskId, [{
-            messageId: `assistant-${Date.now()}`,
-            role: 'assistant',
-            content,
-            timestamp: Date.now(),
-          }]).catch(e => console.error('[iOS NIM] save assistant failed:', (e as Error)?.message));
-        } else {
-          console.error('[iOS NIM] complete: no assistant content found for sessionId:', sessionId);
-        }
-        sendExtYdNimMessage(' ', { action: 'normal_finish', taskId: iosTaskId })
-          .catch(e => console.error('[iOS NIM] normal_finish failed:', (e as Error)?.message));
-      } catch (e) {
-        console.error('[iOS NIM] complete hook error:', (e as Error)?.message);
-      }
     }
   });
 
@@ -3569,13 +3509,6 @@ if (!gotTheLock) {
       // already see the mapping in the in-memory map.
       if (!getTaskIdForElectronSession(options.sessionId)) {
         await resolveIosTaskIdForElectronSession(options.sessionId).catch(() => {});
-      }
-
-      // If this Electron session has an iOS task mapping, forward the user message to iOS
-      const iosTaskIdForContinue = getTaskIdForElectronSession(options.sessionId);
-      if (iosTaskIdForContinue) {
-        sendExtYdNimMessage(options.prompt, { action: 'normal_right', taskId: iosTaskIdForContinue })
-          .catch(e => console.error('[iOS NIM] forward Electron user msg failed:', (e as Error)?.message));
       }
 
       runtime.continueSession(options.sessionId, options.prompt, {

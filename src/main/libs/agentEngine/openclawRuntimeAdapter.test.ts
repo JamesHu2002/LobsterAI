@@ -5539,6 +5539,95 @@ test('deterministic subagent progress corrects stale announce progress text', ()
   ]);
 });
 
+test('deterministic subagent progress prunes duplicate progress in the current user turn', () => {
+  const progressText = '5/5 \u5b8c\u6210 - snake-game, breakout-game, game2048, tetris-game, memory-game \u2713';
+  const startupText = '5 \u4e2a\u5b50 agent \u5df2\u5168\u90e8\u542f\u52a8\uff0c\u7b49\u5f85\u5b8c\u6210\u4e2d...';
+  const session = {
+    id: 'parent-session',
+    title: 'parallel agents',
+    claudeSessionId: null,
+    status: 'running',
+    pinned: false,
+    cwd: '',
+    systemPrompt: '',
+    executionMode: 'local',
+    activeSkillIds: [],
+    createdAt: 1,
+    updatedAt: 1,
+    messages: [
+      { id: 'msg-old-user', type: 'user', content: 'previous turn', timestamp: 1, metadata: {} },
+      { id: 'msg-old-progress', type: 'assistant', content: progressText, timestamp: 2, metadata: {} },
+      { id: 'msg-current-user', type: 'user', content: 'start 5 subagents', timestamp: 3, metadata: {} },
+      { id: 'msg-startup', type: 'assistant', content: startupText, timestamp: 4, metadata: {} },
+      { id: 'msg-duplicate', type: 'assistant', content: progressText, timestamp: 5, metadata: {} },
+      { id: 'msg-thinking', type: 'assistant', content: 'thinking', timestamp: 6, metadata: { isThinking: true } },
+      { id: 'msg-target', type: 'assistant', content: progressText, timestamp: 7, metadata: {} },
+    ],
+  };
+  const runs = [
+    { id: 'call-snake', parentSessionId: session.id, agentId: 'snake-game', task: null, label: null, sessionKey: null, status: 'done', createdAt: 1, endedAt: 2 },
+    { id: 'call-breakout', parentSessionId: session.id, agentId: 'breakout-game', task: null, label: null, sessionKey: null, status: 'done', createdAt: 1, endedAt: 2 },
+    { id: 'call-2048', parentSessionId: session.id, agentId: 'game2048', task: null, label: null, sessionKey: null, status: 'done', createdAt: 1, endedAt: 2 },
+    { id: 'call-tetris', parentSessionId: session.id, agentId: 'tetris-game', task: null, label: null, sessionKey: null, status: 'done', createdAt: 1, endedAt: 2 },
+    { id: 'call-memory', parentSessionId: session.id, agentId: 'memory-game', task: null, label: null, sessionKey: null, status: 'done', createdAt: 1, endedAt: 2 },
+  ];
+  const store = {
+    getSession: (sessionId: string) => (sessionId === session.id ? session : null),
+    addMessage: vi.fn(),
+    updateMessage: vi.fn((sessionId: string, messageId: string, updates: Record<string, unknown>) => {
+      expect(sessionId).toBe(session.id);
+      const message = session.messages.find((entry) => entry.id === messageId);
+      expect(message).toBeTruthy();
+      Object.assign(message as Record<string, unknown>, updates);
+    }),
+    deleteMessage: vi.fn((sessionId: string, messageId: string) => {
+      expect(sessionId).toBe(session.id);
+      const index = session.messages.findIndex((message) => message.id === messageId);
+      if (index >= 0) {
+        session.messages.splice(index, 1);
+        return true;
+      }
+      return false;
+    }),
+  };
+  const subagentRunStore = {
+    getSubagentRun: (runId: string) => runs.find((run) => run.id === runId) ?? null,
+    listSubagentRuns: (parentSessionId: string) => runs.filter((run) => run.parentSessionId === parentSessionId),
+    updateSubagentRunStatus: vi.fn(),
+    updateSubagentRunSessionKey: vi.fn(),
+    insertSubagentRun: vi.fn(),
+  };
+  const adapter = new OpenClawRuntimeAdapter(
+    store as never,
+    {} as never,
+    {},
+    subagentRunStore as never,
+  );
+
+  adapter.applySubagentProgressForSession(session.id, {
+    createIfMissing: true,
+    preferLatestTextMatch: true,
+  });
+
+  expect(store.updateMessage).toHaveBeenCalledWith(
+    session.id,
+    'msg-target',
+    expect.objectContaining({
+      metadata: expect.objectContaining({ kind: 'subagent_progress' }),
+    }),
+  );
+  expect(store.deleteMessage).toHaveBeenCalledTimes(1);
+  expect(store.deleteMessage).toHaveBeenCalledWith(session.id, 'msg-duplicate');
+  expect(session.messages.map((message) => message.id)).toEqual([
+    'msg-old-user',
+    'msg-old-progress',
+    'msg-current-user',
+    'msg-startup',
+    'msg-thinking',
+    'msg-target',
+  ]);
+});
+
 test('syncSystemMessagesFromHistory skips pure heartbeat ack system messages', () => {
   const { session, store } = createHistoryStore([]);
   const adapter = new OpenClawRuntimeAdapter(store, {});

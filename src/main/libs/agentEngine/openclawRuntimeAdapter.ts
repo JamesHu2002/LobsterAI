@@ -77,6 +77,7 @@ import {
 } from './coworkContinuityCapsule';
 import { buildCoworkTopKEvidenceBridgeResult } from './coworkTopKEvidence';
 import { buildCoworkWorkspaceRehydrationBridge } from './coworkWorkspaceRehydration';
+import type { SubagentProgressSnapshot } from './subagentTracker';
 import { SubagentTracker } from './subagentTracker';
 import type {
   CoworkContextUsage,
@@ -417,6 +418,14 @@ const OpenClawHistoryRole = {
   Tool: 'tool',
   ToolResult: 'toolResult',
 } as const;
+
+const SubagentProgressMessageKind = {
+  Progress: 'subagent_progress',
+} as const;
+
+const isSubagentAnnounceRunId = (runId: string | null | undefined): boolean => (
+  typeof runId === 'string' && /^announce:.*:subagent:/i.test(runId.trim())
+);
 
 type ActiveTurn = {
   sessionId: string;
@@ -856,6 +865,21 @@ type ReconciledConversationEntry = {
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+};
+
+const summarizeHistoryRolesForDiag = (messages: unknown[]): string => {
+  return messages.slice(-20).map((message) => {
+    if (!isRecord(message)) return 'unknown';
+    const role = typeof message.role === 'string' && message.role.trim()
+      ? message.role.trim()
+      : 'unknown';
+    const toolCallId = typeof message.toolCallId === 'string' && message.toolCallId.trim()
+      ? message.toolCallId.trim()
+      : typeof message.tool_call_id === 'string' && message.tool_call_id.trim()
+        ? message.tool_call_id.trim()
+        : '';
+    return toolCallId ? `${role}:${toolCallId.slice(0, 12)}` : role;
+  }).join('>');
 };
 
 export const resolveToolEventIsError = (data: unknown): boolean => {
@@ -2923,11 +2947,182 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     this.engineManager = engineManager;
     this.options = options;
     if (subagentRunStore) {
-      this.subagentTracker = new SubagentTracker(subagentRunStore, subagentMessageStore ?? null, () => this.gatewayClient);
+      this.subagentTracker = new SubagentTracker(
+        subagentRunStore,
+        subagentMessageStore ?? null,
+        () => this.gatewayClient,
+        (snapshot) => this.handleSubagentProgressSnapshot(snapshot),
+      );
     } else {
       // Fallback: create a no-op tracker (should not happen in production)
       this.subagentTracker = new SubagentTracker(null as unknown as SubagentRunStore, null, () => this.gatewayClient);
     }
+  }
+
+  private handleSubagentProgressSnapshot(snapshot: SubagentProgressSnapshot): void {
+    this.upsertSubagentProgressMessage(snapshot, {
+      createIfMissing: snapshot.allTerminal || snapshot.error > 0,
+      preferLatestTextMatch: false,
+    });
+  }
+
+  private applySubagentProgressForSession(
+    sessionId: string,
+    options: { preferLatestTextMatch?: boolean; createIfMissing?: boolean } = {},
+  ): void {
+    const snapshot = this.subagentTracker.getProgressSnapshot(sessionId);
+    if (!snapshot) return;
+    this.upsertSubagentProgressMessage(snapshot, {
+      createIfMissing: options.createIfMissing ?? true,
+      preferLatestTextMatch: options.preferLatestTextMatch ?? false,
+    });
+  }
+
+  private upsertSubagentProgressMessage(
+    snapshot: SubagentProgressSnapshot,
+    options: { preferLatestTextMatch: boolean; createIfMissing: boolean },
+  ): void {
+    if (snapshot.total <= 0) return;
+    const session = this.store.getSession(snapshot.parentSessionId);
+    if (!session) return;
+    const content = this.formatSubagentProgressContent(snapshot);
+    const target = this.findSubagentProgressMessage(
+      snapshot.parentSessionId,
+      options.preferLatestTextMatch,
+    );
+    const metadata: CoworkMessageMetadata = {
+      ...(target?.metadata ?? {}),
+      kind: SubagentProgressMessageKind.Progress,
+      isStreaming: false,
+      isFinal: true,
+      subagentProgress: true,
+      subagentProgressTotal: snapshot.total,
+      subagentProgressDone: snapshot.done,
+      subagentProgressError: snapshot.error,
+      subagentProgressRunning: snapshot.running,
+      subagentProgressUpdatedAt: Date.now(),
+    };
+
+    if (target) {
+      if (target.content === content && target.metadata?.subagentProgressTotal === snapshot.total
+          && target.metadata?.subagentProgressDone === snapshot.done
+          && target.metadata?.subagentProgressError === snapshot.error
+          && target.metadata?.subagentProgressRunning === snapshot.running) {
+        return;
+      }
+      this.store.updateMessage(snapshot.parentSessionId, target.id, { content, metadata });
+      this.emit('messageUpdate', snapshot.parentSessionId, target.id, content, metadata);
+      console.debug(
+        '[OpenClawRuntime] updated deterministic subagent progress message.',
+        `sessionId=${snapshot.parentSessionId}`,
+        `messageId=${target.id}`,
+        `progress=${snapshot.terminal}/${snapshot.total}`,
+        `done=${snapshot.done}`,
+        `error=${snapshot.error}`,
+        `running=${snapshot.running}`,
+      );
+      return;
+    }
+
+    if (!options.createIfMissing) return;
+    const message = this.store.addMessage(snapshot.parentSessionId, {
+      type: 'assistant',
+      content,
+      metadata,
+    });
+    this.emit('message', snapshot.parentSessionId, message);
+    console.debug(
+      '[OpenClawRuntime] added deterministic subagent progress message.',
+      `sessionId=${snapshot.parentSessionId}`,
+      `messageId=${message.id}`,
+      `progress=${snapshot.terminal}/${snapshot.total}`,
+      `done=${snapshot.done}`,
+      `error=${snapshot.error}`,
+      `running=${snapshot.running}`,
+    );
+  }
+
+  private findSubagentProgressMessage(
+    sessionId: string,
+    preferLatestTextMatch: boolean,
+  ): CoworkMessage | null {
+    const session = this.store.getSession(sessionId);
+    if (!session) return null;
+    const messages = [...session.messages].reverse();
+
+    if (preferLatestTextMatch) {
+      return messages.find((message) => this.isSubagentProgressMessage(message, true)) ?? null;
+    }
+
+    return messages.find((message) => this.isSubagentProgressMessage(message, false)) ?? null;
+  }
+
+  private isSubagentProgressMessage(message: CoworkMessage, allowTextMatch: boolean): boolean {
+    if (message.type !== 'assistant') return false;
+    if (message.metadata?.kind === SubagentProgressMessageKind.Progress
+        || message.metadata?.subagentProgress === true) {
+      return true;
+    }
+    if (!allowTextMatch || message.metadata?.isStreaming === true) return false;
+    return this.isSubagentProgressText(message.content);
+  }
+
+  private isSubagentProgressText(content: string): boolean {
+    const text = content.trim();
+    if (!text) return false;
+    return /\d+\s*\/\s*\d+\s*(?:完成|已完成|已结束)/.test(text)
+      || /继续等待.*子\s*agent/.test(text)
+      || /子\s*agent.*(?:完成|结束|出错)/.test(text);
+  }
+
+  private formatSubagentProgressContent(snapshot: SubagentProgressSnapshot): string {
+    const doneLabels = snapshot.runs
+      .filter((run) => run.status === 'done')
+      .map((run) => this.formatSubagentProgressRunLabel(run));
+    const errorLabels = snapshot.runs
+      .filter((run) => run.status === 'error')
+      .map((run) => this.formatSubagentProgressRunLabel(run));
+    const formattedDoneLabels = this.formatSubagentProgressLabels(doneLabels);
+    const formattedErrorLabels = this.formatSubagentProgressLabels(errorLabels);
+
+    if (snapshot.allTerminal && snapshot.error === 0) {
+      return `${snapshot.total}/${snapshot.total} 完成 - ${formattedDoneLabels} ✓`;
+    }
+
+    if (snapshot.allTerminal) {
+      const donePart = snapshot.done > 0 ? `${snapshot.done} 个完成` : '';
+      const errorPart = `${snapshot.error} 个出错`;
+      const summary = [donePart, errorPart].filter(Boolean).join('，');
+      const details = [
+        formattedDoneLabels ? `完成：${formattedDoneLabels}` : '',
+        formattedErrorLabels ? `出错：${formattedErrorLabels}` : '',
+      ].filter(Boolean).join('\n');
+      return `${snapshot.terminal}/${snapshot.total} 已结束（${summary}）${details ? `\n\n${details}` : ''}`;
+    }
+
+    if (snapshot.error === 0) {
+      const doneLine = snapshot.done > 0
+        ? `${snapshot.done}/${snapshot.total} 完成 - ${formattedDoneLabels} ✓`
+        : `0/${snapshot.total} 完成`;
+      return `${doneLine}\n\n继续等待剩余 ${snapshot.running} 个子 agent 完成...`;
+    }
+
+    const summary = `${snapshot.terminal}/${snapshot.total} 已结束（${snapshot.done} 个完成，${snapshot.error} 个出错）`;
+    const details = [
+      formattedDoneLabels ? `完成：${formattedDoneLabels}` : '',
+      formattedErrorLabels ? `出错：${formattedErrorLabels}` : '',
+    ].filter(Boolean).join('\n');
+    return `${summary}${details ? `\n\n${details}` : ''}\n\n继续等待剩余 ${snapshot.running} 个子 agent 完成...`;
+  }
+
+  private formatSubagentProgressRunLabel(run: SubagentProgressSnapshot['runs'][number]): string {
+    const label = run.label?.trim() || run.agentId?.trim() || run.id.trim();
+    return label || run.id.slice(0, 8);
+  }
+
+  private formatSubagentProgressLabels(labels: string[]): string {
+    if (labels.length <= 5) return labels.join('、');
+    return `${labels.slice(0, 5).join('、')} 等 ${labels.length} 个`;
   }
 
   private normalizeModelRef(modelRef: string): string {
@@ -4681,9 +4876,14 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       const hasKnownToolUse = turn.toolUseMessageIdByToolCallId.has(msgToolCallId);
       if (!hasKnownToolUse && !existingResultMsgId) {
         console.debug(
-          '[OpenClawRuntime] skipped a tool result from chat history because it is not part of the current turn.',
+          '[OpenClawRuntime][SubagentAnnounceDiag] skipped a tool result from chat history because it is not part of the current turn.',
           `sessionId=${sessionId}`,
+          `turnRunId=${turn.runId}`,
+          `isTurnAnnounce=${isSubagentAnnounceRunId(turn.runId)}`,
           `toolCallId=${msgToolCallId}`,
+          `knownToolUses=${turn.toolUseMessageIdByToolCallId.size}`,
+          `knownToolResults=${turn.toolResultMessageIdByToolCallId.size}`,
+          `knownRunIds=${Array.from(turn.knownRunIds).join(',')}`,
         );
         continue;
       }
@@ -5243,6 +5443,24 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       }
       console.log('[Debug:handleAgentEvent] no active turn for sessionId:', sessionId);
       return;
+    }
+
+    if (runId && runId !== turn.runId) {
+      console.debug(
+        '[OpenClawRuntime][SubagentAnnounceDiag] agent event will bind to an existing active turn.',
+        `sessionId=${sessionId}`,
+        `stream=${stream || 'unknown'}`,
+        `phase=${lifecyclePhase || 'none'}`,
+        `incomingRunId=${runId}`,
+        `turnRunId=${turn.runId}`,
+        `isIncomingAnnounce=${isSubagentAnnounceRunId(runId)}`,
+        `isTurnAnnounce=${isSubagentAnnounceRunId(turn.runId)}`,
+        `knownRunIds=${Array.from(turn.knownRunIds).join(',')}`,
+        `assistantMessageId=${turn.assistantMessageId ?? 'none'}`,
+        `currentTextLen=${turn.currentText.length}`,
+        `currentSegmentLen=${turn.currentAssistantSegmentText.length}`,
+        `finalCompletionPending=${Boolean(turn.finalCompletionTimer)}`,
+      );
     }
 
     if (sessionKey && !runId && turn.sessionKey !== sessionKey) {
@@ -6273,6 +6491,24 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       return;
     }
 
+    if (runId && runId !== turn.runId) {
+      console.debug(
+        '[OpenClawRuntime][SubagentAnnounceDiag] chat event arrived for an existing active turn with a different runId.',
+        `sessionId=${sessionId}`,
+        `state=${state}`,
+        `incomingRunId=${runId}`,
+        `turnRunId=${turn.runId}`,
+        `isIncomingAnnounce=${isSubagentAnnounceRunId(runId)}`,
+        `isTurnAnnounce=${isSubagentAnnounceRunId(turn.runId)}`,
+        `knownRunIds=${Array.from(turn.knownRunIds).join(',')}`,
+        `assistantMessageId=${turn.assistantMessageId ?? 'none'}`,
+        `currentTextLen=${turn.currentText.length}`,
+        `currentSegmentLen=${turn.currentAssistantSegmentText.length}`,
+        `finalCompletionPending=${Boolean(turn.finalCompletionTimer)}`,
+        `message=${summarizeGatewayMessageShape(chatPayload.message)}`,
+      );
+    }
+
     // Buffer chat events while user messages are being prefetched for channel sessions
     if (turn.pendingUserSync) {
       console.debug('[OpenClawRuntime] handleChatEvent — buffering (pendingUserSync), sessionId:', sessionId);
@@ -6304,7 +6540,16 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       if (runId) {
         this.subagentTracker.tryMarkDoneFromAnnounceRunId(runId);
       }
-      this.handleChatFinal(sessionId, turn, chatPayload);
+      const isSubagentAnnounceFinal = isSubagentAnnounceRunId(runId) || isSubagentAnnounceRunId(turn.runId);
+      const completion = this.handleChatFinal(sessionId, turn, chatPayload);
+      if (isSubagentAnnounceFinal) {
+        void completion.finally(() => {
+          this.applySubagentProgressForSession(sessionId, {
+            createIfMissing: true,
+            preferLatestTextMatch: true,
+          });
+        });
+      }
       return;
     }
 
@@ -6919,14 +7164,34 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     }
 
     if (!finalText.trim()) {
+      const isSubagentAnnounceFinal = isSubagentAnnounceRunId(payload.runId) || isSubagentAnnounceRunId(turn.runId);
+      const emptyFinalHasTurnToolWork = this.hasTurnToolWork(sessionId, turn);
       console.debug(
         '[OpenClawRuntime] handleChatFinal: final payload had no text, falling back to chat.history sync',
         `sessionId=${sessionId}`,
-        `runId=${payload.runId ?? turn.runId}`
+        `runId=${payload.runId ?? turn.runId}`,
+        `turnRunId=${turn.runId}`,
+        `isPayloadAnnounce=${isSubagentAnnounceRunId(payload.runId)}`,
+        `isTurnAnnounce=${isSubagentAnnounceRunId(turn.runId)}`,
+        `knownRunIds=${Array.from(turn.knownRunIds).join(',')}`,
+        `hasTurnToolWorkBeforeHistorySync=${emptyFinalHasTurnToolWork}`,
       );
       await this.syncFinalAssistantWithHistory(sessionId, turn);
       const syncedVisibleText = turn.currentAssistantSegmentText.trim() || turn.currentText.trim();
-      if (this.hasTurnToolWork(sessionId, turn)) {
+      const hasTurnToolWorkAfterHistorySync = this.hasTurnToolWork(sessionId, turn);
+      console.debug(
+        '[OpenClawRuntime][SubagentAnnounceDiag] empty final history fallback result.',
+        `sessionId=${sessionId}`,
+        `runId=${payload.runId ?? turn.runId}`,
+        `turnRunId=${turn.runId}`,
+        `isPayloadAnnounce=${isSubagentAnnounceRunId(payload.runId)}`,
+        `isTurnAnnounce=${isSubagentAnnounceRunId(turn.runId)}`,
+        `syncedVisibleTextLen=${syncedVisibleText.length}`,
+        `hasTurnToolWorkAfterHistorySync=${hasTurnToolWorkAfterHistorySync}`,
+        `lastHistoryHadToolWork=${Boolean(turn.lastHistoryHadToolWork)}`,
+        `lastHistoryToolResultCharCount=${turn.lastHistoryToolResultCharCount ?? 0}`,
+      );
+      if (hasTurnToolWorkAfterHistorySync && !isSubagentAnnounceFinal) {
         const visibleRetryRisk = this.shouldWaitForVisibleFinalContinuation(
           sessionId,
           turn,
@@ -6944,6 +7209,16 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
           pendingVisibleFinalContinuation: Boolean(syncedVisibleText),
         });
         return;
+      }
+      if (hasTurnToolWorkAfterHistorySync && isSubagentAnnounceFinal) {
+        console.debug(
+          '[OpenClawRuntime][SubagentAnnounceDiag] completed empty subagent announce final without deferred maintenance.',
+          `sessionId=${sessionId}`,
+          `runId=${payload.runId ?? turn.runId}`,
+          `turnRunId=${turn.runId}`,
+          `syncedVisibleTextLen=${syncedVisibleText.length}`,
+          `lastHistoryToolResultCharCount=${turn.lastHistoryToolResultCharCount ?? 0}`,
+        );
       }
       if (turn.hasContextMaintenanceTool && !turn.currentAssistantSegmentText.trim()) {
         this.waitForRecoverableOpenClawRetry(sessionId, turn, payload.runId ?? turn.runId, {
@@ -8071,6 +8346,16 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
           continue;
         }
 
+        console.debug(
+          '[OpenClawRuntime][SubagentAnnounceDiag] syncFinalAssistant history window.',
+          `sessionId=${sessionId}`,
+          `turnRunId=${turn.runId}`,
+          `isTurnAnnounce=${isSubagentAnnounceRunId(turn.runId)}`,
+          `messageCount=${history.messages.length}`,
+          `roles=${summarizeHistoryRolesForDiag(history.messages)}`,
+          `knownRunIds=${Array.from(turn.knownRunIds).join(',')}`,
+        );
+
         historyMessages = history.messages;
         const previousHistoryCountKnown = this.gatewayHistoryCountBySession.has(sessionId);
         const previousHistoryCount = this.gatewayHistoryCountBySession.get(sessionId) ?? 0;
@@ -8161,6 +8446,17 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       console.debug('[Debug:syncFinal] canonicalSegmentText length:', canonicalSegmentText.length,
         'committed.length:', turn.committedAssistantText.length,
         'segment:', canonicalSegmentText.slice(0, 80));
+      console.debug(
+        '[OpenClawRuntime][SubagentAnnounceDiag] syncFinalAssistant extracted text.',
+        `sessionId=${sessionId}`,
+        `turnRunId=${turn.runId}`,
+        `isTurnAnnounce=${isSubagentAnnounceRunId(turn.runId)}`,
+        `canonicalTextLen=${canonicalText.length}`,
+        `canonicalSegmentTextLen=${canonicalSegmentText.length}`,
+        `canonicalTextHead=${truncate(canonicalText, 120)}`,
+        `canonicalSegmentHead=${truncate(canonicalSegmentText, 120)}`,
+        `knownRunIds=${Array.from(turn.knownRunIds).join(',')}`,
+      );
       turn.currentText = canonicalText;
       turn.currentAssistantSegmentText = canonicalSegmentText;
 

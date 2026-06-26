@@ -3721,6 +3721,72 @@ test('empty final with local tool messages waits when history only has interim a
   }
 });
 
+test('empty subagent announce final completes without deferred context maintenance', async () => {
+  vi.useFakeTimers();
+  try {
+    const announceRunId = 'announce:v1:agent:main:subagent:child-session:child-run';
+    const { session, store } = createReconcileStore([
+      { id: 'msg-1', type: 'user', content: 'start five subagents', timestamp: 1, metadata: {} },
+      { id: 'msg-2', type: 'tool_use', content: 'Spawn child', timestamp: 2, metadata: { toolUseId: 'call-1' } },
+      { id: 'msg-3', type: 'tool_result', content: 'child spawned', timestamp: 3, metadata: { toolUseId: 'call-1' } },
+    ]);
+    const adapter = new OpenClawRuntimeAdapter(store, {});
+    const sessionKey = `agent:main:lobsterai:${session.id}`;
+    const completeSpy = vi.fn();
+    const maintenanceSpy = vi.fn();
+
+    adapter.gatewayClient = {
+      start: () => {},
+      stop: () => {},
+      request: async (method: string) => {
+        if (method !== 'chat.history') return {};
+        return {
+          messages: [
+            { role: 'user', content: 'start five subagents' },
+            {
+              role: 'assistant',
+              content: [
+                { type: 'toolCall', id: 'call-1', name: 'sessions_yield', arguments: {} },
+              ],
+            },
+            { role: 'toolResult', toolCallId: 'call-1', content: 'child completed' },
+            { role: 'assistant', content: '5 subagents all started, waiting for completion.' },
+          ],
+        };
+      },
+    };
+
+    session.status = 'running';
+    adapter.on('complete', completeSpy);
+    adapter.on('contextMaintenance', maintenanceSpy);
+    adapter.activeTurns.set(session.id, createActiveTurn(session.id, sessionKey, announceRunId));
+    adapter.sessionIdByRunId.set(announceRunId, session.id);
+    adapter.latestTurnTokenBySession.set(session.id, 1);
+    adapter.rememberSessionKey(session.id, sessionKey);
+
+    adapter.handleChatEvent({
+      state: 'final',
+      runId: announceRunId,
+      sessionKey,
+    }, 1);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(maintenanceSpy).not.toHaveBeenCalled();
+    expect(completeSpy).toHaveBeenCalledWith(session.id, announceRunId);
+    expect(session.status).toBe('completed');
+    expect(adapter.activeTurns.has(session.id)).toBe(false);
+    expect(session.messages.some((message) => (
+      message.type === 'assistant'
+      && message.content === '5 subagents all started, waiting for completion.'
+    ))).toBe(true);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test('visible short tool final waits with retry signal and accepts same-run continuation', async () => {
   vi.useFakeTimers();
   try {
@@ -5287,7 +5353,9 @@ test('child lifecycle end marks matching subagent done before local session reso
         run.endedAt = endedAt;
       }
     }),
-    listSubagentRuns: () => [],
+    getSubagentRun: (id: string) => runs.get(id) ?? null,
+    listSubagentRuns: (parentSessionId: string) => Array.from(runs.values())
+      .filter((run) => run.parentSessionId === parentSessionId),
   };
   const adapter = new OpenClawRuntimeAdapter(
     { getSession: () => null } as never,
@@ -5340,7 +5408,9 @@ test('child chat final marks matching subagent done before local session resolut
         run.endedAt = endedAt;
       }
     }),
-    listSubagentRuns: () => [],
+    getSubagentRun: (id: string) => runs.get(id) ?? null,
+    listSubagentRuns: (parentSessionId: string) => Array.from(runs.values())
+      .filter((run) => run.parentSessionId === parentSessionId),
   };
   const adapter = new OpenClawRuntimeAdapter(
     { getSession: () => null } as never,
@@ -5378,6 +5448,95 @@ test('child chat final marks matching subagent done before local session resolut
     expect.any(Number),
   );
   expect(runs.get('call-fibonacci')?.status).toBe('done');
+});
+
+test('deterministic subagent progress corrects stale announce progress text', () => {
+  const session = {
+    id: 'parent-session',
+    title: 'parallel agents',
+    claudeSessionId: null,
+    status: 'running',
+    pinned: false,
+    cwd: '',
+    systemPrompt: '',
+    executionMode: 'local',
+    activeSkillIds: [],
+    createdAt: 1,
+    updatedAt: 1,
+    messages: [
+      { id: 'msg-1', type: 'user', content: 'start 5 subagents', timestamp: 1, metadata: {} },
+      {
+        id: 'msg-2',
+        type: 'assistant',
+        content: '3/5 完成 - 翻牌记忆、2048、俄罗斯方块 ✓\n\n继续等待剩余 2 个子 agent 完成...',
+        timestamp: 2,
+        metadata: { isStreaming: false, isFinal: true },
+      },
+    ],
+  };
+  const runs = [
+    { id: 'call-snake', parentSessionId: session.id, agentId: 'game-snake', task: null, label: null, sessionKey: null, status: 'done', createdAt: 1, endedAt: 2 },
+    { id: 'call-breakout', parentSessionId: session.id, agentId: 'game-breakout', task: null, label: null, sessionKey: null, status: 'done', createdAt: 1, endedAt: 2 },
+    { id: 'call-2048', parentSessionId: session.id, agentId: 'game-2048', task: null, label: null, sessionKey: null, status: 'done', createdAt: 1, endedAt: 2 },
+    { id: 'call-tetris', parentSessionId: session.id, agentId: 'game-tetris', task: null, label: null, sessionKey: null, status: 'done', createdAt: 1, endedAt: 2 },
+    { id: 'call-memory', parentSessionId: session.id, agentId: 'game-memory', task: null, label: null, sessionKey: null, status: 'done', createdAt: 1, endedAt: 2 },
+  ];
+  const store = {
+    getSession: (sessionId: string) => (sessionId === session.id ? session : null),
+    addMessage: vi.fn(),
+    updateMessage: vi.fn((sessionId: string, messageId: string, updates: Record<string, unknown>) => {
+      expect(sessionId).toBe(session.id);
+      const message = session.messages.find((entry) => entry.id === messageId);
+      expect(message).toBeTruthy();
+      Object.assign(message as Record<string, unknown>, updates);
+    }),
+  };
+  const subagentRunStore = {
+    getSubagentRun: (runId: string) => runs.find((run) => run.id === runId) ?? null,
+    listSubagentRuns: (parentSessionId: string) => runs.filter((run) => run.parentSessionId === parentSessionId),
+    updateSubagentRunStatus: vi.fn(),
+    updateSubagentRunSessionKey: vi.fn(),
+    insertSubagentRun: vi.fn(),
+  };
+  const adapter = new OpenClawRuntimeAdapter(
+    store as never,
+    {} as never,
+    {},
+    subagentRunStore as never,
+  );
+  const messageUpdates: Array<{ messageId: string; content: string; metadata?: Record<string, unknown> }> = [];
+  adapter.on('messageUpdate', (_sessionId, messageId, content, metadata) => {
+    messageUpdates.push({ messageId, content, metadata });
+  });
+
+  adapter.applySubagentProgressForSession(session.id, {
+    createIfMissing: true,
+    preferLatestTextMatch: true,
+  });
+
+  expect(store.updateMessage).toHaveBeenCalledWith(
+    session.id,
+    'msg-2',
+    expect.objectContaining({
+      content: '5/5 完成 - game-snake、game-breakout、game-2048、game-tetris、game-memory ✓',
+      metadata: expect.objectContaining({
+        kind: 'subagent_progress',
+        subagentProgressTotal: 5,
+        subagentProgressDone: 5,
+        subagentProgressError: 0,
+        subagentProgressRunning: 0,
+      }),
+    }),
+  );
+  expect(session.messages[1].content).toBe(
+    '5/5 完成 - game-snake、game-breakout、game-2048、game-tetris、game-memory ✓',
+  );
+  expect(messageUpdates).toEqual([
+    expect.objectContaining({
+      messageId: 'msg-2',
+      content: '5/5 完成 - game-snake、game-breakout、game-2048、game-tetris、game-memory ✓',
+    }),
+  ]);
 });
 
 test('syncSystemMessagesFromHistory skips pure heartbeat ack system messages', () => {

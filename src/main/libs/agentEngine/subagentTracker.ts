@@ -62,6 +62,32 @@ export type GatewayClientLike = {
   ) => Promise<T>;
 };
 
+export type SubagentRunStatus = 'running' | 'done' | 'error';
+
+export interface SubagentProgressRun {
+  id: string;
+  agentId: string | null;
+  task: string | null;
+  label: string | null;
+  status: SubagentRunStatus;
+}
+
+export interface SubagentProgressSnapshot {
+  parentSessionId: string;
+  total: number;
+  done: number;
+  error: number;
+  running: number;
+  terminal: number;
+  allTerminal: boolean;
+  updatedRunId?: string;
+  updatedStatus?: SubagentRunStatus;
+  reason?: string;
+  runs: SubagentProgressRun[];
+}
+
+export type SubagentProgressListener = (snapshot: SubagentProgressSnapshot) => void;
+
 interface GatewaySessionDeleteTask {
   sessionKey: string;
   attempt: number;
@@ -87,7 +113,7 @@ export class SubagentTracker {
   /** Maps toolCallId → agentId for correlating spawn start → result */
   private readonly subagentToolCallIdToAgentId = new Map<string, string>();
   /** Maps toolCallId → lifecycle status */
-  private readonly subagentStatus = new Map<string, 'running' | 'done' | 'error'>();
+  private readonly subagentStatus = new Map<string, SubagentRunStatus>();
   /** Reverse map: agentId → Set of toolCallIds (for lookups from sessions_resume args) */
   private readonly agentIdToToolCallIds = new Map<string, Set<string>>();
   /** Run ids explicitly deleted by the user. Suppresses late spawn/backfill re-inserts. */
@@ -108,6 +134,7 @@ export class SubagentTracker {
     private readonly store: SubagentRunStore,
     private readonly messageStore: SubagentMessageStore | null,
     private readonly getGatewayClient: () => GatewayClientLike | null,
+    private readonly onProgress?: SubagentProgressListener,
   ) {}
 
   // ── Event hooks (called by adapter at key points) ──────────────────────
@@ -197,6 +224,7 @@ export class SubagentTracker {
         this.store.updateSubagentRunStatus(tcId, 'done', Date.now());
         // Persist cached messages now that completion is confirmed
         this.tryPersistCachedMessages(tcId);
+        this.emitProgressForRun(tcId, 'done', 'resume-read-result');
       }
     }
   }
@@ -218,6 +246,7 @@ export class SubagentTracker {
           console.log('[SubagentTracker] marked subagent as done via announce:', toolCallId);
           // Persist cached messages now that completion is confirmed
           this.tryPersistCachedMessages(toolCallId);
+          this.emitProgressForRun(toolCallId, 'done', 'announce-run-id');
         }
         return true;
       }
@@ -233,7 +262,7 @@ export class SubagentTracker {
    */
   tryMarkTerminalFromSessionKey(
     sessionKey: string,
-    status: 'done' | 'error',
+    status: SubagentRunStatus,
   ): boolean {
     if (!sessionKey) return false;
     for (const [toolCallId, childSessionKey] of this.subagentSessionKeys) {
@@ -247,6 +276,7 @@ export class SubagentTracker {
         this.store.updateSubagentRunStatus(toolCallId, status, Date.now());
         console.log('[SubagentTracker] marked subagent as terminal via session key:', toolCallId, status);
         this.tryPersistCachedMessages(toolCallId);
+        this.emitProgressForRun(toolCallId, status, 'session-key-terminal');
       }
       return true;
     }
@@ -313,9 +343,11 @@ export class SubagentTracker {
     task: string | null;
     label: string | null;
     sessionKey: string | null;
-    status: 'running' | 'done' | 'error';
+    status: SubagentRunStatus;
     createdAt: number;
+    endedAt: number | null;
   }> {
+    if (!this.store) return [];
     const runs = this.store.listSubagentRuns(parentSessionId);
     return runs.map((run) => {
       const memoryStatus = this.subagentStatus.get(run.id);
@@ -333,6 +365,7 @@ export class SubagentTracker {
           sessionKey: memorySessionKey ?? run.sessionKey,
           status: 'error' as const,
           createdAt: run.createdAt,
+          endedAt: Date.now(),
         };
       }
 
@@ -344,8 +377,46 @@ export class SubagentTracker {
         sessionKey: memorySessionKey ?? run.sessionKey,
         status: memoryStatus ?? run.status,
         createdAt: run.createdAt,
+        endedAt: run.endedAt,
       };
     });
+  }
+
+  getProgressSnapshot(
+    parentSessionId: string,
+    options: {
+      updatedRunId?: string;
+      updatedStatus?: SubagentRunStatus;
+      reason?: string;
+    } = {},
+  ): SubagentProgressSnapshot | null {
+    if (!parentSessionId) return null;
+    const runs = this.listSubagentRuns(parentSessionId).map((run) => ({
+      id: run.id,
+      agentId: run.agentId,
+      task: run.task,
+      label: run.label,
+      status: run.status,
+    }));
+    if (runs.length === 0) return null;
+
+    const done = runs.filter((run) => run.status === 'done').length;
+    const error = runs.filter((run) => run.status === 'error').length;
+    const running = runs.filter((run) => run.status === 'running').length;
+    const terminal = done + error;
+    return {
+      parentSessionId,
+      total: runs.length,
+      done,
+      error,
+      running,
+      terminal,
+      allTerminal: running === 0,
+      updatedRunId: options.updatedRunId,
+      updatedStatus: options.updatedStatus,
+      reason: options.reason,
+      runs,
+    };
   }
 
   /**
@@ -420,6 +491,7 @@ export class SubagentTracker {
     const childSessionKey = typeof parsed?.childSessionKey === 'string' ? parsed.childSessionKey : '';
     const isError = parsed?.status === 'error';
     const status = isError ? 'error' : 'running';
+    const hadSessionKey = this.subagentSessionKeys.has(toolCallId);
 
     // Store session key in memory
     if (childSessionKey) {
@@ -429,7 +501,7 @@ export class SubagentTracker {
     // If already committed (e.g., onSpawnResult fired then backfill also fires), just update
     if (this.subagentStatus.has(toolCallId)) {
       // Update session key in DB if newly discovered
-      if (childSessionKey && !this.subagentSessionKeys.has(toolCallId)) {
+      if (childSessionKey && !hadSessionKey) {
         this.store.updateSubagentRunSessionKey(toolCallId, childSessionKey);
       }
       return;
@@ -448,11 +520,33 @@ export class SubagentTracker {
         label: pending.label,
         status,
         createdAt: pending.createdAt,
+        endedAt: isError ? Date.now() : null,
       });
       this.pendingSpawnInfo.delete(toolCallId);
       console.log('[SubagentTracker] committed spawn result:', toolCallId, status,
         isError ? parsed.error : '');
+      if (status === 'error') {
+        this.emitProgressForRun(toolCallId, status, 'spawn-result-error');
+      }
     }
+  }
+
+  private emitProgressForRun(
+    runId: string,
+    status: SubagentRunStatus,
+    reason: string,
+  ): void {
+    if (!this.onProgress) return;
+    if (!this.store) return;
+    const run = this.store.getSubagentRun(runId);
+    if (!run) return;
+    const snapshot = this.getProgressSnapshot(run.parentSessionId, {
+      updatedRunId: runId,
+      updatedStatus: status,
+      reason,
+    });
+    if (!snapshot) return;
+    this.onProgress(snapshot);
   }
 
   private clearSubagentMemory(runId: string): void {

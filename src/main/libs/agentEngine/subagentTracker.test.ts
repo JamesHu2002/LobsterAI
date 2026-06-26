@@ -226,3 +226,54 @@ test('deleted subagent run is not reinserted by late spawn results', async () =>
   expect(deleted).toBe(true);
   expect(runStore.getSubagentRun('run-1')).toBeNull();
 });
+
+test('successful retry keeps the failed spawn and appends the replacement run', () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(1_000);
+  const tracker = new SubagentTracker(runStore, messageStore, () => null);
+
+  tracker.onToolStart('call-failed-2048', {
+    taskName: '2048-game',
+    task: 'create a 2048 html game',
+  }, 'parent-1');
+  tracker.onSpawnResult('call-failed-2048', JSON.stringify({
+    status: 'error',
+    error: 'Invalid taskName "2048-game".',
+  }), {});
+
+  expect(runStore.getSubagentRun('call-failed-2048')?.status).toBe('error');
+
+  vi.setSystemTime(2_000);
+  tracker.onToolStart('call-retry-2048', {
+    taskName: 'game-2048',
+    task: 'create a 2048 html game',
+  }, 'parent-1');
+  tracker.onSpawnResult('call-retry-2048', JSON.stringify({
+    status: 'accepted',
+    childSessionKey: 'agent:main:subagent:retry-2048',
+  }), {});
+
+  expect(runStore.getSubagentRun('call-failed-2048')?.status).toBe('error');
+  expect(runStore.getSubagentRun('call-retry-2048')?.status).toBe('running');
+  expect(tracker.listSubagentRuns('parent-1').map((run) => run.id)).toEqual([
+    'call-failed-2048',
+    'call-retry-2048',
+  ]);
+});
+
+test('listSubagentRuns returns endedAt for terminal runs', () => {
+  const tracker = new SubagentTracker(runStore, messageStore, () => null);
+  runStore.insertSubagentRun({
+    id: 'run-1',
+    parentSessionId: 'parent-1',
+    sessionKey: 'agent:main:subagent:run-1',
+    agentId: 'worker',
+    task: 'inspect files',
+    label: 'worker',
+    status: 'done',
+    createdAt: 1_000,
+    endedAt: 3_500,
+  });
+
+  expect(tracker.listSubagentRuns('parent-1')[0]?.endedAt).toBe(3_500);
+});

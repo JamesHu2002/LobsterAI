@@ -116,6 +116,7 @@
     "openclaw:precompile": "node scripts/precompile-openclaw-extensions.cjs",
     "openclaw:channel-deps": "node scripts/install-openclaw-channel-deps.cjs",
     "openclaw:prune": "node scripts/prune-openclaw-runtime.cjs",
+    "sandbox-runtime:verify": "node scripts/native-sandbox/verify-package.cjs",
     "openclaw:runtime:host": "node scripts/openclaw-runtime-host.cjs",
     "openclaw:runtime:mac-arm64": "npm run openclaw:ensure && npm run openclaw:patch && node scripts/run-build-openclaw-runtime.cjs mac-arm64 && node scripts/sync-openclaw-runtime-current.cjs mac-arm64 && npm run openclaw:bundle && npm run openclaw:plugins && npm run openclaw:extensions:local && npm run openclaw:precompile && npm run openclaw:channel-deps && npm run openclaw:prune",
     "openclaw:runtime:mac-x64": "npm run openclaw:ensure && npm run openclaw:patch && node scripts/run-build-openclaw-runtime.cjs mac-x64 && node scripts/sync-openclaw-runtime-current.cjs mac-x64 && npm run openclaw:bundle && npm run openclaw:plugins && npm run openclaw:extensions:local && npm run openclaw:precompile && npm run openclaw:channel-deps && npm run openclaw:prune",
@@ -127,6 +128,7 @@
     "fix:mac-icon": "bash scripts/fix-mac-icon-display.sh"
   },
   "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "0.0.65",
     "@codemirror/lang-cpp": "^6.0.3",
     "@codemirror/lang-css": "^6.3.1",
     "@codemirror/lang-go": "^6.0.1",

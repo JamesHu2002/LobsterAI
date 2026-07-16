@@ -8,6 +8,10 @@ const { ensurePortablePythonRuntime, checkRuntimeHealth } = require('./setup-pyt
 const { syncLocalOpenClawExtensions } = require('./sync-local-openclaw-extensions.cjs');
 const { packMultipleSources } = require('./pack-openclaw-tar.cjs');
 const { DIST_DIFFS_EXTENSION_DIR, DIST_EXTENSIONS_DIR, summarizeGatewayAsarEntries } = require('./openclaw-runtime-packaging.cjs');
+const {
+  verifyPackagedSandboxRuntime,
+  verifySandboxRuntimeBuildInputs,
+} = require('./native-sandbox/verify-package.cjs');
 
 function isWindowsTarget(context) {
   return context?.electronPlatformName === 'win32';
@@ -161,7 +165,12 @@ function precompileLocalExtensions(runtimeRoot, buildHint) {
 }
 
 function ensureBundledLocalExtensions(runtimeRoot, buildHint) {
-  const requiredLocalExtensions = ['mcp-bridge', 'ask-user-question', 'lobster-media-generation'];
+  const requiredLocalExtensions = [
+    'mcp-bridge',
+    'ask-user-question',
+    'lobster-media-generation',
+    'lobster-srt-sandbox',
+  ];
   const missingCompiledExtensions = requiredLocalExtensions.filter(
     (extensionId) => !hasCompiledLocalExtension(runtimeRoot, extensionId),
   );
@@ -265,7 +274,7 @@ function ensureBundledOpenClawRuntime(context) {
       );
     }
 
-    return;
+    return runtimeRoot;
   }
 
   const legacyRequiredPaths = [
@@ -291,6 +300,8 @@ function ensureBundledOpenClawRuntime(context) {
       + `. Run \`${buildHint}\` before packaging.`,
     );
   }
+
+  return runtimeRoot;
 }
 
 function findPackagedBash(appOutDir) {
@@ -523,11 +534,18 @@ function installSkillDependencies() {
 }
 
 async function beforePack(context) {
-  ensureBundledOpenClawRuntime(context);
+  const openClawRuntimeRoot = ensureBundledOpenClawRuntime(context);
   // Install skill dependencies first (for all platforms)
   installSkillDependencies();
 
   if (isWindowsTarget(context)) {
+    verifySandboxRuntimeBuildInputs({
+      rootDir: path.join(__dirname, '..'),
+      runtimeRoot: openClawRuntimeRoot,
+      targetArch: resolveTargetArch(context),
+    });
+    console.log('[electron-builder-hooks] Verified Windows x64 Sandbox Runtime packaging inputs.');
+
     // Pack all large resource directories into a single tar for faster NSIS
     // installation.  NSIS extracts thousands of small files very slowly on NTFS;
     // a single tar archive is extracted by 7z almost instantly, and we unpack
@@ -598,6 +616,11 @@ async function afterPack(context) {
     } else {
       console.warn(`[electron-builder-hooks] App not found at ${appPath}, skipping icon fix`);
     }
+  }
+
+  if (isWindowsTarget(context)) {
+    verifyPackagedSandboxRuntime(context.appOutDir);
+    console.log('[electron-builder-hooks] Verified packaged Windows x64 Sandbox Runtime helper and license.');
   }
 
   // Windows binaries need no extra handling here: with win.sign configured,

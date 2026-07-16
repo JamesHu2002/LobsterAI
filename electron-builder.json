@@ -169,6 +169,14 @@
       {
         "from": "scripts/unpack-cfmind.cjs",
         "to": "unpack-cfmind.cjs"
+      },
+      {
+        "from": "node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe",
+        "to": "sandbox-runtime/srt-win.exe"
+      },
+      {
+        "from": "node_modules/@anthropic-ai/sandbox-runtime/LICENSE",
+        "to": "sandbox-runtime/LICENSE.txt"
       }
     ]
   },

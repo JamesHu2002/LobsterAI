@@ -123,6 +123,7 @@ const initialState: CoworkState = {
     workingDirectory: '',
     systemPrompt: '',
     executionMode: 'local',
+    nativeSandboxEnabled: false,
     agentEngine: 'openclaw',
     memoryEnabled: true,
     memoryImplicitUpdateEnabled: true,

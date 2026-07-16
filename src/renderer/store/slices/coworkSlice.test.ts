@@ -51,6 +51,7 @@ test('setConfig preserves loaded OpenClaw session policy', () => {
     workingDirectory: '/tmp',
     systemPrompt: '',
     executionMode: 'local',
+    nativeSandboxEnabled: false,
     agentEngine: 'openclaw',
     memoryEnabled: true,
     memoryImplicitUpdateEnabled: true,

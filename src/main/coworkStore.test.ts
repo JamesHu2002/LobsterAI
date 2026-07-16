@@ -80,7 +80,8 @@ function setupDb(): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS cowork_config (
       key TEXT PRIMARY KEY,
-      value TEXT
+      value TEXT,
+      updated_at INTEGER
     );
   `);
 
@@ -972,6 +973,14 @@ test('getConfig defaults OpenClaw heartbeat to enabled when config is missing', 
   const config = store.getConfig();
 
   expect(config.openClawHeartbeatEnabled).toBe(true);
+});
+
+test('getConfig defaults native sandbox to disabled and persists explicit updates', () => {
+  expect(store.getConfig().nativeSandboxEnabled).toBe(false);
+
+  store.setConfig({ nativeSandboxEnabled: true });
+
+  expect(store.getConfig().nativeSandboxEnabled).toBe(true);
 });
 
 test('backfillEmptyAgentModels assigns the current default model to empty agents only', () => {

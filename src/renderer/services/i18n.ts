@@ -1,3 +1,4 @@
+import { nativeSandboxTranslations } from '../components/settings/nativeSandbox/translations';
 import { configService } from './config';
 
 // 支持的语言类型
@@ -41,6 +42,7 @@ const translations: Record<LanguageType, Record<string, string>> = {
     aboutExportLogsSuccess: '日志导出成功',
     aboutExportLogsPartial: '日志导出成功（缺失日志已按空文件补齐）',
     testMode: '测试模式',
+    ...nativeSandboxTranslations.zh,
     theme: '主题',
     appearance: '外观',
     language: '语言',
@@ -2833,6 +2835,7 @@ const translations: Record<LanguageType, Record<string, string>> = {
     aboutExportLogsSuccess: 'Logs exported successfully',
     aboutExportLogsPartial: 'Logs exported (missing logs were filled as empty files)',
     testMode: 'Test Mode',
+    ...nativeSandboxTranslations.en,
     theme: 'Theme',
     appearance: 'Appearance',
     language: 'Language',

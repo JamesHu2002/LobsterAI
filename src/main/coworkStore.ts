@@ -582,6 +582,7 @@ export interface CoworkConfig {
   workingDirectory: string;
   systemPrompt: string;
   executionMode: CoworkExecutionMode;
+  nativeSandboxEnabled: boolean;
   agentEngine: CoworkAgentEngine;
   memoryEnabled: boolean;
   memoryImplicitUpdateEnabled: boolean;
@@ -607,6 +608,7 @@ export type CoworkConfigUpdate = Partial<Pick<
 CoworkConfig,
   | 'workingDirectory'
   | 'executionMode'
+  | 'nativeSandboxEnabled'
   | 'agentEngine'
   | 'memoryEnabled'
   | 'memoryImplicitUpdateEnabled'
@@ -2088,6 +2090,7 @@ export class CoworkStore {
     const configKeys = [
       'workingDirectory',
       'executionMode',
+      'nativeSandboxEnabled',
       'agentEngine',
       'memoryEnabled',
       'memoryImplicitUpdateEnabled',
@@ -2118,6 +2121,7 @@ export class CoworkStore {
       workingDirectory: cfg.get('workingDirectory') || getDefaultWorkingDirectory(),
       systemPrompt: getDefaultSystemPrompt(),
       executionMode: 'local' as CoworkExecutionMode,
+      nativeSandboxEnabled: parseBooleanConfig(cfg.get('nativeSandboxEnabled'), false),
       agentEngine: 'openclaw' as CoworkAgentEngine,
       memoryEnabled: parseBooleanConfig(cfg.get('memoryEnabled'), DEFAULT_MEMORY_ENABLED),
       memoryImplicitUpdateEnabled: parseBooleanConfig(
@@ -2156,6 +2160,9 @@ export class CoworkStore {
     }
     if (config.executionMode !== undefined) {
       this.upsertConfig('executionMode', config.executionMode, now);
+    }
+    if (config.nativeSandboxEnabled !== undefined) {
+      this.upsertConfig('nativeSandboxEnabled', config.nativeSandboxEnabled ? '1' : '0', now);
     }
     if (config.agentEngine !== undefined) {
       this.upsertConfig('agentEngine', 'openclaw', now);

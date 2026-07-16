@@ -1,4 +1,4 @@
-import { ArchiveBoxIcon, ArrowPathIcon, ArrowPathRoundedSquareIcon, ChatBubbleLeftIcon, CheckCircleIcon, CpuChipIcon, CubeIcon, EnvelopeIcon, ExclamationTriangleIcon, GlobeAltIcon, InformationCircleIcon, MagnifyingGlassIcon, SignalIcon, SunIcon, TrashIcon, WrenchScrewdriverIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { ArchiveBoxIcon, ArrowPathIcon, ArrowPathRoundedSquareIcon, ChatBubbleLeftIcon, CheckCircleIcon, CpuChipIcon, CubeIcon, EnvelopeIcon, ExclamationTriangleIcon, GlobeAltIcon, InformationCircleIcon, MagnifyingGlassIcon, ShieldCheckIcon, SignalIcon, SunIcon, TrashIcon, WrenchScrewdriverIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import React, { useCallback,useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 
@@ -77,10 +77,11 @@ import {
   shouldUseOpenAIResponsesForProvider,
 } from './settings/modelProviderUtils';
 import ModelSettingsSection, { DeleteProviderConfirmDialog, ModelEditorDialog } from './settings/ModelSettingsSection';
+import SandboxSettingsSection from './settings/nativeSandbox';
 import EmailSkillConfig from './skills/EmailSkillConfig';
 import ThemedSelect from './ui/ThemedSelect';
 
-type TabType = 'general' | 'appearance' | 'coworkAgentEngine' | 'model' | 'browserWebAccess' | 'coworkMemory' | 'coworkDreaming' | 'shortcuts' | 'im' | 'email' | 'plugins' | 'about';
+type TabType = 'general' | 'appearance' | 'coworkAgentEngine' | 'sandbox' | 'model' | 'browserWebAccess' | 'coworkMemory' | 'coworkDreaming' | 'shortcuts' | 'im' | 'email' | 'plugins' | 'about';
 
 const waitForNextPaint = (): Promise<void> => new Promise(resolve => {
   window.requestAnimationFrame(() => {
@@ -4370,6 +4371,7 @@ const Settings: React.FC<SettingsProps> = ({
       { key: 'general' as TabType,        label: i18nService.t('general'),        icon: <SettingsSlidersIcon className="h-5 w-5" /> },
       { key: 'appearance' as TabType,     label: i18nService.t('appearance'),     icon: <SunIcon className="h-5 w-5" /> },
       { key: 'coworkAgentEngine' as TabType, label: i18nService.t('coworkAgentEngine'), icon: <CpuChipIcon className="h-5 w-5" /> },
+      { key: 'sandbox' as TabType,        label: i18nService.t('sandboxTab'),     icon: <ShieldCheckIcon className="h-5 w-5" /> },
       { key: 'model' as TabType,          label: i18nService.t('settingsCustomModel'), icon: <CubeIcon className="h-5 w-5" /> },
       { key: 'im' as TabType,             label: i18nService.t('imBot'),          icon: <ChatBubbleLeftIcon className="h-5 w-5" /> },
       { key: 'browserWebAccess' as TabType, label: i18nService.t('browserWebAccessTab'), icon: <GlobeAltIcon className="h-5 w-5" /> },
@@ -5416,6 +5418,9 @@ const Settings: React.FC<SettingsProps> = ({
           />
         );
 
+      case 'sandbox':
+        return <SandboxSettingsSection />;
+
       case 'model':
         return (
           <ModelSettingsSection
@@ -5819,20 +5824,32 @@ const Settings: React.FC<SettingsProps> = ({
                 }`}
               />
               <div className="flex justify-end space-x-4 px-6 pb-5 pt-3 bg-background">
-                <button
-                  type="button"
-                  onClick={guardedClose}
-                  className="px-4 py-2 rounded-xl transition-colors text-sm font-medium border border-border text-foreground hover:bg-surface-raised active:scale-[0.98]"
-                >
-                  {i18nService.t('cancel')}
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSaving}
-                  className="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-xl transition-colors text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.98]"
-                >
-                  {isSaving ? i18nService.t('saving') : i18nService.t('save')}
-                </button>
+                {activeTab === 'sandbox' ? (
+                  <button
+                    type="button"
+                    onClick={guardedClose}
+                    className="px-4 py-2 rounded-xl transition-colors text-sm font-medium border border-border text-foreground hover:bg-surface-raised active:scale-[0.98]"
+                  >
+                    {i18nService.t('close')}
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={guardedClose}
+                      className="px-4 py-2 rounded-xl transition-colors text-sm font-medium border border-border text-foreground hover:bg-surface-raised active:scale-[0.98]"
+                    >
+                      {i18nService.t('cancel')}
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isSaving}
+                      className="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-xl transition-colors text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.98]"
+                    >
+                      {isSaving ? i18nService.t('saving') : i18nService.t('save')}
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           </form>

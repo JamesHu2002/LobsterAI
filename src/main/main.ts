@@ -342,6 +342,7 @@ import {
   MediaGenerationRequestType,
   summarizeMediaGenerationParamsForLog,
 } from './mediaGenerationReferences';
+import { registerNativeSandboxModule } from './nativeSandbox';
 import { OpenClawSessionIpc } from './openclawSession/constants';
 import { OpenClawSessionPolicyIpc } from './openclawSessionPolicy/constants';
 import {
@@ -3686,6 +3687,8 @@ if (!gotTheLock) {
   ipcMain.handle('store:remove', (_event, key) => {
     getStore().delete(key);
   });
+
+  registerNativeSandboxModule();
 
   ipcMain.handle('enterprise:getConfig', async () => {
     try {
@@ -7849,6 +7852,7 @@ if (!gotTheLock) {
   ipcMain.handle('cowork:config:set', async (_event, config: {
     workingDirectory?: string;
     executionMode?: 'auto' | 'local' | 'sandbox';
+    nativeSandboxEnabled?: boolean;
     agentEngine?: CoworkAgentEngine;
     memoryEnabled?: boolean;
     memoryImplicitUpdateEnabled?: boolean;
@@ -7872,6 +7876,9 @@ if (!gotTheLock) {
           : config.executionMode;
       const normalizedAgentEngine = config.agentEngine === 'openclaw'
         ? 'openclaw'
+        : undefined;
+      const normalizedNativeSandboxEnabled = typeof config.nativeSandboxEnabled === 'boolean'
+        ? config.nativeSandboxEnabled
         : undefined;
       const normalizedMemoryEnabled = typeof config.memoryEnabled === 'boolean'
         ? config.memoryEnabled
@@ -7904,6 +7911,7 @@ if (!gotTheLock) {
       const normalizedConfig: Parameters<CoworkStore['setConfig']>[0] = {
         ...config,
         executionMode: normalizedExecutionMode,
+        nativeSandboxEnabled: normalizedNativeSandboxEnabled,
         agentEngine: normalizedAgentEngine,
         memoryEnabled: normalizedMemoryEnabled,
         memoryImplicitUpdateEnabled: normalizedMemoryImplicitUpdateEnabled,

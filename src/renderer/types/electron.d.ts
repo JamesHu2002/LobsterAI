@@ -36,6 +36,7 @@ import type {
   ListLocalWebServicesOptions,
   LocalWebService,
 } from '../../shared/localWebServices/constants';
+import type { NativeSandboxBridge } from '../../shared/nativeSandbox/api';
 import type {
   OpenClawEngineErrorCode,
   OpenClawEnginePhase as SharedOpenClawEnginePhase,
@@ -148,6 +149,7 @@ interface CoworkConfig {
   workingDirectory: string;
   systemPrompt: string;
   executionMode: 'auto' | 'local' | 'sandbox';
+  nativeSandboxEnabled: boolean;
   agentEngine: 'openclaw';
   memoryEnabled: boolean;
   memoryImplicitUpdateEnabled: boolean;
@@ -171,6 +173,7 @@ type CoworkConfigUpdate = Partial<
     CoworkConfig,
     | 'workingDirectory'
     | 'executionMode'
+    | 'nativeSandboxEnabled'
     | 'agentEngine'
     | 'memoryEnabled'
     | 'memoryImplicitUpdateEnabled'
@@ -486,6 +489,7 @@ interface IElectronAPI {
     set: (key: string, value: any) => Promise<void>;
     remove: (key: string) => Promise<void>;
   };
+  nativeSandbox: NativeSandboxBridge;
   skills: {
     list: () => Promise<{ success: boolean; skills?: Skill[]; error?: string }>;
     setEnabled: (options: {

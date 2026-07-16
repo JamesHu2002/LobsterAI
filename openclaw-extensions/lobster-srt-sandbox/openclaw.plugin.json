@@ -1,0 +1,10 @@
+{
+  "id": "lobster-srt-sandbox",
+  "name": "Lobster SRT Sandbox",
+  "description": "Reserved OpenClaw integration point for the LobsterAI native sandbox.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

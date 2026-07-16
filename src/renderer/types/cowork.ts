@@ -174,6 +174,7 @@ export interface CoworkConfig {
   workingDirectory: string;
   systemPrompt: string;
   executionMode: CoworkExecutionMode;
+  nativeSandboxEnabled: boolean;
   agentEngine: CoworkAgentEngine;
   memoryEnabled: boolean;
   memoryImplicitUpdateEnabled: boolean;
@@ -212,6 +213,7 @@ export type CoworkConfigUpdate = Partial<Pick<
   CoworkConfig,
   | 'workingDirectory'
   | 'executionMode'
+  | 'nativeSandboxEnabled'
   | 'agentEngine'
   | 'memoryEnabled'
   | 'memoryImplicitUpdateEnabled'

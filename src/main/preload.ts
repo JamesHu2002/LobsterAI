@@ -34,6 +34,8 @@ import {
   LocalWebServicesIpc,
 } from '../shared/localWebServices/constants';
 import { McpIpcChannel } from '../shared/mcp/constants';
+import type { NativeSandboxBridge } from '../shared/nativeSandbox/api';
+import { NativeSandboxIpcChannel } from '../shared/nativeSandbox/constants';
 import { OpenClawEngineIpc } from '../shared/openclawEngine/constants';
 import { PermissionIpcChannel } from '../shared/permissions/constants';
 import type { Platform } from '../shared/platform';
@@ -49,6 +51,12 @@ import { NimQrLoginIpc } from './ipcHandlers/nimQrLogin';
 import { OpenClawSessionIpc } from './openclawSession/constants';
 import { OpenClawSessionPolicyIpc } from './openclawSessionPolicy/constants';
 
+const nativeSandboxBridge: NativeSandboxBridge = {
+  getStatus: () => ipcRenderer.invoke(NativeSandboxIpcChannel.GetStatus),
+  install: () => ipcRenderer.invoke(NativeSandboxIpcChannel.Install),
+  repair: () => ipcRenderer.invoke(NativeSandboxIpcChannel.Repair),
+};
+
 // 暴露安全的 API 到渲染进程
 contextBridge.exposeInMainWorld('electron', {
   platform: process.platform,
@@ -58,6 +66,7 @@ contextBridge.exposeInMainWorld('electron', {
     set: (key: string, value: any) => ipcRenderer.invoke('store:set', key, value),
     remove: (key: string) => ipcRenderer.invoke('store:remove', key),
   },
+  nativeSandbox: nativeSandboxBridge,
   skills: {
     list: () => ipcRenderer.invoke('skills:list'),
     setEnabled: (options: { id: string; enabled: boolean }) =>
@@ -464,6 +473,7 @@ contextBridge.exposeInMainWorld('electron', {
     setConfig: (config: {
       workingDirectory?: string;
       executionMode?: 'auto' | 'local' | 'sandbox';
+      nativeSandboxEnabled?: boolean;
       agentEngine?: 'openclaw';
       memoryEnabled?: boolean;
       memoryImplicitUpdateEnabled?: boolean;

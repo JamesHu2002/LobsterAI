@@ -1,18 +1,18 @@
-import type { OpenClawPluginApi } from 'openclaw/plugin-sdk';
+import { definePluginEntry } from 'openclaw/plugin-sdk/plugin-entry';
 
-/**
- * M1 only reserves a packaged OpenClaw extension entry point. It deliberately
- * registers no sandbox backend or tools, so merely shipping the extension
- * cannot change command or file execution. A later milestone will register
- * the backend only when LobsterAI writes an explicit opt-in configuration.
- */
-const plugin = {
+import { registerLobsterSrtSandboxBackend } from './src/backend/index.js';
+
+export default definePluginEntry({
   id: 'lobster-srt-sandbox',
   name: 'Lobster SRT Sandbox',
-  description: 'Reserved OpenClaw integration point for the LobsterAI native sandbox.',
-  register(_api: OpenClawPluginApi) {
-    // Intentionally inert during M1.
-  },
-};
+  description: 'Windows native sandbox backend for LobsterAI task workspaces.',
+  register(api) {
+    // Discovery/setup loads must not mutate the process-global backend registry.
+    if (api.registrationMode !== 'full') {
+      return;
+    }
 
-export default plugin;
+    registerLobsterSrtSandboxBackend();
+    api.logger.info('[lobster-srt-sandbox] registered lobster-srt sandbox backend.');
+  },
+});

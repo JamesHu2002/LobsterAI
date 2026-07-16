@@ -1,7 +1,7 @@
 # Windows 原生沙箱分阶段实施计划
 
 - 日期：2026-07-16
-- 状态：M1 与 M1.4 已实现，待 Windows 人工安装/安装包签名验收
+- 状态：M1、M1.4 与 M2 已实现；M1 仍待 Windows 人工安装/安装包签名验收，M2 的真实 backend 保持硬关闭
 - 首期平台：Windows
 - 运行时基线：`@anthropic-ai/sandbox-runtime` `0.0.65`（精确锁定）
 - 核心取舍：支持多任务 workspace 并发，接受 Windows 沙箱账号对这些 workspace 的权限并集
@@ -563,6 +563,12 @@ M4 的审计职责按事件产生与持久化边界拆分：
 ### M2：OpenClaw 安全边界
 
 里程碑结果：OpenClaw 能明确区分 Agent workspace 与 task workspace，文件工具具有 Windows 原生路径边界；实际 SRT backend 仍可保持关闭，通过 mock 和实机回归先证明边界逻辑。
+
+实施记录（2026-07-16）：M2 双 workspace 语义、固定版本 OpenClaw 补丁、Windows 路径策略、自定义 `SandboxFsBridge`、扩展 backend 骨架和自动化测试已完成。`lobster-srt` 会在完整插件加载阶段注册，但 production factory 在构建 sandbox context 时直接返回结构化 `backend-unavailable`，因此即使手工误配也不会暴露 M2 的 Node 文件桥或回退到宿主执行；设置页启用开关继续保持不可用。
+
+固定版本补丁为 `zzz-openclaw-sandbox-task-workspace.patch`。它同时覆盖普通 turn 与 compaction，将 task cwd 传入 sandbox context、backend factory 和文件桥，保留 Agent workspace 的 Bootstrap、Memory 与身份语义；host-native backend 通过通用 capability 显示真实 Windows task 路径，现有 Docker/SSH backend 继续使用各自的路径语义。补丁应用脚本包含强校验，固定版本漂移或关键语义缺失会显式失败。
+
+M2 文件桥是可替换 I/O adapter 上的策略与兼容实现，不是最终 Windows 强制边界。当前 Node adapter 能拒绝已观察到的 symlink、junction、hardlink、越界路径和常见身份竞态，但不能以 handle-relative I/O 保证阻止同权限进程在检查后替换目录，也不能可靠识别映射为盘符的 SMB volume 或全部 Windows reparse tag。M3 解除 production gate 前必须补齐原生 volume/reparse 检测与句柄级 I/O，并增加经过 OpenClaw 实际 `read`、`write`、`edit`、`apply_patch` 工具栈的 A/B session 集成测试；在这些门槛满足前不得把 Node adapter 作为可启用的安全边界。
 
 #### M2.1：OpenClaw task cwd 兼容补丁
 

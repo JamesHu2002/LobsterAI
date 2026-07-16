@@ -1,0 +1,1259 @@
+diff --git a/src/agents/agent-tools.create-openclaw-coding-tools.test.ts b/src/agents/agent-tools.create-openclaw-coding-tools.test.ts
+index 74004770edd4c43497ad46d75d21c7f18b1834f2..4c320c9be5aec66f9062b86b6e613083ccbef51c 100644
+--- a/src/agents/agent-tools.create-openclaw-coding-tools.test.ts
++++ b/src/agents/agent-tools.create-openclaw-coding-tools.test.ts
+@@ -1373,6 +1373,50 @@ describe("createOpenClawCodingTools", () => {
+     }
+   });
+
++  it("keeps sandbox memory flush writes in the persistent agent workspace", async () => {
++    const agentWorkspaceDir = await fs.mkdtemp(
++      path.join(os.tmpdir(), "openclaw-memory-agent-workspace-"),
++    );
++    const taskWorkspaceDir = await fs.mkdtemp(
++      path.join(os.tmpdir(), "openclaw-memory-task-workspace-"),
++    );
++    const memoryRelativePath = "memory/2026-07-16.md";
++    const agentMemoryFile = path.join(agentWorkspaceDir, memoryRelativePath);
++    const taskMemoryFile = path.join(taskWorkspaceDir, memoryRelativePath);
++
++    try {
++      await fs.mkdir(path.dirname(agentMemoryFile), { recursive: true });
++      await fs.writeFile(agentMemoryFile, "seed", "utf8");
++      const sandbox = createAgentToolsSandboxContext({
++        workspaceDir: taskWorkspaceDir,
++        taskWorkspaceDir,
++        agentWorkspaceDir,
++        workspaceAccess: "rw",
++        fsBridge: createHostSandboxFsBridge(taskWorkspaceDir),
++      });
++      const tools = createOpenClawCodingTools({
++        workspaceDir: agentWorkspaceDir,
++        cwd: taskWorkspaceDir,
++        sandbox,
++        trigger: "memory",
++        memoryFlushWritePath: memoryRelativePath,
++        memoryFlushWorkspaceDir: agentWorkspaceDir,
++      });
++      const writeExecute = requireToolExecute(requireTool(tools, "write"));
++
++      await writeExecute("tool-memory-flush-agent-workspace", {
++        path: memoryRelativePath,
++        content: "sandbox durable note",
++      });
++
++      expect(await fs.readFile(agentMemoryFile, "utf8")).toContain("sandbox durable note");
++      await expect(fs.access(taskMemoryFile)).rejects.toThrow();
++    } finally {
++      await fs.rm(agentWorkspaceDir, { recursive: true, force: true });
++      await fs.rm(taskWorkspaceDir, { recursive: true, force: true });
++    }
++  });
++
+   it("rejects legacy alias parameters", async () => {
+     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-legacy-alias-"));
+     try {
+diff --git a/src/agents/agent-tools.ts b/src/agents/agent-tools.ts
+index 22ee934a42d9bfda12a3b635ab3ea7fbb9af8d47..cf4d075fd9405610db7af82170825b34762a8d78 100644
+--- a/src/agents/agent-tools.ts
++++ b/src/agents/agent-tools.ts
+@@ -72,6 +72,7 @@ import { resolveOpenClawPluginToolsForOptions } from "./openclaw-plugin-tools.js
+ import { createOpenClawTools } from "./openclaw-tools.js";
+ import type { SandboxContext } from "./sandbox.js";
+ import { SANDBOX_AGENT_WORKSPACE_MOUNT } from "./sandbox/constants.js";
++import { areSandboxHostPathsEqual } from "./sandbox/host-paths.js";
+ import { resolveSenderToolPolicy } from "./sender-tool-policy.js";
+ import { createCodingTools, createReadTool } from "./sessions/index.js";
+ import {
+@@ -414,6 +415,8 @@ export function createOpenClawCodingTools(options?: {
+   jobId?: string;
+   /** Relative workspace path that memory-triggered writes may append to. */
+   memoryFlushWritePath?: string;
++  /** Persistent agent workspace used only for append-only memory flush writes. */
++  memoryFlushWorkspaceDir?: string;
+   agentDir?: string;
+   /** Task working directory for coding tools. Defaults to workspaceDir. */
+   cwd?: string;
+@@ -687,7 +690,13 @@ export function createOpenClawCodingTools(options?: {
+   const workspaceRoot = resolveWorkspaceRoot(options?.workspaceDir);
+   const runtimeRoot = resolveWorkspaceRoot(options?.cwd ?? options?.workspaceDir);
+   const codingRoot = sandboxRoot ?? runtimeRoot;
+-  const memoryFlushWriteRoot = sandboxRoot ?? workspaceRoot;
++  const memoryFlushWriteRoot = resolveWorkspaceRoot(
++    options?.memoryFlushWorkspaceDir ?? sandboxRoot ?? workspaceRoot,
++  );
++  const memoryFlushUsesSandboxBridge =
++    sandboxRoot !== undefined &&
++    sandboxFsBridge !== undefined &&
++    areSandboxHostPathsEqual(memoryFlushWriteRoot, sandboxRoot);
+   const includeCoreTools = options?.includeCoreTools !== false;
+   const toolConstructionPlan = options?.toolConstructionPlan ?? {
+     includeBaseCodingTools: includeCoreTools,
+@@ -1049,7 +1058,7 @@ export function createOpenClawCodingTools(options?: {
+             relativePath: memoryFlushWritePath,
+             containerWorkdir: sandbox?.containerWorkdir,
+             sandbox:
+-              sandboxRoot && sandboxFsBridge
++              memoryFlushUsesSandboxBridge && sandboxRoot && sandboxFsBridge
+                 ? { root: sandboxRoot, bridge: sandboxFsBridge }
+                 : undefined,
+           }),
+diff --git a/src/agents/embedded-agent-runner.buildembeddedsandboxinfo.test.ts b/src/agents/embedded-agent-runner.buildembeddedsandboxinfo.test.ts
+index d776980d0863b4bc476cf64882d4f3725b3a2618..df68b718377ebb96a5fd447f404c9f4061007b1f 100644
+--- a/src/agents/embedded-agent-runner.buildembeddedsandboxinfo.test.ts
++++ b/src/agents/embedded-agent-runner.buildembeddedsandboxinfo.test.ts
+@@ -14,6 +14,7 @@ function createSandboxContext(overrides?: Partial<SandboxContext>): SandboxConte
+     sessionKey: "session:test",
+     workspaceDir: "/tmp/openclaw-sandbox",
+     agentWorkspaceDir: "/tmp/openclaw-workspace",
++    taskWorkspaceDir: "/tmp/openclaw-workspace",
+     workspaceAccess: "none",
+     runtimeId: "openclaw-sbx-test",
+     runtimeLabel: "openclaw-sbx-test",
+@@ -71,6 +72,45 @@ describe("buildEmbeddedSandboxInfo", () => {
+     });
+   });
+
++  it("forwards host workspace path semantics from the backend", () => {
++    const sandbox = createSandboxContext({
++      backend: {
++        id: "native-test",
++        runtimeId: "native-test",
++        runtimeLabel: "Native Test",
++        workdir: "D:\\projects\\task",
++        capabilities: { workspacePathSemantics: "host" },
++        buildExecSpec: async () => ({
++          argv: ["cmd.exe"],
++          env: process.env,
++          stdinMode: "pipe-closed",
++        }),
++        runShellCommand: async () => ({
++          stdout: Buffer.alloc(0),
++          stderr: Buffer.alloc(0),
++          code: 0,
++        }),
++      },
++    });
++
++    expect(buildEmbeddedSandboxInfo(sandbox)).toEqual(
++      expect.objectContaining({ workspacePathSemantics: "host" }),
++    );
++  });
++
++  it("does not advertise an agent mount for a distinct task workspace", () => {
++    const sandbox = createSandboxContext({
++      workspaceDir: "/tmp/task-workspace",
++      taskWorkspaceDir: "/tmp/task-workspace",
++      agentWorkspaceDir: "/tmp/agent-workspace",
++      workspaceAccess: "ro",
++    });
++
++    expect(buildEmbeddedSandboxInfo(sandbox)).toEqual(
++      expect.objectContaining({ agentWorkspaceMount: undefined }),
++    );
++  });
++
+   it("includes elevated info when allowed", () => {
+     const sandbox = createSandboxContext({
+       browserAllowHostControl: false,
+diff --git a/src/agents/embedded-agent-runner/compact.hooks.harness.ts b/src/agents/embedded-agent-runner/compact.hooks.harness.ts
+index f4a99623d05a008b73066c9c955cdfe9f3368f45..04f39940479ce068f2dcb9d6688f1b8dea7c4820 100644
+--- a/src/agents/embedded-agent-runner/compact.hooks.harness.ts
++++ b/src/agents/embedded-agent-runner/compact.hooks.harness.ts
+@@ -166,6 +166,7 @@ export const applyExtraParamsToAgentMock = vi.fn(() => ({ effectiveExtraParams:
+ export const resolveAgentTransportOverrideMock: Mock<(params?: unknown) => string | undefined> =
+   vi.fn(() => undefined);
+ export const resolveSandboxContextMock = vi.fn(async () => null);
++export const resolveBootstrapContextForRunMock = vi.fn(async () => ({ contextFiles: [] }));
+ export const maybeCompactAgentHarnessSessionMock: Mock<(params?: unknown) => Promise<unknown>> =
+   vi.fn(async () => undefined);
+ export const rotateTranscriptAfterCompactionMock: Mock<
+@@ -326,6 +327,8 @@ export function resetCompactSessionStateMocks(): void {
+   resolveAgentTransportOverrideMock.mockReturnValue(undefined);
+   resolveSandboxContextMock.mockReset();
+   resolveSandboxContextMock.mockResolvedValue(null);
++  resolveBootstrapContextForRunMock.mockReset();
++  resolveBootstrapContextForRunMock.mockResolvedValue({ contextFiles: [] });
+   maybeCompactAgentHarnessSessionMock.mockReset();
+   maybeCompactAgentHarnessSessionMock.mockResolvedValue(undefined);
+   resolveAgentHarnessPolicyMock.mockReset();
+@@ -594,7 +597,7 @@ export async function loadCompactHooksHarness(): Promise<{
+   vi.doMock("../bootstrap-files.js", () => ({
+     makeBootstrapWarn: vi.fn(() => () => {}),
+     resolveContextInjectionMode: vi.fn(() => "always"),
+-    resolveBootstrapContextForRun: vi.fn(async () => ({ contextFiles: [] })),
++    resolveBootstrapContextForRun: resolveBootstrapContextForRunMock,
+   }));
+
+   vi.doMock("../bundle-mcp-tools.js", () => ({
+diff --git a/src/agents/embedded-agent-runner/compact.hooks.test.ts b/src/agents/embedded-agent-runner/compact.hooks.test.ts
+index 6a898ec79f10a3e2725ae9e37dbe60c78f90bbfc..fd93d0cd5ec4c2a53738051cdf6cb1f74ed862b8 100644
+--- a/src/agents/embedded-agent-runner/compact.hooks.test.ts
++++ b/src/agents/embedded-agent-runner/compact.hooks.test.ts
+@@ -1,5 +1,6 @@
+ import type { AgentMessage } from "openclaw/plugin-sdk/agent-core";
+ import { beforeAll, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
++import { resolveUserPath } from "../../utils.js";
+ import {
+   applyExtraParamsToAgentMock,
+   applyAgentCompactionSettingsFromConfigMock,
+@@ -21,6 +22,7 @@ import {
+   registerProviderStreamForModelMock,
+   resolveContextWindowInfoMock,
+   resolveContextEngineMock,
++  resolveBootstrapContextForRunMock,
+   resolveEmbeddedAgentStreamFnMock,
+   resolveMemorySearchConfigMock,
+   resolveModelMock,
+@@ -223,10 +225,12 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
+       workspaceDir: "/tmp/workspace",
+     });
+
+-    expect(ensureRuntimePluginsLoaded).toHaveBeenCalledWith({
+-      config: undefined,
+-      workspaceDir: "/tmp/workspace",
+-    });
++    expect(ensureRuntimePluginsLoaded).toHaveBeenCalledWith(
++      expect.objectContaining({
++        config: undefined,
++        workspaceDir: resolveUserPath("/tmp/workspace"),
++      }),
++    );
+   });
+
+   it("forwards gateway subagent binding opt-in during compaction bootstrap", async () => {
+@@ -248,7 +252,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
+
+     expect(ensureRuntimePluginsLoaded).toHaveBeenCalledWith({
+       config: undefined,
+-      workspaceDir: "/tmp/workspace",
++      workspaceDir: resolveUserPath("/tmp/workspace"),
+       allowGatewaySubagentBinding: true,
+     });
+   });
+@@ -265,7 +269,8 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
+     expect(resolveSandboxContextMock).toHaveBeenCalledWith({
+       config: undefined,
+       sessionKey: "agent:main:telegram:default:direct:12345",
+-      workspaceDir: "/tmp/workspace",
++      workspaceDir: resolveUserPath("/tmp/workspace"),
++      taskWorkspaceDir: resolveUserPath("/tmp/workspace"),
+     });
+   });
+
+@@ -421,16 +426,57 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
+     });
+
+     expectRecordFields(mockCallArg(createOpenClawCodingToolsMock), {
+-      cwd: "/tmp/task-repo",
+-      workspaceDir: "/tmp/workspace",
+-      spawnWorkspaceDir: "/tmp/workspace",
++      cwd: resolveUserPath("/tmp/task-repo"),
++      workspaceDir: resolveUserPath("/tmp/workspace"),
++      spawnWorkspaceDir: resolveUserPath("/tmp/workspace"),
+     });
+     expectRecordFields(mockCallArg(createPreparedEmbeddedAgentSettingsManagerMock), {
+-      cwd: "/tmp/task-repo",
++      cwd: resolveUserPath("/tmp/task-repo"),
+       agentDir: "/tmp/agents/main/agent",
+     });
+   });
+
++  it("uses a distinct sandbox task cwd while preserving the agent compaction workspace", async () => {
++    resolveSandboxContextMock.mockResolvedValueOnce({
++      enabled: true,
++      workspaceAccess: "rw",
++      workspaceDir: "/tmp/task-repo",
++      taskWorkspaceDir: "/tmp/task-repo",
++      agentWorkspaceDir: "/tmp/workspace",
++      containerWorkdir: "/tmp/task-repo",
++      browserAllowHostControl: false,
++      backend: { capabilities: { workspacePathSemantics: "host" } },
++    });
++
++    await compactEmbeddedAgentSessionDirect({
++      sessionId: "session-1",
++      sessionFile: "/tmp/session.jsonl",
++      workspaceDir: "/tmp/workspace",
++      cwd: "/tmp/task-repo",
++    });
++
++    expect(resolveSandboxContextMock).toHaveBeenCalledWith({
++      config: undefined,
++      sessionKey: "session-1",
++      workspaceDir: resolveUserPath("/tmp/workspace"),
++      taskWorkspaceDir: resolveUserPath("/tmp/task-repo"),
++    });
++    expectRecordFields(mockCallArg(createOpenClawCodingToolsMock), {
++      cwd: "/tmp/task-repo",
++      workspaceDir: resolveUserPath("/tmp/workspace"),
++      spawnWorkspaceDir: resolveUserPath("/tmp/workspace"),
++    });
++    expect(resolveBootstrapContextForRunMock).toHaveBeenCalledWith(
++      expect.objectContaining({ workspaceDir: resolveUserPath("/tmp/workspace") }),
++    );
++    expect(buildEmbeddedSystemPromptMock).toHaveBeenCalledWith(
++      expect.objectContaining({
++        runtimeCwd: "/tmp/task-repo",
++        workspaceDir: resolveUserPath("/tmp/workspace"),
++      }),
++    );
++  });
++
+   it("uses the caller context token budget during runtime compaction", async () => {
+     await compactEmbeddedAgentSessionDirect({
+       sessionId: "session-1",
+diff --git a/src/agents/embedded-agent-runner/compact.ts b/src/agents/embedded-agent-runner/compact.ts
+index ac36232bb5bab2614a6cae7f5809eb599810dbb8..11388e12b261de269523bfc63e61cf0ab0667603 100644
+--- a/src/agents/embedded-agent-runner/compact.ts
++++ b/src/agents/embedded-agent-runner/compact.ts
+@@ -101,6 +101,7 @@ import type { AgentRuntimePlan } from "../runtime-plan/types.js";
+ import { ensureRuntimePluginsLoaded } from "../runtime-plugins.js";
+ import type { AgentMessage } from "../runtime/index.js";
+ import { resolveSandboxContext } from "../sandbox.js";
++import { areSandboxHostPathsEqual } from "../sandbox/host-paths.js";
+ import { repairSessionFileIfNeeded } from "../session-file-repair.js";
+ import { guardSessionManager } from "../session-tool-result-guard-wrapper.js";
+ import { sanitizeToolUseResultPairing } from "../session-transcript-repair.js";
+@@ -652,23 +653,27 @@ async function compactEmbeddedAgentSessionDirectOnce(
+   await fs.mkdir(resolvedWorkspace, { recursive: true });
+   const sandboxSessionKey =
+     params.sandboxSessionKey?.trim() || params.sessionKey?.trim() || params.sessionId;
++  const requestedCwd = params.cwd ? resolveUserPath(params.cwd) : undefined;
+   const sandbox = await resolveSandboxContext({
+     config: params.config,
+     sessionKey: sandboxSessionKey,
+     workspaceDir: resolvedWorkspace,
++    taskWorkspaceDir: requestedCwd ?? resolvedWorkspace,
+   });
++  const hasDistinctSandboxTask =
++    sandbox?.enabled &&
++    !areSandboxHostPathsEqual(
++      sandbox.taskWorkspaceDir ?? resolvedWorkspace,
++      sandbox.agentWorkspaceDir ?? resolvedWorkspace,
++    );
+   const effectiveWorkspace = sandbox?.enabled
+-    ? sandbox.workspaceAccess === "rw"
++    ? hasDistinctSandboxTask || sandbox.workspaceAccess === "rw"
+       ? resolvedWorkspace
+       : sandbox.workspaceDir
+     : resolvedWorkspace;
+-  const requestedCwd = params.cwd ? resolveUserPath(params.cwd) : undefined;
+-  if (sandbox?.enabled && requestedCwd && requestedCwd !== resolvedWorkspace) {
+-    throw new Error(
+-      "cwd override is not supported for sandboxed embedded compaction runs; omit cwd or use the agent workspace as cwd",
+-    );
+-  }
+-  const effectiveCwd = sandbox?.enabled ? effectiveWorkspace : (requestedCwd ?? effectiveWorkspace);
++  const effectiveCwd = sandbox?.enabled
++    ? sandbox.workspaceDir
++    : (requestedCwd ?? effectiveWorkspace);
+   await fs.mkdir(effectiveWorkspace, { recursive: true });
+   await ensureSessionHeader({
+     sessionFile: params.sessionFile,
+diff --git a/src/agents/embedded-agent-runner/run/attempt.cwd-split.test.ts b/src/agents/embedded-agent-runner/run/attempt.cwd-split.test.ts
+index d7c7c638ecd36ed0913891e35484f67755f10ca9..7fe7f28317611645ccb17bf77eba7a9631ef0b54 100644
+--- a/src/agents/embedded-agent-runner/run/attempt.cwd-split.test.ts
++++ b/src/agents/embedded-agent-runner/run/attempt.cwd-split.test.ts
+@@ -68,23 +68,54 @@ describe("runEmbeddedAttempt cwd/workspace split", () => {
+     expect(resourceLoaderInit?.cwd).toBe(taskRepo);
+   });
+
+-  it("rejects cwd overrides for sandboxed runs instead of silently ignoring them", async () => {
++  it("uses a distinct task cwd for sandboxed runtime tools", async () => {
++    const taskRepo = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-sandbox-task-repo-"));
++    tempPaths.push(taskRepo);
+     hoisted.resolveSandboxContextMock.mockResolvedValueOnce({
+       enabled: true,
+-      workspaceAccess: "ro",
+-      workspaceDir: "/tmp/openclaw-sandbox-copy",
++      workspaceAccess: "rw",
++      workspaceDir: taskRepo,
++      taskWorkspaceDir: taskRepo,
++      agentWorkspaceDir: "/tmp/openclaw-agent-workspace",
++      containerWorkdir: taskRepo,
++      browserAllowHostControl: false,
++      backend: { capabilities: { workspacePathSemantics: "host" } },
++    });
++
++    await createContextEngineAttemptRunner({
++      contextEngine: createContextEngineBootstrapAndAssemble(),
++      sessionKey: "agent:main:subagent:child",
++      tempPaths,
++      attemptOverrides: {
++        cwd: taskRepo,
++        disableTools: false,
++      },
+     });
+
+-    await expect(
+-      createContextEngineAttemptRunner({
+-        contextEngine: createContextEngineBootstrapAndAssemble(),
+-        sessionKey: "agent:main:subagent:child",
+-        tempPaths,
+-        attemptOverrides: {
+-          cwd: "/tmp/task-repo",
+-        },
+-      }),
+-    ).rejects.toThrow("cwd override is not supported");
+-    expect(hoisted.createOpenClawCodingToolsMock).not.toHaveBeenCalled();
++    const sandboxCall = hoisted.resolveSandboxContextMock.mock.calls[0]?.[0] as
++      | { workspaceDir?: string; taskWorkspaceDir?: string }
++      | undefined;
++    expect(sandboxCall?.taskWorkspaceDir).toBe(taskRepo);
++    expect(sandboxCall?.workspaceDir).not.toBe(taskRepo);
++
++    const bootstrapCall = hoisted.resolveBootstrapFilesForRunMock.mock.calls[0]?.[0] as
++      | { workspaceDir?: string }
++      | undefined;
++    const toolsCall = hoisted.createOpenClawCodingToolsMock.mock.calls[0]?.[0] as
++      | {
++          cwd?: string;
++          workspaceDir?: string;
++          memoryFlushWorkspaceDir?: string;
++        }
++      | undefined;
++    expect(toolsCall?.cwd).toBe(taskRepo);
++    expect(toolsCall?.workspaceDir).toBe(bootstrapCall?.workspaceDir);
++    expect(toolsCall?.memoryFlushWorkspaceDir).toBe(bootstrapCall?.workspaceDir);
++
++    const promptCall = hoisted.embeddedSystemPromptInputs[0] as
++      | { runtimeCwd?: string; workspaceDir?: string }
++      | undefined;
++    expect(promptCall?.runtimeCwd).toBe(taskRepo);
++    expect(promptCall?.workspaceDir).toBe(bootstrapCall?.workspaceDir);
+   });
+ });
+diff --git a/src/agents/embedded-agent-runner/run/attempt.ts b/src/agents/embedded-agent-runner/run/attempt.ts
+index 083cb9900b5af0ac44919ab04448344e9b55ff75..e329a46c4d679812f19ef1ab9d59ca9296b73122 100644
+--- a/src/agents/embedded-agent-runner/run/attempt.ts
++++ b/src/agents/embedded-agent-runner/run/attempt.ts
+@@ -172,6 +172,7 @@ import {
+ } from "../../runtime-plan/tools.js";
+ import type { AgentMessage } from "../../runtime/index.js";
+ import { resolveSandboxContext } from "../../sandbox.js";
++import { areSandboxHostPathsEqual } from "../../sandbox/host-paths.js";
+ import { resolveSandboxRuntimeStatus } from "../../sandbox/runtime-status.js";
+ import { repairSessionFileIfNeeded } from "../../session-file-repair.js";
+ import { guardSessionManager } from "../../session-tool-result-guard-wrapper.js";
+@@ -824,23 +825,27 @@ export async function runEmbeddedAttempt(
+
+   const sandboxSessionKey =
+     params.sandboxSessionKey?.trim() || params.sessionKey?.trim() || params.sessionId;
++  const requestedCwd = params.cwd ? resolveUserPath(params.cwd) : undefined;
+   const sandbox = await resolveSandboxContext({
+     config: params.config,
+     sessionKey: sandboxSessionKey,
+     workspaceDir: resolvedWorkspace,
++    taskWorkspaceDir: requestedCwd ?? resolvedWorkspace,
+   });
++  const hasDistinctSandboxTask =
++    sandbox?.enabled &&
++    !areSandboxHostPathsEqual(
++      sandbox.taskWorkspaceDir ?? resolvedWorkspace,
++      sandbox.agentWorkspaceDir ?? resolvedWorkspace,
++    );
+   const effectiveWorkspace = sandbox?.enabled
+-    ? sandbox.workspaceAccess === "rw"
++    ? hasDistinctSandboxTask || sandbox.workspaceAccess === "rw"
+       ? resolvedWorkspace
+       : sandbox.workspaceDir
+     : resolvedWorkspace;
+-  const requestedCwd = params.cwd ? resolveUserPath(params.cwd) : undefined;
+-  if (sandbox?.enabled && requestedCwd && requestedCwd !== resolvedWorkspace) {
+-    throw new Error(
+-      "cwd override is not supported for sandboxed embedded agent runs; omit cwd or use the agent workspace as cwd",
+-    );
+-  }
+-  const effectiveCwd = sandbox?.enabled ? effectiveWorkspace : (requestedCwd ?? effectiveWorkspace);
++  const effectiveCwd = sandbox?.enabled
++    ? sandbox.workspaceDir
++    : (requestedCwd ?? effectiveWorkspace);
+   await fs.mkdir(effectiveWorkspace, { recursive: true });
+   let currentPluginMetadataSnapshotResolved = false;
+   let currentPluginMetadataSnapshot: PluginMetadataSnapshot | undefined;
+@@ -1197,6 +1202,7 @@ export async function runEmbeddedAttempt(
+             agentDir,
+             cwd: effectiveCwd,
+             workspaceDir: effectiveWorkspace,
++            memoryFlushWorkspaceDir: resolvedWorkspace,
+             // Runtime cwd can point at a task repo while bootstrap/persona files stay in the
+             // agent workspace. Spawned subagents inherit the real agent workspace, not task cwd.
+             spawnWorkspaceDir:
+diff --git a/src/agents/embedded-agent-runner/sandbox-info.ts b/src/agents/embedded-agent-runner/sandbox-info.ts
+index 9f60e402567987e58db8fa5bd1c0895ee7a108dc..529a3db3fe81eb6d7c832c7b079ea55d9bac183a 100644
+--- a/src/agents/embedded-agent-runner/sandbox-info.ts
++++ b/src/agents/embedded-agent-runner/sandbox-info.ts
+@@ -2,6 +2,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
+ import type { ExecElevatedDefaults, ExecToolDefaults } from "../bash-tools.js";
+ import { resolveExecDefaults } from "../exec-defaults.js";
+ import type { resolveSandboxContext } from "../sandbox.js";
++import { areSandboxHostPathsEqual } from "../sandbox/host-paths.js";
+ import type { EmbeddedFullAccessBlockedReason, EmbeddedSandboxInfo } from "./types.js";
+
+ type EmbeddedFullAccessExecPolicy = Pick<ExecToolDefaults, "mode" | "security" | "ask">;
+@@ -98,8 +99,15 @@ export function buildEmbeddedSandboxInfo(
+     enabled: true,
+     workspaceDir: sandbox.workspaceDir,
+     containerWorkspaceDir: sandbox.containerWorkdir,
++    ...(sandbox.backend?.capabilities?.workspacePathSemantics
++      ? { workspacePathSemantics: sandbox.backend.capabilities.workspacePathSemantics }
++      : {}),
+     workspaceAccess: sandbox.workspaceAccess,
+-    agentWorkspaceMount: sandbox.workspaceAccess === "ro" ? "/agent" : undefined,
++    agentWorkspaceMount:
++      sandbox.workspaceAccess === "ro" &&
++      areSandboxHostPathsEqual(sandbox.taskWorkspaceDir, sandbox.agentWorkspaceDir)
++        ? "/agent"
++        : undefined,
+     browserBridgeUrl: sandbox.browser?.bridgeUrl,
+     hostBrowserAllowed: sandbox.browserAllowHostControl,
+     ...(elevatedConfigured
+diff --git a/src/agents/embedded-agent-runner/types.ts b/src/agents/embedded-agent-runner/types.ts
+index 4e4376373073e2dc7ddb81feb9166afdd1d07040..18e85b7f936ed5e1949d52223d9852960ad2c38b 100644
+--- a/src/agents/embedded-agent-runner/types.ts
++++ b/src/agents/embedded-agent-runner/types.ts
+@@ -239,6 +239,7 @@ export type EmbeddedSandboxInfo = {
+   enabled: boolean;
+   workspaceDir?: string;
+   containerWorkspaceDir?: string;
++  workspacePathSemantics?: "container" | "host";
+   workspaceAccess?: "none" | "ro" | "rw";
+   agentWorkspaceMount?: string;
+   browserBridgeUrl?: string;
+diff --git a/src/agents/sandbox.resolveSandboxContext.test.ts b/src/agents/sandbox.resolveSandboxContext.test.ts
+index 8164ab7ae213a09927336726c5463b33b3a27f7b..bce9eb2deb8792a56cafd8a2ffa87c8d2793ee95 100644
+--- a/src/agents/sandbox.resolveSandboxContext.test.ts
++++ b/src/agents/sandbox.resolveSandboxContext.test.ts
+@@ -244,6 +244,135 @@ describe("resolveSandboxContext", () => {
+     }
+   }, 15_000);
+
++  it("passes distinct agent and task workspaces to a registered backend", async () => {
++    const agentWorkspaceDir = await createSandboxFixtureDir("agent-workspace");
++    const taskWorkspaceDir = await createSandboxFixtureDir("task-workspace");
++    const backendFactory = vi.fn(async () => ({
++      id: "test-task-workspace-backend",
++      runtimeId: "test-task-workspace-runtime",
++      runtimeLabel: "Test Task Workspace Runtime",
++      workdir: taskWorkspaceDir,
++      capabilities: { workspacePathSemantics: "host" as const },
++      buildExecSpec: async () => ({
++        argv: ["test-task-workspace-backend", "exec"],
++        env: process.env,
++        stdinMode: "pipe-closed" as const,
++      }),
++      runShellCommand: async () => ({
++        stdout: Buffer.alloc(0),
++        stderr: Buffer.alloc(0),
++        code: 0,
++      }),
++    }));
++    const restore = registerSandboxBackend("test-task-workspace-backend", backendFactory);
++    try {
++      const cfg: OpenClawConfig = {
++        agents: {
++          defaults: {
++            sandbox: {
++              mode: "all",
++              backend: "test-task-workspace-backend",
++              scope: "session",
++              workspaceAccess: "rw",
++              prune: { idleHours: 0, maxAgeDays: 0 },
++            },
++          },
++        },
++      };
++
++      const result = await resolveSandboxContext({
++        config: cfg,
++        sessionKey: "agent:worker:task-workspace",
++        workspaceDir: agentWorkspaceDir,
++        taskWorkspaceDir,
++      });
++
++      expect(backendFactory).toHaveBeenCalledWith(
++        expect.objectContaining({
++          workspaceDir: taskWorkspaceDir,
++          agentWorkspaceDir,
++          taskWorkspaceDir,
++        }),
++      );
++      expect(result).toEqual(
++        expect.objectContaining({
++          workspaceDir: taskWorkspaceDir,
++          agentWorkspaceDir,
++          taskWorkspaceDir,
++        }),
++      );
++    } finally {
++      restore();
++    }
++  }, 15_000);
++
++  it.each([
++    { platform: "win32" as const, expectsDistinctTask: false },
++    { platform: "linux" as const, expectsDistinctTask: true },
++  ])(
++    "compares task and agent workspace casing with $platform path semantics",
++    async ({ platform, expectsDistinctTask }) => {
++      const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue(platform);
++      const agentWorkspaceDir = await createSandboxFixtureDir(`case-agent-${platform}`);
++      const taskWorkspaceDir = path.join(
++        path.dirname(agentWorkspaceDir),
++        path.basename(agentWorkspaceDir).toUpperCase(),
++      );
++      const workspaceRoot = await createSandboxFixtureDir(`case-sandboxes-${platform}`);
++      const backendId = `test-path-case-${platform}`;
++      const backendFactory = vi.fn(async () => ({
++        id: backendId,
++        runtimeId: `${backendId}-runtime`,
++        runtimeLabel: `Test Path Case ${platform}`,
++        workdir: "/workspace",
++        buildExecSpec: async () => ({
++          argv: [backendId, "exec"],
++          env: process.env,
++          stdinMode: "pipe-closed" as const,
++        }),
++        runShellCommand: async () => ({
++          stdout: Buffer.alloc(0),
++          stderr: Buffer.alloc(0),
++          code: 0,
++        }),
++      }));
++      const restore = registerSandboxBackend(backendId, backendFactory);
++      try {
++        const cfg: OpenClawConfig = {
++          agents: {
++            defaults: {
++              sandbox: {
++                mode: "all",
++                backend: backendId,
++                scope: "session",
++                workspaceAccess: "ro",
++                workspaceRoot,
++                prune: { idleHours: 0, maxAgeDays: 0 },
++              },
++            },
++          },
++        };
++
++        await resolveSandboxContext({
++          config: cfg,
++          sessionKey: `agent:worker:path-case-${platform}`,
++          workspaceDir: agentWorkspaceDir,
++          taskWorkspaceDir,
++        });
++
++        const backendParams = backendFactory.mock.calls[0]?.[0];
++        expect(backendParams?.workspaceDir === taskWorkspaceDir).toBe(expectsDistinctTask);
++        expect(backendParams).toEqual(
++          expect.objectContaining({ agentWorkspaceDir, taskWorkspaceDir }),
++        );
++      } finally {
++        restore();
++        platformSpy.mockRestore();
++      }
++    },
++    15_000,
++  );
++
+   it("passes the resolved browser SSRF policy to sandbox browser setup", async () => {
+     ensureSandboxBrowserMock.mockClear();
+     const restore = registerSandboxBackend("test-browser-backend", async () => ({
+diff --git a/src/agents/sandbox/backend-handle.types.ts b/src/agents/sandbox/backend-handle.types.ts
+index 0a4a14fec03baa85f4056a7d4d682d1782061873..8860451062b7b74a3d1ba5a992017439a5c7b096 100644
+--- a/src/agents/sandbox/backend-handle.types.ts
++++ b/src/agents/sandbox/backend-handle.types.ts
+@@ -26,6 +26,7 @@ export type SandboxBackendCommandResult = {
+ export type SandboxFsBridgeContext = {
+   workspaceDir: string;
+   agentWorkspaceDir: string;
++  taskWorkspaceDir: string;
+   workspaceAccess: "none" | "ro" | "rw";
+   containerName: string;
+   containerWorkdir: string;
+@@ -47,6 +48,8 @@ export type SandboxBackendHandle = {
+   configLabelKind?: string;
+   capabilities?: {
+     browser?: boolean;
++    /** Whether shell and file tools consume native host workspace paths. */
++    workspacePathSemantics?: "container" | "host";
+   };
+   buildExecSpec(params: {
+     command: string;
+diff --git a/src/agents/sandbox/backend.types.ts b/src/agents/sandbox/backend.types.ts
+index dd6ed445abda07277ed755faa4ffc8a72a5a0f91..9ab5fae92cc693adbd3444afd19e059aedad36c2 100644
+--- a/src/agents/sandbox/backend.types.ts
++++ b/src/agents/sandbox/backend.types.ts
+@@ -27,6 +27,8 @@ export type CreateSandboxBackendParams = {
+   scopeKey: string;
+   workspaceDir: string;
+   agentWorkspaceDir: string;
++  /** Host task workspace. Core always provides it; optional preserves third-party compatibility. */
++  taskWorkspaceDir?: string;
+   cfg: SandboxConfig;
+ };
+
+diff --git a/src/agents/sandbox/browser.ts b/src/agents/sandbox/browser.ts
+index 0d4467723499a658c7def37481abfcf3e25d3ed7..762326c9eea9aaa2ae0c0ea9682bca86401e3650 100644
+--- a/src/agents/sandbox/browser.ts
++++ b/src/agents/sandbox/browser.ts
+@@ -213,6 +213,7 @@ export async function ensureSandboxBrowser(params: {
+   scopeKey: string;
+   workspaceDir: string;
+   agentWorkspaceDir: string;
++  taskWorkspaceDir?: string;
+   cfg: SandboxConfig;
+   evaluateEnabled?: boolean;
+   bridgeAuth?: { token?: string; password?: string };
+@@ -349,6 +350,7 @@ export async function ensureSandboxBrowser(params: {
+       args,
+       workspaceDir: params.workspaceDir,
+       agentWorkspaceDir: params.agentWorkspaceDir,
++      taskWorkspaceDir: params.taskWorkspaceDir ?? params.agentWorkspaceDir,
+       workdir: params.cfg.docker.workdir,
+       workspaceAccess: params.cfg.workspaceAccess,
+       readOnlyWorkspaceSkillMounts,
+diff --git a/src/agents/sandbox/context.ts b/src/agents/sandbox/context.ts
+index b1d7e3e31aee5907c3288e664bc4019ae75cc96a..8e95e543daabf955196e61472e7d4346b8f849de 100644
+--- a/src/agents/sandbox/context.ts
++++ b/src/agents/sandbox/context.ts
+@@ -15,6 +15,7 @@ import { requireSandboxBackendFactory } from "./backend.js";
+ import { ensureSandboxBrowser } from "./browser.js";
+ import { resolveSandboxConfigForAgent } from "./config.js";
+ import { createSandboxFsBridge } from "./fs-bridge.js";
++import { areSandboxHostPathsEqual } from "./host-paths.js";
+ import { updateRegistry } from "./registry.js";
+ import { resolveSandboxRuntimeStatus } from "./runtime-status.js";
+ import { resolveSandboxScopeKey, resolveSandboxWorkspaceDir } from "./shared.js";
+@@ -27,8 +28,10 @@ async function ensureSandboxWorkspaceLayout(params: {
+   rawSessionKey: string;
+   config?: OpenClawConfig;
+   workspaceDir?: string;
++  taskWorkspaceDir?: string;
+ }): Promise<{
+   agentWorkspaceDir: string;
++  taskWorkspaceDir: string;
+   scopeKey: string;
+   sandboxWorkspaceDir: string;
+   workspaceDir: string;
+@@ -38,13 +41,18 @@ async function ensureSandboxWorkspaceLayout(params: {
+   const agentWorkspaceDir = resolveUserPath(
+     params.workspaceDir?.trim() || DEFAULT_AGENT_WORKSPACE_DIR,
+   );
++  const taskWorkspaceDir = resolveUserPath(params.taskWorkspaceDir?.trim() || agentWorkspaceDir);
+   const workspaceRoot = resolveUserPath(cfg.workspaceRoot);
+   const scopeKey = resolveSandboxScopeKey(cfg.scope, rawSessionKey);
+   const sandboxWorkspaceDir =
+     cfg.scope === "shared" ? workspaceRoot : resolveSandboxWorkspaceDir(workspaceRoot, scopeKey);
+-  const workspaceDir = cfg.workspaceAccess === "rw" ? agentWorkspaceDir : sandboxWorkspaceDir;
++  const hasDistinctTaskWorkspace = !areSandboxHostPathsEqual(taskWorkspaceDir, agentWorkspaceDir);
++  const workspaceDir =
++    cfg.workspaceAccess === "rw" || (cfg.workspaceAccess === "ro" && hasDistinctTaskWorkspace)
++      ? taskWorkspaceDir
++      : sandboxWorkspaceDir;
+
+-  if (workspaceDir === sandboxWorkspaceDir) {
++  if (areSandboxHostPathsEqual(workspaceDir, sandboxWorkspaceDir)) {
+     await ensureSandboxWorkspace(
+       sandboxWorkspaceDir,
+       agentWorkspaceDir,
+@@ -83,7 +91,7 @@ async function ensureSandboxWorkspaceLayout(params: {
+     await fs.mkdir(workspaceDir, { recursive: true });
+   }
+
+-  return { agentWorkspaceDir, scopeKey, sandboxWorkspaceDir, workspaceDir };
++  return { agentWorkspaceDir, taskWorkspaceDir, scopeKey, sandboxWorkspaceDir, workspaceDir };
+ }
+
+ export async function resolveSandboxDockerUser(params: {
+@@ -131,6 +139,7 @@ export async function resolveSandboxContext(params: {
+   config?: OpenClawConfig;
+   sessionKey?: string;
+   workspaceDir?: string;
++  taskWorkspaceDir?: string;
+ }): Promise<SandboxContext | null> {
+   const resolved = resolveSandboxSession(params);
+   if (!resolved) {
+@@ -142,13 +151,15 @@ export async function resolveSandboxContext(params: {
+     await (await import("./prune.js")).maybePruneSandboxes(cfg);
+   }
+
+-  const { agentWorkspaceDir, scopeKey, workspaceDir } = await ensureSandboxWorkspaceLayout({
+-    cfg,
+-    agentId: runtime.agentId,
+-    rawSessionKey,
+-    config: params.config,
+-    workspaceDir: params.workspaceDir,
+-  });
++  const { agentWorkspaceDir, taskWorkspaceDir, scopeKey, workspaceDir } =
++    await ensureSandboxWorkspaceLayout({
++      cfg,
++      agentId: runtime.agentId,
++      rawSessionKey,
++      config: params.config,
++      workspaceDir: params.workspaceDir,
++      taskWorkspaceDir: params.taskWorkspaceDir,
++    });
+
+   const docker = await resolveSandboxDockerUser({
+     docker: cfg.docker,
+@@ -162,6 +173,7 @@ export async function resolveSandboxContext(params: {
+     scopeKey,
+     workspaceDir,
+     agentWorkspaceDir,
++    taskWorkspaceDir,
+     cfg: resolvedCfg,
+   });
+   await updateRegistry({
+@@ -209,6 +221,7 @@ export async function resolveSandboxContext(params: {
+           scopeKey,
+           workspaceDir,
+           agentWorkspaceDir,
++          taskWorkspaceDir,
+           cfg: resolvedCfg,
+           evaluateEnabled,
+           bridgeAuth,
+@@ -222,6 +235,7 @@ export async function resolveSandboxContext(params: {
+     sessionKey: rawSessionKey,
+     workspaceDir,
+     agentWorkspaceDir,
++    taskWorkspaceDir,
+     workspaceAccess: resolvedCfg.workspaceAccess,
+     runtimeId: backend.runtimeId,
+     runtimeLabel: backend.runtimeLabel,
+@@ -245,6 +259,7 @@ export async function ensureSandboxWorkspaceForSession(params: {
+   config?: OpenClawConfig;
+   sessionKey?: string;
+   workspaceDir?: string;
++  taskWorkspaceDir?: string;
+ }): Promise<SandboxWorkspaceInfo | null> {
+   const resolved = resolveSandboxSession(params);
+   if (!resolved) {
+@@ -252,16 +267,19 @@ export async function ensureSandboxWorkspaceForSession(params: {
+   }
+   const { rawSessionKey, cfg, runtime } = resolved;
+
+-  const { workspaceDir } = await ensureSandboxWorkspaceLayout({
++  const { workspaceDir, agentWorkspaceDir, taskWorkspaceDir } = await ensureSandboxWorkspaceLayout({
+     cfg,
+     agentId: runtime.agentId,
+     rawSessionKey,
+     config: params.config,
+     workspaceDir: params.workspaceDir,
++    taskWorkspaceDir: params.taskWorkspaceDir,
+   });
+
+   return {
+     workspaceDir,
++    agentWorkspaceDir,
++    taskWorkspaceDir,
+     containerWorkdir: cfg.docker.workdir,
+   };
+ }
+diff --git a/src/agents/sandbox/docker-backend.ts b/src/agents/sandbox/docker-backend.ts
+index 09da8720eb9e6f12dd4ff94d217bbb1604b86bc9..3b656ed04b00d529bd24794c9d50c34cd2f6a764 100644
+--- a/src/agents/sandbox/docker-backend.ts
++++ b/src/agents/sandbox/docker-backend.ts
+@@ -34,6 +34,7 @@ export async function createDockerSandboxBackend(
+     sessionKey: params.sessionKey,
+     workspaceDir: params.workspaceDir,
+     agentWorkspaceDir: params.agentWorkspaceDir,
++    taskWorkspaceDir: params.taskWorkspaceDir ?? params.agentWorkspaceDir,
+     cfg: params.cfg,
+   });
+   return createDockerSandboxBackendHandle({
+diff --git a/src/agents/sandbox/docker.ts b/src/agents/sandbox/docker.ts
+index 120fc833bd1d056ea4d7e2997c78ba3630192457..54264c2b61c392d94a1f8944f3a7533e51a3874a 100644
+--- a/src/agents/sandbox/docker.ts
++++ b/src/agents/sandbox/docker.ts
+@@ -559,6 +559,7 @@ async function createSandboxContainer(params: {
+   workspaceDir: string;
+   workspaceAccess: SandboxWorkspaceAccess;
+   agentWorkspaceDir: string;
++  taskWorkspaceDir?: string;
+   scopeKey: string;
+   configHash?: string;
+   readOnlyWorkspaceSkillMounts: readonly ReadOnlyWorkspaceSkillMount[];
+@@ -579,6 +580,7 @@ async function createSandboxContainer(params: {
+     args,
+     workspaceDir,
+     agentWorkspaceDir: params.agentWorkspaceDir,
++    taskWorkspaceDir: params.taskWorkspaceDir ?? params.agentWorkspaceDir,
+     workdir: cfg.workdir,
+     workspaceAccess: params.workspaceAccess,
+     readOnlyWorkspaceSkillMounts: params.readOnlyWorkspaceSkillMounts,
+@@ -618,6 +620,7 @@ export async function ensureSandboxContainer(params: {
+   sessionKey: string;
+   workspaceDir: string;
+   agentWorkspaceDir: string;
++  taskWorkspaceDir?: string;
+   cfg: SandboxConfig;
+ }) {
+   const scopeKey = resolveSandboxScopeKey(params.cfg.scope, params.sessionKey);
+@@ -684,6 +687,7 @@ export async function ensureSandboxContainer(params: {
+       workspaceDir: params.workspaceDir,
+       workspaceAccess: params.cfg.workspaceAccess,
+       agentWorkspaceDir: params.agentWorkspaceDir,
++      taskWorkspaceDir: params.taskWorkspaceDir ?? params.agentWorkspaceDir,
+       scopeKey,
+       configHash: expectedHash,
+       readOnlyWorkspaceSkillMounts,
+diff --git a/src/agents/sandbox/fs-paths.test.ts b/src/agents/sandbox/fs-paths.test.ts
+index d27ae3619f796474e8175a0171103fe1d5199730..b8a67e8f57333495160092ced836694223be04e1 100644
+--- a/src/agents/sandbox/fs-paths.test.ts
++++ b/src/agents/sandbox/fs-paths.test.ts
+@@ -97,6 +97,17 @@ describe("parseSandboxBindMount", () => {
+ });
+
+ describe("resolveSandboxFsPathWithMounts", () => {
++  it("does not expose a distinct persistent agent workspace as a task mount", () => {
++    const sandbox = createSandbox({
++      workspaceDir: "/tmp/task-workspace",
++      taskWorkspaceDir: "/tmp/task-workspace",
++      agentWorkspaceDir: "/tmp/agent-workspace",
++      workspaceAccess: "rw",
++    });
++
++    expect(buildSandboxFsMounts(sandbox).map((mount) => mount.source)).toEqual(["workspace"]);
++  });
++
+   it("maps mounted container absolute paths to host paths", () => {
+     const sandbox = createSandbox({
+       docker: {
+diff --git a/src/agents/sandbox/fs-paths.ts b/src/agents/sandbox/fs-paths.ts
+index 65b92b278ef751e4adc6e4d0a2fecdb883a8e61f..63a3d19b3e1b11dea1523dec4a077480fc4a42ce 100644
+--- a/src/agents/sandbox/fs-paths.ts
++++ b/src/agents/sandbox/fs-paths.ts
+@@ -7,7 +7,10 @@ import { resolveSandboxInputPath, resolveSandboxPath } from "../sandbox-paths.js
+ import type { SandboxFsBridgeContext } from "./backend-handle.types.js";
+ import { splitSandboxBindSpec } from "./bind-spec.js";
+ import { SANDBOX_AGENT_WORKSPACE_MOUNT } from "./constants.js";
+-import { resolveSandboxHostPathViaExistingAncestor } from "./host-paths.js";
++import {
++  areSandboxHostPathsEqual,
++  resolveSandboxHostPathViaExistingAncestor,
++} from "./host-paths.js";
+ import {
+   isPathInsideContainerRoot,
+   normalizeContainerPath,
+@@ -73,7 +76,8 @@ export function buildSandboxFsMounts(sandbox: SandboxFsBridgeContext): SandboxFs
+
+   if (
+     sandbox.workspaceAccess !== "none" &&
+-    path.resolve(sandbox.agentWorkspaceDir) !== path.resolve(sandbox.workspaceDir)
++    areSandboxHostPathsEqual(sandbox.taskWorkspaceDir, sandbox.agentWorkspaceDir) &&
++    !areSandboxHostPathsEqual(sandbox.agentWorkspaceDir, sandbox.workspaceDir)
+   ) {
+     mounts.push({
+       hostRoot: path.resolve(sandbox.agentWorkspaceDir),
+diff --git a/src/agents/sandbox/host-paths.test.ts b/src/agents/sandbox/host-paths.test.ts
+index 8ceb1d75d4e3ef05b97674a91fd83e39719b8afe..766c5309ab89b4b4bec8d5f87fd04e3cfc19fcb5 100644
+--- a/src/agents/sandbox/host-paths.test.ts
++++ b/src/agents/sandbox/host-paths.test.ts
+@@ -3,12 +3,25 @@ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import { describe, expect, it } from "vitest";
+ import {
++  areSandboxHostPathsEqual,
+   getSandboxHostPathPolicyKey,
+   isSandboxHostPathAbsolute,
+   normalizeSandboxHostPath,
+   resolveSandboxHostPathViaExistingAncestor,
+ } from "./host-paths.js";
+
++describe("areSandboxHostPathsEqual", () => {
++  it("normalizes Windows separators and casing with win32 path semantics", () => {
++    expect(
++      areSandboxHostPathsEqual("C:\\Users\\Kai\\Project\\src\\..", "c:/users/kai/project", "win32"),
++    ).toBe(true);
++  });
++
++  it("keeps POSIX path comparisons case-sensitive", () => {
++    expect(areSandboxHostPathsEqual("/tmp/Project", "/tmp/project", "linux")).toBe(false);
++  });
++});
++
+ describe("normalizeSandboxHostPath", () => {
+   it("normalizes dot segments and strips trailing slash", () => {
+     expect(normalizeSandboxHostPath("/tmp/a/../b//")).toBe("/tmp/b");
+diff --git a/src/agents/sandbox/host-paths.ts b/src/agents/sandbox/host-paths.ts
+index a5c012b4d6789966b833392107d978f3e8728f4e..64a4cd5df55121e7400cd701a8d164536a509140 100644
+--- a/src/agents/sandbox/host-paths.ts
++++ b/src/agents/sandbox/host-paths.ts
+@@ -1,4 +1,4 @@
+-import { posix } from "node:path";
++import path, { posix } from "node:path";
+ import { resolvePathViaExistingAncestorSync } from "../../infra/boundary-path.js";
+
+ function stripWindowsNamespacePrefix(input: string): string {
+@@ -57,6 +57,19 @@ export function getSandboxHostPathPolicyKey(raw: string): string {
+   return normalized;
+ }
+
++export function areSandboxHostPathsEqual(
++  left: string,
++  right: string,
++  platform: NodeJS.Platform = process.platform,
++): boolean {
++  const pathApi = platform === "win32" ? path.win32 : path.posix;
++  const resolvedLeft = pathApi.resolve(left);
++  const resolvedRight = pathApi.resolve(right);
++  return platform === "win32"
++    ? resolvedLeft.toLowerCase() === resolvedRight.toLowerCase()
++    : resolvedLeft === resolvedRight;
++}
++
+ /**
+  * Resolve a path through the deepest existing ancestor so parent symlinks are honored
+  * even when the final source leaf does not exist yet.
+diff --git a/src/agents/sandbox/ssh-backend.ts b/src/agents/sandbox/ssh-backend.ts
+index af63d5152eecf587dccc3ab8324aa68b4099dd2c..cf11a446cacf51b19aedac80f87932c788168852 100644
+--- a/src/agents/sandbox/ssh-backend.ts
++++ b/src/agents/sandbox/ssh-backend.ts
+@@ -10,6 +10,7 @@ import type {
+   SandboxBackendManager,
+ } from "./backend.types.js";
+ import { resolveSandboxConfigForAgent } from "./config.js";
++import { areSandboxHostPathsEqual } from "./host-paths.js";
+ import {
+   createRemoteShellSandboxFsBridge,
+   type RemoteShellSandboxHandle,
+@@ -220,8 +221,14 @@ class SshSandboxBackendImpl {
+       );
+       if (
+         this.params.createParams.cfg.workspaceAccess !== "none" &&
+-        path.resolve(this.params.createParams.agentWorkspaceDir) !==
+-          path.resolve(this.params.createParams.workspaceDir)
++        areSandboxHostPathsEqual(
++          this.params.createParams.taskWorkspaceDir ?? this.params.createParams.agentWorkspaceDir,
++          this.params.createParams.agentWorkspaceDir,
++        ) &&
++        !areSandboxHostPathsEqual(
++          this.params.createParams.agentWorkspaceDir,
++          this.params.createParams.workspaceDir,
++        )
+       ) {
+         await this.replaceRemoteDirectoryFromLocal(
+           session,
+diff --git a/src/agents/sandbox/test-fixtures.ts b/src/agents/sandbox/test-fixtures.ts
+index b20b5b452f7adb68a6fd4f183dea2a2867bf8546..0cb1f0cf6fd025ca30e086b17d6fbd2bdf45bd63 100644
+--- a/src/agents/sandbox/test-fixtures.ts
++++ b/src/agents/sandbox/test-fixtures.ts
+@@ -32,6 +32,7 @@ export function createSandboxTestContext(params?: {
+     sessionKey: "sandbox:test",
+     workspaceDir: "/tmp/workspace",
+     agentWorkspaceDir: "/tmp/workspace",
++    taskWorkspaceDir: "/tmp/workspace",
+     workspaceAccess: "rw",
+     runtimeId: "openclaw-sbx-test",
+     runtimeLabel: "openclaw-sbx-test",
+diff --git a/src/agents/sandbox/types.ts b/src/agents/sandbox/types.ts
+index 654a3e9ba906f9ce7fa893a9fa6fd32d86e3570b..cfb3cf9ef43dd7bc8c5972b1f3f9507b65c7d65d 100644
+--- a/src/agents/sandbox/types.ts
++++ b/src/agents/sandbox/types.ts
+@@ -92,6 +92,7 @@ export type SandboxContext = {
+   sessionKey: string;
+   workspaceDir: string;
+   agentWorkspaceDir: string;
++  taskWorkspaceDir: string;
+   workspaceAccess: SandboxWorkspaceAccess;
+   runtimeId: string;
+   runtimeLabel: string;
+@@ -107,5 +108,7 @@ export type SandboxContext = {
+
+ export type SandboxWorkspaceInfo = {
+   workspaceDir: string;
++  agentWorkspaceDir: string;
++  taskWorkspaceDir: string;
+   containerWorkdir: string;
+ };
+diff --git a/src/agents/sandbox/workspace-mounts.ts b/src/agents/sandbox/workspace-mounts.ts
+index e3a556f1d7b4fa40cd43765147a03b6f284bd91e..3fb4f6e52a6ec4419066d59199d48ce8428ee031 100644
+--- a/src/agents/sandbox/workspace-mounts.ts
++++ b/src/agents/sandbox/workspace-mounts.ts
+@@ -2,7 +2,10 @@ import fs from "node:fs";
+ import path from "node:path";
+ import { isPathInside } from "../../infra/path-guards.js";
+ import { SANDBOX_AGENT_WORKSPACE_MOUNT } from "./constants.js";
+-import { resolveSandboxHostPathViaExistingAncestor } from "./host-paths.js";
++import {
++  areSandboxHostPathsEqual,
++  resolveSandboxHostPathViaExistingAncestor,
++} from "./host-paths.js";
+ import type { SandboxWorkspaceAccess } from "./types.js";
+
+ export const SANDBOX_MOUNT_FORMAT_VERSION = 3;
+@@ -103,12 +106,14 @@ export function appendWorkspaceMountArgs(params: {
+   args: string[];
+   workspaceDir: string;
+   agentWorkspaceDir: string;
++  taskWorkspaceDir?: string;
+   workdir: string;
+   workspaceAccess: SandboxWorkspaceAccess;
+   readOnlyWorkspaceSkillMounts?: readonly ReadOnlyWorkspaceSkillMount[];
+   includeReadOnlyWorkspaceSkillMounts?: boolean;
+ }) {
+   const { args, workspaceDir, agentWorkspaceDir, workdir, workspaceAccess } = params;
++  const taskWorkspaceDir = params.taskWorkspaceDir ?? agentWorkspaceDir;
+
+   args.push(
+     "-v",
+@@ -119,7 +124,11 @@ export function appendWorkspaceMountArgs(params: {
+     }),
+   );
+
+-  if (workspaceAccess !== "none" && workspaceDir !== agentWorkspaceDir) {
++  if (
++    workspaceAccess !== "none" &&
++    areSandboxHostPathsEqual(taskWorkspaceDir, agentWorkspaceDir) &&
++    !areSandboxHostPathsEqual(workspaceDir, agentWorkspaceDir)
++  ) {
+     args.push(
+       "-v",
+       formatManagedWorkspaceBind({
+diff --git a/src/agents/system-prompt.test.ts b/src/agents/system-prompt.test.ts
+index be0e19bdf295f003a51705c0d46168e947ec6507..c3906d5f12f04c00a557b3e932093ffa25a06378 100644
+--- a/src/agents/system-prompt.test.ts
++++ b/src/agents/system-prompt.test.ts
+@@ -1218,6 +1218,29 @@ describe("buildAgentSystemPrompt", () => {
+     expect(prompt).toContain("Current elevated level: on");
+   });
+
++  it("uses native host task paths for host-path sandbox backends", () => {
++    const prompt = buildAgentSystemPrompt({
++      workspaceDir: "C:\\Users\\test\\.openclaw\\workspace-main",
++      runtimeCwd: "D:\\projects\\lobster-task",
++      sandboxInfo: {
++        enabled: true,
++        workspaceDir: "D:\\projects\\lobster-task",
++        containerWorkspaceDir: "/workspace",
++        workspacePathSemantics: "host",
++        workspaceAccess: "rw",
++      },
++    });
++
++    expect(prompt).toContain("## Directory Roles");
++    expect(prompt).toContain("Task working directory: D:\\projects\\lobster-task");
++    expect(prompt).toContain("Agent workspace: C:\\Users\\test\\.openclaw\\workspace-main");
++    expect(prompt).toContain("Task workspace access: rw");
++    expect(prompt).toContain("Persistent agent files are managed by OpenClaw");
++    expect(prompt).not.toContain("Docker");
++    expect(prompt).not.toContain("/workspace");
++    expect(prompt).not.toContain("Sandbox host mount source");
++  });
++
+   it("does not advertise /elevated full when auto-approved full access is unavailable", () => {
+     const prompt = buildAgentSystemPrompt({
+       workspaceDir: "/tmp/openclaw",
+diff --git a/src/agents/system-prompt.ts b/src/agents/system-prompt.ts
+index 57eb07a00a2acefc53c89983b83c36f24dc8a15a..2422b60f6b2541c69bd26318ffc652445ab8fb6d 100644
+--- a/src/agents/system-prompt.ts
++++ b/src/agents/system-prompt.ts
+@@ -898,6 +898,8 @@ export function buildAgentSystemPrompt(params: {
+     ? "none"
+     : (params.silentReplyPromptMode ?? "generic");
+   const sandboxContainerWorkspace = params.sandboxInfo?.containerWorkspaceDir?.trim();
++  const usesHostSandboxPaths =
++    params.sandboxInfo?.enabled === true && params.sandboxInfo.workspacePathSemantics === "host";
+   const sanitizedWorkspaceDir = sanitizeForPromptLiteral(params.workspaceDir);
+   const sanitizedRuntimeCwd = sanitizeForPromptLiteral(params.runtimeCwd ?? params.workspaceDir);
+   const sanitizedSandboxContainerWorkspace = sandboxContainerWorkspace
+@@ -908,14 +910,17 @@ export function buildAgentSystemPrompt(params: {
+     elevated?.fullAccessAvailable === false
+       ? formatFullAccessBlockedReason(elevated.fullAccessBlockedReason)
+       : undefined;
+-  const displayWorkspaceDir =
+-    params.sandboxInfo?.enabled && sanitizedSandboxContainerWorkspace
++  const displayWorkspaceDir = usesHostSandboxPaths
++    ? sanitizedRuntimeCwd
++    : params.sandboxInfo?.enabled && sanitizedSandboxContainerWorkspace
+       ? sanitizedSandboxContainerWorkspace
+       : sanitizedWorkspaceDir;
+   const hasSeparateRuntimeCwd =
+-    params.sandboxInfo?.enabled !== true && sanitizedRuntimeCwd !== sanitizedWorkspaceDir;
+-  const workspaceGuidance =
+-    params.sandboxInfo?.enabled && sanitizedSandboxContainerWorkspace
++    (params.sandboxInfo?.enabled !== true || usesHostSandboxPaths) &&
++    sanitizedRuntimeCwd !== sanitizedWorkspaceDir;
++  const workspaceGuidance = usesHostSandboxPaths
++    ? "Sandbox file and shell tools use this native task workspace path. Prefer relative paths within it."
++    : params.sandboxInfo?.enabled && sanitizedSandboxContainerWorkspace
+       ? `For read/write/edit/apply_patch, file paths resolve against host workspace: ${sanitizedWorkspaceDir}. For bash/exec commands, use sandbox container paths under ${sanitizedSandboxContainerWorkspace} (or relative paths from that workdir), not host paths. Prefer relative paths so both sandboxed exec and file tools work consistently.`
+       : "Treat this directory as the single global workspace for file operations unless explicitly instructed otherwise.";
+   const workspaceOnlyGuidance =
+@@ -931,7 +936,9 @@ export function buildAgentSystemPrompt(params: {
+         `Agent workspace: ${sanitizedWorkspaceDir}`,
+         "Use the task working directory for user-requested files, source code, generated documents, images, build intermediates, temporary files, and final deliverables.",
+         "Use the agent workspace only for OpenClaw persistent agent files: AGENTS.md, SOUL.md, IDENTITY.md, USER.md, TOOLS.md, HEARTBEAT.md, MEMORY.md, and memory/**.",
+-        "Relative paths used by normal file and shell tools resolve against the task working directory. When reading or updating persistent agent files, use their absolute path under the agent workspace.",
++        usesHostSandboxPaths
++          ? "Relative paths used by normal file and shell tools resolve against the task working directory. Persistent agent files are managed by OpenClaw and are not exposed through normal task file tools."
++          : "Relative paths used by normal file and shell tools resolve against the task working directory. When reading or updating persistent agent files, use their absolute path under the agent workspace.",
+         "Never use the agent workspace as a scratch, build, export, or deliverables directory unless the user explicitly requests it.",
+         "If the user explicitly names a different path, follow that path subject to tool policy.",
+       ]
+@@ -1159,24 +1166,26 @@ export function buildAgentSystemPrompt(params: {
+       params.sandboxInfo?.enabled ? "## Sandbox" : "",
+       params.sandboxInfo?.enabled
+         ? [
+-            "You are running in a sandboxed runtime (tools execute in Docker).",
++            "You are running in a sandboxed runtime.",
+             "Some tools may be unavailable due to sandbox policy.",
+             "Sub-agents stay sandboxed (no elevated/host access). Need outside-sandbox read/write? Don't spawn; ask first.",
+             hasSessionsSpawn && acpEnabled
+               ? 'ACP harness spawns are blocked from sandboxed sessions (`sessions_spawn` with `runtime: "acp"`). Use `runtime: "subagent"` instead.'
+               : "",
+-            params.sandboxInfo.containerWorkspaceDir
++            !usesHostSandboxPaths && params.sandboxInfo.containerWorkspaceDir
+               ? `Sandbox container workdir: ${sanitizeForPromptLiteral(params.sandboxInfo.containerWorkspaceDir)}`
+               : "",
+-            params.sandboxInfo.workspaceDir
++            !usesHostSandboxPaths && params.sandboxInfo.workspaceDir
+               ? `Sandbox host mount source (file tools bridge only; not valid inside sandbox exec): ${sanitizeForPromptLiteral(params.sandboxInfo.workspaceDir)}`
+               : "",
+             params.sandboxInfo.workspaceAccess
+-              ? `Agent workspace access: ${params.sandboxInfo.workspaceAccess}${
+-                  params.sandboxInfo.agentWorkspaceMount
+-                    ? ` (mounted at ${sanitizeForPromptLiteral(params.sandboxInfo.agentWorkspaceMount)})`
+-                    : ""
+-                }`
++              ? usesHostSandboxPaths
++                ? `Task workspace access: ${params.sandboxInfo.workspaceAccess}`
++                : `Agent workspace access: ${params.sandboxInfo.workspaceAccess}${
++                    params.sandboxInfo.agentWorkspaceMount
++                      ? ` (mounted at ${sanitizeForPromptLiteral(params.sandboxInfo.agentWorkspaceMount)})`
++                      : ""
++                  }`
+               : "",
+             params.sandboxInfo.browserBridgeUrl ? "Sandbox browser: enabled." : "",
+             params.sandboxInfo.hostBrowserAllowed === true
+diff --git a/src/agents/test-helpers/agent-tools-sandbox-context.ts b/src/agents/test-helpers/agent-tools-sandbox-context.ts
+index 7bb4260f4fec323b55f7dbb3e8d9b5916b6a5422..111b535d827b1231da134d06a26b1e1b5744f735 100644
+--- a/src/agents/test-helpers/agent-tools-sandbox-context.ts
++++ b/src/agents/test-helpers/agent-tools-sandbox-context.ts
+@@ -4,6 +4,7 @@ import type { SandboxFsBridge } from "../sandbox/fs-bridge.js";
+ type AgentToolsSandboxContextParams = {
+   workspaceDir: string;
+   agentWorkspaceDir?: string;
++  taskWorkspaceDir?: string;
+   workspaceAccess?: SandboxWorkspaceAccess;
+   fsBridge?: SandboxFsBridge;
+   tools?: SandboxToolPolicy;
+@@ -18,12 +19,14 @@ export function createAgentToolsSandboxContext(
+   params: AgentToolsSandboxContextParams,
+ ): SandboxContext {
+   const workspaceDir = params.workspaceDir;
++  const agentWorkspaceDir = params.agentWorkspaceDir ?? workspaceDir;
+   return {
+     enabled: true,
+     backendId: "docker",
+     sessionKey: params.sessionKey ?? "sandbox:test",
+     workspaceDir,
+-    agentWorkspaceDir: params.agentWorkspaceDir ?? workspaceDir,
++    agentWorkspaceDir,
++    taskWorkspaceDir: params.taskWorkspaceDir ?? agentWorkspaceDir,
+     workspaceAccess: params.workspaceAccess ?? "rw",
+     runtimeId: params.containerName ?? "openclaw-sbx-test",
+     runtimeLabel: params.containerName ?? "openclaw-sbx-test",

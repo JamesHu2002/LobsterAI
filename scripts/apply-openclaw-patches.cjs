@@ -262,6 +262,87 @@ const strongPatchValidators = {
       snippets: ['expect(promptCall?.runtimeCwd).toBe(taskRepo)'],
     },
   ],
+  'zzz-openclaw-sandbox-task-workspace.patch': [
+    {
+      file: 'src/agents/sandbox/context.ts',
+      snippets: [
+        'taskWorkspaceDir?: string',
+        'const hasDistinctTaskWorkspace = !areSandboxHostPathsEqual(',
+        'taskWorkspaceDir: params.taskWorkspaceDir',
+      ],
+    },
+    {
+      file: 'src/agents/sandbox/backend.types.ts',
+      snippets: ['taskWorkspaceDir?: string'],
+    },
+    {
+      file: 'src/agents/embedded-agent-runner/run/attempt.ts',
+      snippets: [
+        'taskWorkspaceDir: requestedCwd ?? resolvedWorkspace',
+        'sandbox.taskWorkspaceDir ?? resolvedWorkspace',
+        'sandbox.agentWorkspaceDir ?? resolvedWorkspace',
+        'memoryFlushWorkspaceDir: resolvedWorkspace',
+      ],
+    },
+    {
+      file: 'src/agents/embedded-agent-runner/compact.ts',
+      snippets: [
+        'taskWorkspaceDir: requestedCwd ?? resolvedWorkspace',
+        'sandbox.taskWorkspaceDir ?? resolvedWorkspace',
+        'sandbox.agentWorkspaceDir ?? resolvedWorkspace',
+      ],
+    },
+    {
+      file: 'src/agents/sandbox/host-paths.ts',
+      snippets: [
+        'export function areSandboxHostPathsEqual(',
+        'platform === "win32" ? path.win32 : path.posix',
+      ],
+    },
+    {
+      file: 'src/agents/sandbox/host-paths.test.ts',
+      snippets: ['normalizes Windows separators and casing with win32 path semantics'],
+    },
+    {
+      file: 'src/agents/agent-tools.ts',
+      snippets: [
+        'memoryFlushWorkspaceDir?: string',
+        'const memoryFlushUsesSandboxBridge =',
+      ],
+    },
+    {
+      file: 'src/agents/embedded-agent-runner/sandbox-info.ts',
+      snippets: [
+        'areSandboxHostPathsEqual(sandbox.taskWorkspaceDir, sandbox.agentWorkspaceDir)',
+      ],
+    },
+    {
+      file: 'src/agents/system-prompt.ts',
+      snippets: [
+        'const usesHostSandboxPaths =',
+        'Persistent agent files are managed by OpenClaw',
+        'Task workspace access:',
+      ],
+    },
+    {
+      file: 'src/agents/embedded-agent-runner.buildembeddedsandboxinfo.test.ts',
+      snippets: ['does not advertise an agent mount for a distinct task workspace'],
+    },
+    {
+      file: 'src/agents/sandbox.resolveSandboxContext.test.ts',
+      snippets: ['compares task and agent workspace casing with $platform path semantics'],
+    },
+    {
+      file: 'src/agents/embedded-agent-runner/run/attempt.cwd-split.test.ts',
+      snippets: ['uses a distinct task cwd for sandboxed runtime tools'],
+    },
+    {
+      file: 'src/agents/embedded-agent-runner/compact.hooks.test.ts',
+      snippets: [
+        'uses a distinct sandbox task cwd while preserving the agent compaction workspace',
+      ],
+    },
+  ],
 };
 
 function collectMissingStrongPatchSnippets(patchFile) {

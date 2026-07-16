@@ -1,7 +1,10 @@
 {
   "id": "lobster-srt-sandbox",
+  "activation": {
+    "onStartup": true
+  },
   "name": "Lobster SRT Sandbox",
-  "description": "Reserved OpenClaw integration point for the LobsterAI native sandbox.",
+  "description": "Windows native sandbox backend for LobsterAI task workspaces.",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

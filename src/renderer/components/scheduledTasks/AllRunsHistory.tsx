@@ -20,8 +20,8 @@ const STATUS_OPTIONS = [
   TaskStatus.Running,
 ] as const;
 
-const historyPageClass = 'px-6 py-4 sm:px-8 lg:px-10';
-const historyContentClass = 'mx-auto w-full max-w-[880px]';
+const historyPageClass = 'px-6 py-5';
+const historyContentClass = 'mx-auto w-full max-w-[1120px]';
 const historyGridClass = 'grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_88px] items-center gap-3';
 
 const statusConfig: Record<TaskStatus, { label: string; color: string; activeColor: string }> = {

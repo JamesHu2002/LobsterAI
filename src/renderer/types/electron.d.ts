@@ -47,14 +47,26 @@ import type {
   ShareDeploymentCreateNodeInput,
   ShareDeploymentDetectCandidatesInput,
   ShareDeploymentDetectCandidatesResult,
+  ShareDeploymentDownloadPersistenceInput,
+  ShareDeploymentDownloadPersistenceResult,
   ShareDeploymentGetByLocalServiceInput,
+  ShareDeploymentPersistenceInfoResult,
   ShareDeploymentProjectAnalysis,
   ShareDeploymentResult,
+  ShareDeploymentSelectPersistencePathInput,
+  ShareDeploymentSelectPersistencePathResult,
 } from '../../shared/shareDeployment/constants';
 import type {
   ShellGetBrowserAppsInput,
   ShellOpenFailureReason,
 } from '../../shared/shell/constants';
+import type {
+  SkinApplyResponse,
+  SkinDeactivateResponse,
+  SkinDeleteResponse,
+  SkinGetActiveResponse,
+  SkinListResponse,
+} from '../../shared/skin/types';
 import type { CoworkTempDirPreview } from './cowork';
 interface ApiResponse {
   ok: boolean;
@@ -412,7 +424,7 @@ import type { Platform } from '@shared/platform';
 import type { Agent, PresetAgent } from './agent';
 
 interface CreditItem {
-  type: 'subscription' | 'boost' | 'free' | 'bonus' | 'invitation';
+  type: 'subscription' | 'boost' | 'free' | 'bonus' | 'invitation' | 'campaign';
   label: string;
   labelEn: string;
   creditsRemaining: number;
@@ -435,6 +447,39 @@ interface CreditsResetCampaignStatusData {
   endAt: string;
   registeredBefore: string;
   reason: string;
+  resetEntitlements: CreditsResetEntitlementData[];
+  availableFreeCreditsRewardCount: number;
+  freeCreditsReward: FreeCreditsRewardData | null;
+  freeCreditsRewards?: FreeCreditsRewardData[];
+}
+
+interface CreditsResetEntitlementData {
+  campaignCode: string;
+  expiresAt: string;
+}
+
+interface FreeCreditsRewardData {
+  campaignCode: string;
+  credits: number;
+  claimDeadline: string;
+  validityDays: number;
+  presentation?: CampaignPresentationData | null;
+}
+
+interface CampaignPresentationData {
+  titleZh?: string | null;
+  titleEn?: string | null;
+  actionTextZh?: string | null;
+  actionTextEn?: string | null;
+  posterUrl?: string | null;
+  iconUrl?: string | null;
+}
+
+interface CreditsFinalRewardClaimData {
+  campaignCode: string;
+  creditsGranted: number;
+  claimedAt: string;
+  expiresAt: string;
 }
 
 interface ProfileSummaryData {
@@ -606,6 +651,14 @@ interface IElectronAPI {
       installed?: Record<string, InstalledKitRecord>;
       error?: string;
     }>;
+  };
+  skin: {
+    getActive: () => Promise<SkinGetActiveResponse>;
+    list: () => Promise<SkinListResponse>;
+    apply: (skinId: string) => Promise<SkinApplyResponse>;
+    deactivate: () => Promise<SkinDeactivateResponse>;
+    delete: (skinId: string) => Promise<SkinDeleteResponse>;
+    onChanged: (callback: () => void) => () => void;
   };
   agents: {
     list: () => Promise<Agent[]>;
@@ -1176,11 +1229,18 @@ interface IElectronAPI {
     analyzeProjectDirectory: (
       options: ShareDeploymentAnalyzeProjectInput,
     ) => Promise<ShareDeploymentProjectAnalysis>;
+    selectPersistencePath: (
+      options: ShareDeploymentSelectPersistencePathInput,
+    ) => Promise<ShareDeploymentSelectPersistencePathResult>;
     createNodeDeployment: (
       options: ShareDeploymentCreateNodeInput,
     ) => Promise<ShareDeploymentResult>;
     get: (deploymentId: string) => Promise<ShareDeploymentResult>;
     getByLocalService: (options: ShareDeploymentGetByLocalServiceInput) => Promise<ShareDeploymentResult>;
+    getPersistence: (deploymentId: string) => Promise<ShareDeploymentPersistenceInfoResult>;
+    downloadPersistenceArchive: (
+      options: ShareDeploymentDownloadPersistenceInput,
+    ) => Promise<ShareDeploymentDownloadPersistenceResult>;
   };
   asr: {
     createRealtimeSession: (options: AsrRealtimeSessionRequest) => Promise<AsrRealtimeSessionResult>;
@@ -1632,6 +1692,7 @@ interface IElectronAPI {
       error?: string;
     }>;
     getProfileSummary: () => Promise<{ success: boolean; data?: ProfileSummaryData }>;
+    claimCreditsFinalReward: (campaignCode: string) => Promise<{ success: boolean; data?: CreditsFinalRewardClaimData; error?: string }>;
     getActiveClientBanner: () => Promise<{ success: boolean; data?: ClientBannerData | null }>;
     getActiveClientBanners: () => Promise<{ success: boolean; data?: ClientBannerData[] }>;
     getPendingCallback: () => Promise<string | null>;

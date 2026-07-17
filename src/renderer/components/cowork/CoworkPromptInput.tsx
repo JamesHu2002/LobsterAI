@@ -115,6 +115,7 @@ import ModelSelector, {
 import { ActiveSkillBadge, SkillsPopover } from '../skills';
 import { resolveAgentModelSelection, resolveEffectiveModel, useAgentSelectedModel } from './agentModelSelection';
 import AttachmentCard from './AttachmentCard';
+import { getClipboardAttachmentFiles } from './clipboardAttachments';
 import { CoworkUiEvent } from './constants';
 import FolderSelectorPopover from './FolderSelectorPopover';
 import { getCaretPixelPosition } from './getCaretPosition';
@@ -288,35 +289,6 @@ const formatVoiceInputQuotaLimit = (seconds: number): string => {
 const getFileNameFromPath = (path: string): string => {
   const parts = path.split(/[/\\]/);
   return parts[parts.length - 1] || path;
-};
-
-const normalizeClipboardFileUrlPath = (rawPath: string): string | null => {
-  const trimmed = rawPath.trim();
-  if (!trimmed) return null;
-  try {
-    const url = new URL(trimmed);
-    if (url.protocol !== 'file:') return null;
-    let pathname = decodeURIComponent(url.pathname);
-    if (/^\/[A-Za-z]:/.test(pathname)) {
-      pathname = pathname.slice(1);
-    }
-    return pathname || null;
-  } catch {
-    return null;
-  }
-};
-
-const getClipboardFileUrlPath = (clipboardData: DataTransfer | null): string | null => {
-  const uriList = clipboardData?.getData('text/uri-list') ?? '';
-  const uriCandidate = uriList
-    .split(/\r?\n/)
-    .map(line => line.trim())
-    .find(line => line && !line.startsWith('#'));
-  if (uriCandidate) {
-    return normalizeClipboardFileUrlPath(uriCandidate);
-  }
-  const plainText = clipboardData?.getData('text/plain') ?? '';
-  return normalizeClipboardFileUrlPath(plainText);
 };
 
 const SEND_SHORTCUT_OPTIONS = [
@@ -2598,42 +2570,11 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
 
   const handlePaste = useCallback((event: React.ClipboardEvent<HTMLTextAreaElement>) => {
     if (disabled || voiceInputLocksEditing) return;
-    const files = Array.from(event.clipboardData?.files ?? []);
-    if (files.length > 0) {
-      event.preventDefault();
-      void handleIncomingFiles(files, 'paste');
-      return;
-    }
-
-    const clipboardPath = getClipboardFileUrlPath(event.clipboardData);
-    if (!clipboardPath) return;
+    const files = getClipboardAttachmentFiles(event.clipboardData);
+    if (files.length === 0) return;
     event.preventDefault();
-    void (async () => {
-      const stat = await statNativePath(clipboardPath);
-      if (!stat?.isDirectory && !stat?.isFile) {
-        console.debug('[CoworkPromptInput] pasted file URL did not resolve to a file or directory', {
-          path: clipboardPath,
-        });
-        return;
-      }
-
-      console.debug('[CoworkPromptInput] handlePaste: file URL attachment added', {
-        path: clipboardPath,
-        isDirectory: stat.isDirectory,
-      });
-      addAttachment(clipboardPath, { isDirectory: stat.isDirectory });
-      reportPromptControl('attachment_add_success', {
-        source: 'paste',
-        modelSupportsImage,
-        hasImageWithoutVision: false,
-        ...getAttachmentAnalyticsParams([{
-          path: clipboardPath,
-          name: getFileNameFromPath(clipboardPath),
-          isImage: false,
-        }]),
-      });
-    })();
-  }, [addAttachment, disabled, handleIncomingFiles, modelSupportsImage, reportPromptControl, statNativePath, voiceInputLocksEditing]);
+    void handleIncomingFiles(files, 'paste');
+  }, [disabled, handleIncomingFiles, voiceInputLocksEditing]);
 
   const canSubmit = !disabled
     && !isVoiceRecognizing
@@ -3431,7 +3372,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
   );
 
   return (
-    <div className="relative">
+    <div data-skin-prompt-input="true" className="relative">
       {goalEditModalOpen && (
         <Modal
           onClose={handleCloseGoalEditModal}

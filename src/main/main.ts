@@ -90,9 +90,11 @@ import {
   type HtmlShareStatus as HtmlShareStatusValue,
 } from '../shared/htmlShare/constants';
 import type {
+  InstalledKitRecord,
   KitReference,
   ResolvedKitCapabilities,
 } from '../shared/kit/constants';
+import { KitStoreKey } from '../shared/kit/constants';
 import {
   type ListLocalWebServicesOptions,
   type LocalWebService,
@@ -115,11 +117,17 @@ import {
   ShareDeploymentCandidateSource,
   type ShareDeploymentCreateNodeInput,
   type ShareDeploymentDetectCandidatesInput,
+  type ShareDeploymentDownloadPersistenceInput,
   type ShareDeploymentGetByLocalServiceInput,
   ShareDeploymentIpc,
   ShareDeploymentKind,
   ShareDeploymentPackageManager,
+  type ShareDeploymentPersistence,
+  ShareDeploymentPersistenceBindingKind,
+  ShareDeploymentPersistenceProvider,
+  ShareDeploymentPersistenceUpdateMode,
   type ShareDeploymentProjectCandidate,
+  type ShareDeploymentSelectPersistencePathInput,
 } from '../shared/shareDeployment/constants';
 import type { ShellOpenFailureReason as ShellOpenFailureReasonType } from '../shared/shell/constants';
 import { type ShellGetBrowserAppsInput, ShellIpc, ShellOpenFailureReason } from '../shared/shell/constants';
@@ -314,11 +322,19 @@ import {
 import {
   buildNodeDeploymentClientSourceKey,
   buildStaticDeploymentClientSourceKey,
+  downloadDeploymentPersistenceArchive,
+  getDeploymentPersistence,
   getNodeDeployment,
   getNodeDeploymentByLocalService,
   uploadNodeDeployment,
   uploadStaticDeployment,
 } from './libs/shareDeployment/shareDeploymentClient';
+import {
+  reconcileShareDeploymentAccess,
+  type ShareDeploymentAccessSyncFailure,
+  ShareDeploymentAccessSyncOperation,
+  ShareDeploymentOperationCoordinator,
+} from './libs/shareDeployment/shareDeploymentOperationCoordinator';
 import { SqliteBackupTrigger } from './libs/sqliteBackup/constants';
 import { SqliteBackupManager } from './libs/sqliteBackup/sqliteBackupManager';
 import { runStartupCacheWarmup } from './libs/startupCacheWarmup';
@@ -353,6 +369,12 @@ import { registerVoiceInputPermissionHandler } from './permissions/voiceInputPer
 import { isHiddenUserPluginId } from './plugins/pluginManager';
 import { SkillManager } from './skills/skillManager';
 import { getSkillServiceManager } from './skills/skillServices';
+import {
+  notifySkinChanged,
+  registerSkinElectronIntegration,
+  SKIN_PRIVILEGED_SCHEME,
+  SkinRuntimeController,
+} from './skins';
 import { SqliteStore } from './sqliteStore';
 import { StartupProfiler } from './startupProfiler';
 import { SubagentMessageStore } from './subagentMessageStore';
@@ -376,6 +398,7 @@ protocol.registerSchemesAsPrivileged([
       stream: true,
     },
   },
+  SKIN_PRIVILEGED_SCHEME,
 ]);
 
 const gwDiagTs = (): string => {
@@ -409,6 +432,7 @@ const SHARE_DEPLOYMENT_PROJECT_CANDIDATE_MAX_ITEMS = 24;
 const SHARE_DEPLOYMENT_CANDIDATE_SOURCES = new Set<string>(
   Object.values(ShareDeploymentCandidateSource),
 );
+const shareDeploymentOperationCoordinator = new ShareDeploymentOperationCoordinator();
 const ENGINE_NOT_READY_CODE = 'ENGINE_NOT_READY';
 const LOCAL_WEB_SERVICE_PROBE_TIMEOUT_MS = 700;
 const LOCAL_WEB_SERVICE_TITLE_MAX_LENGTH = 80;
@@ -838,12 +862,81 @@ function sanitizeShareDeploymentAnalyzeProjectDirectoryInput(
   };
 }
 
+function sanitizeShareDeploymentPersistenceBinding(value: unknown): ShareDeploymentPersistence['bindings'][number] | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  const appPath = sanitizeOptionalHtmlShareString(source.appPath, 'appPath', 256);
+  const dataPath = sanitizeOptionalHtmlShareString(source.dataPath, 'dataPath', 256);
+  if (!appPath || !dataPath) return null;
+  const kind = source.kind === ShareDeploymentPersistenceBindingKind.Directory
+    ? ShareDeploymentPersistenceBindingKind.Directory
+    : ShareDeploymentPersistenceBindingKind.File;
+  const sizeBytes = typeof source.sizeBytes === 'number'
+    ? Math.max(0, Math.round(source.sizeBytes))
+    : undefined;
+  return {
+    appPath,
+    dataPath,
+    kind,
+    ...(sizeBytes !== undefined ? { sizeBytes } : {}),
+  };
+}
+
+function sanitizeShareDeploymentPersistence(value: unknown): ShareDeploymentPersistence | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Invalid service data settings.');
+  }
+  const source = value as Record<string, unknown>;
+  const bindings = Array.isArray(source.bindings)
+    ? source.bindings
+        .slice(0, 8)
+        .map(sanitizeShareDeploymentPersistenceBinding)
+        .filter((binding): binding is ShareDeploymentPersistence['bindings'][number] => Boolean(binding))
+    : [];
+  return {
+    enabled: Boolean(source.enabled) && bindings.length > 0,
+    provider: ShareDeploymentPersistenceProvider.Filesystem,
+    mountPath: sanitizeOptionalHtmlShareString(source.mountPath, 'mountPath', 256),
+    quotaBytes: typeof source.quotaBytes === 'number' && source.quotaBytes > 0
+      ? Math.round(source.quotaBytes)
+      : undefined,
+    bindings,
+  };
+}
+
 function sanitizeShareDeploymentPort(value: unknown): number {
   const port = typeof value === 'number' ? value : Number(value);
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
     throw new Error('port must be a valid TCP port.');
   }
   return port;
+}
+
+function sanitizeShareDeploymentPersistenceUpdateMode(
+  value: unknown,
+): ShareDeploymentPersistenceUpdateMode {
+  if (value === undefined || value === ShareDeploymentPersistenceUpdateMode.Preserve) {
+    return ShareDeploymentPersistenceUpdateMode.Preserve;
+  }
+  if (value === ShareDeploymentPersistenceUpdateMode.Replace) {
+    return ShareDeploymentPersistenceUpdateMode.Replace;
+  }
+  throw new Error('persistenceUpdateMode must be preserve or replace.');
+}
+
+function formatShareDeploymentAccessSyncError(
+  failures: ShareDeploymentAccessSyncFailure[],
+): string | undefined {
+  if (failures.length === 0) return undefined;
+  const message = failures
+    .map(failure => failure.error || (
+      failure.operation === ShareDeploymentAccessSyncOperation.AccessMode
+        ? t('htmlShareAccessModeUpdateFailed')
+        : t('htmlShareStatusUpdateFailed')
+    ))
+    .join('; ');
+  return t('nodeDeploymentAccessStatusApplyFailed', { message });
 }
 
 function sanitizeShareDeploymentCreateNodeInput(input: unknown): ShareDeploymentCreateNodeInput {
@@ -858,11 +951,18 @@ function sanitizeShareDeploymentCreateNodeInput(input: unknown): ShareDeployment
     localServiceUrl: sanitizeHtmlShareString(source.localServiceUrl, 'localServiceUrl', 2048),
     projectDirectory: sanitizeHtmlShareString(source.projectDirectory, 'projectDirectory', 4096),
     accessMode: sanitizeHtmlShareAccessMode(source.accessMode, HtmlShareAccessMode.Code),
+    previousAccessMode: sanitizeHtmlShareAccessMode(source.previousAccessMode),
     nodeVersion: sanitizeHtmlShareString(source.nodeVersion, 'nodeVersion', 32),
     installCommand: sanitizeOptionalShareDeploymentCommand(source.installCommand, 'installCommand'),
     buildCommand: sanitizeOptionalShareDeploymentCommand(source.buildCommand, 'buildCommand'),
     startCommand: sanitizeOptionalShareDeploymentCommand(source.startCommand, 'startCommand'),
     port: sanitizeShareDeploymentPort(source.port),
+    persistence: sanitizeShareDeploymentPersistence(source.persistence),
+    persistenceUpdateMode: sanitizeShareDeploymentPersistenceUpdateMode(
+      source.persistenceUpdateMode,
+    ),
+    targetShareStatus:
+      sanitizeHtmlShareConfigurableStatus(source.targetShareStatus) ?? HtmlShareStatus.Live,
   };
 }
 
@@ -877,6 +977,134 @@ function sanitizeShareDeploymentGetByLocalServiceInput(
     sessionId: sanitizeHtmlShareString(source.sessionId, 'sessionId', 128),
     localServiceUrl: sanitizeHtmlShareString(source.localServiceUrl, 'localServiceUrl', 2048),
     projectDirectory: sanitizeOptionalHtmlShareString(source.projectDirectory, 'projectDirectory', 4096),
+  };
+}
+
+function sanitizeShareDeploymentSelectPersistencePathInput(
+  input: unknown,
+): ShareDeploymentSelectPersistencePathInput {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('Invalid service data path selection request.');
+  }
+  const source = input as Record<string, unknown>;
+  if (
+    source.kind !== ShareDeploymentPersistenceBindingKind.Directory &&
+    source.kind !== ShareDeploymentPersistenceBindingKind.File
+  ) {
+    throw new Error('Invalid service data path kind.');
+  }
+  return {
+    projectDirectory: sanitizeHtmlShareString(source.projectDirectory, 'projectDirectory', 4096),
+    kind: source.kind,
+  };
+}
+
+function sanitizeShareDeploymentPersistenceDeploymentIdInput(value: unknown): string {
+  return sanitizeHtmlShareString(value, 'deploymentId', 128);
+}
+
+function sanitizeShareDeploymentDownloadPersistenceInput(
+  input: unknown,
+): ShareDeploymentDownloadPersistenceInput {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('Invalid service data download request.');
+  }
+  const source = input as Record<string, unknown>;
+  return {
+    deploymentId: sanitizeShareDeploymentPersistenceDeploymentIdInput(source.deploymentId),
+    projectDirectory: sanitizeOptionalHtmlShareString(source.projectDirectory, 'projectDirectory', 4096),
+    shareId: sanitizeOptionalHtmlShareString(source.shareId, 'shareId', 128),
+  };
+}
+
+const SHARE_DEPLOYMENT_PERSISTENCE_EXCLUDED_SEGMENTS = new Set([
+  '.git',
+  'node_modules',
+  'dist',
+  'build',
+  '.next',
+  '.output',
+]);
+
+function isSensitiveShareDeploymentPersistenceFileName(fileName: string): boolean {
+  const normalized = fileName.trim().toLowerCase();
+  return normalized === '.env' ||
+    normalized.startsWith('.env.') ||
+    /(?:^|[-_.])(secret|credential|credentials|token|private[-_.]?key)(?:[-_.]|$)/i.test(fileName);
+}
+
+async function estimateShareDeploymentPersistencePathBytes(filePath: string): Promise<number | undefined> {
+  const maxVisited = 2000;
+  let visited = 0;
+  let total = 0;
+  async function visit(currentPath: string): Promise<void> {
+    if (visited >= maxVisited) return;
+    visited += 1;
+    const stats = await fs.promises.lstat(currentPath);
+    if (stats.isSymbolicLink()) return;
+    if (stats.isFile()) {
+      total += stats.size;
+      return;
+    }
+    if (!stats.isDirectory()) return;
+    const entries = await fs.promises.readdir(currentPath);
+    await Promise.all(entries.map(entry => visit(path.join(currentPath, entry))));
+  }
+  try {
+    await visit(filePath);
+    return total;
+  } catch {
+    return undefined;
+  }
+}
+
+async function buildShareDeploymentPersistenceBindingFromPath(
+  projectDirectory: string,
+  selectedPath: string,
+): Promise<ShareDeploymentPersistence['bindings'][number]> {
+  const projectRoot = await fs.promises.realpath(projectDirectory);
+  const targetPath = await fs.promises.realpath(selectedPath);
+  const relativePath = path.relative(projectRoot, targetPath).replace(/\\/g, '/');
+  if (
+    !relativePath ||
+    relativePath === '.' ||
+    relativePath.startsWith('../') ||
+    path.isAbsolute(relativePath)
+  ) {
+    throw new Error('Selected service data must be inside the project directory.');
+  }
+  const segments = relativePath.split('/').filter(Boolean);
+  if (
+    segments.length === 0 ||
+    segments.some(segment => SHARE_DEPLOYMENT_PERSISTENCE_EXCLUDED_SEGMENTS.has(segment)) ||
+    segments.some(segment => segment === '..' || segment.startsWith('.env'))
+  ) {
+    throw new Error('Selected service data path is not supported.');
+  }
+  const stats = await fs.promises.lstat(targetPath);
+  if (stats.isSymbolicLink()) {
+    throw new Error('Symbolic links cannot be used as service data.');
+  }
+  const kind = stats.isDirectory()
+    ? ShareDeploymentPersistenceBindingKind.Directory
+    : stats.isFile()
+      ? ShareDeploymentPersistenceBindingKind.File
+      : null;
+  if (!kind) {
+    throw new Error('Selected service data must be a file or directory.');
+  }
+  if (
+    kind === ShareDeploymentPersistenceBindingKind.File &&
+    isSensitiveShareDeploymentPersistenceFileName(path.basename(targetPath))
+  ) {
+    throw new Error('Selected service data path is not supported.');
+  }
+  const sizeBytes = await estimateShareDeploymentPersistencePathBytes(targetPath);
+  return {
+    appPath: relativePath,
+    dataPath: relativePath,
+    kind,
+    ...(sizeBytes !== undefined ? { sizeBytes } : {}),
   };
 }
 
@@ -1529,6 +1757,7 @@ let openClawRuntimeAdapter: OpenClawRuntimeAdapter | null = null;
 let coworkEngineRouter: CoworkEngineRouter | null = null;
 let skillManager: SkillManager | null = null;
 let mcpRuntime: McpRuntime | null = null;
+let skinRuntimeController: SkinRuntimeController | null = null;
 let imGatewayManager: IMGatewayManager | null = null;
 let storeInitPromise: Promise<SqliteStore> | null = null;
 let sqliteBackupManager: SqliteBackupManager | null = null;
@@ -2556,6 +2785,7 @@ const bindCoworkRuntimeForwarder = (): void => {
 
   runtime.on('complete', (sessionId: string, claudeSessionId: string | null) => {
     mediaSelectionBySession.delete(sessionId);
+    skinRuntimeController?.handleRuntimeComplete(sessionId);
     mediaReferencesBySession.delete(sessionId);
     getDesktopNotificationManager().handleComplete(sessionId);
     const windows = BrowserWindow.getAllWindows();
@@ -2579,6 +2809,7 @@ const bindCoworkRuntimeForwarder = (): void => {
 
   runtime.on('error', (sessionId: string, error: string) => {
     mediaSelectionBySession.delete(sessionId);
+    skinRuntimeController?.handleRuntimeError(sessionId);
     mediaReferencesBySession.delete(sessionId);
     // Mark session as error in store so the .catch() fallback can detect duplicates.
     try {
@@ -3230,6 +3461,26 @@ const resolveMediaSelectionForSession = (sessionId: string | null): MediaSelecti
   }
 
   return undefined;
+};
+
+const getSkinRuntimeController = (): SkinRuntimeController => {
+  if (!skinRuntimeController) {
+    skinRuntimeController = new SkinRuntimeController({
+      rootDir: path.join(app.getPath('userData'), 'skins'),
+      getInstalledKits: () => (
+        getStore().get<Record<string, InstalledKitRecord>>(KitStoreKey.Installed) ?? {}
+      ),
+      getParentSessionId: sessionId => (
+        getCoworkParentSessionId(getStore().getDatabase(), sessionId)
+      ),
+      resolveSessionId: sessionKey => (
+        resolveCoworkSessionIdByOpenClawSessionKey(getStore().getDatabase(), sessionKey)
+      ),
+      resolveMediaSelection: resolveMediaSelectionForSession,
+      onChanged: notifySkinChanged,
+    });
+  }
+  return skinRuntimeController;
 };
 
 const mediaModelIdForOutput = (model: unknown, fallback?: string): string => {
@@ -4088,6 +4339,10 @@ if (!gotTheLock) {
     context: { sessionKey: string; toolCallId: string };
   }): Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean; details?: Record<string, unknown> }> => {
     const { tool, args } = request;
+    const skinRuntime = getSkinRuntimeController();
+    if (skinRuntime.handlesTool(tool)) {
+      return skinRuntime.handleToolRequest(request);
+    }
     const action = (args.action as string) || 'generate';
     const serverBaseUrl = getServerApiBaseUrl();
     const sessionId = extractSessionIdFromKey(request.context.sessionKey);
@@ -4099,6 +4354,14 @@ if (!gotTheLock) {
       : canonicalizeMediaModelId(selection?.videoModelId || selection?.modelId || '');
     let selectedModel = explicitModel || resolvedModelFromSelection;
     let selectedModelSource = explicitModel ? 'tool' : resolvedModelFromSelection ? 'selection' : 'none';
+
+    if (action === 'generate' && tool === MediaGenerationTool.Image) {
+      const skinPreflight = await skinRuntime.preflightLobsterImageGeneration(
+        sessionId,
+        selection,
+      );
+      if (skinPreflight) return skinPreflight;
+    }
 
     if (action === 'generate' && resolvedModelFromSelection && explicitModel && explicitModel !== resolvedModelFromSelection) {
       console.warn(`[MediaGeneration] overriding LLM model choice "${explicitModel}" with user selection "${resolvedModelFromSelection}"`);
@@ -4179,9 +4442,6 @@ if (!gotTheLock) {
         const pollCount = incrementMediaStatusPollCount(sessionId, taskId);
         const mediaType = tool === MediaGenerationTool.Image ? 'images' : 'videos';
         const statusMediaType = tool === MediaGenerationTool.Image ? 'image' : 'video';
-        if (sessionId && statusMediaType === 'video') {
-          markMediaTaskHandledByStatusPolling(sessionId, taskId);
-        }
         console.log(`[MediaGeneration] checking ${mediaType} task status for task ${taskId}.`);
         const resp = await fetchWithAuth(`${serverBaseUrl}/api/media/${mediaType}/tasks/${taskId}`);
         console.log(`[MediaGeneration] server returned HTTP ${resp.status} for ${mediaType} task status.`);
@@ -4201,7 +4461,7 @@ if (!gotTheLock) {
           ? task.modelSelectionReason.trim()
           : undefined;
         if (sessionId && TERMINAL_MEDIA_TASK_STATUSES.has(status)) {
-          pendingMediaTasks.delete(taskId);
+          markMediaTaskHandledByStatusPolling(sessionId, taskId);
         }
         const assets = resultUrls.map(url => ({
           type: statusMediaType,
@@ -5160,6 +5420,34 @@ if (!gotTheLock) {
     }
   });
 
+  ipcMain.handle('auth:claimCreditsFinalReward', async (_event, payload: { campaignCode?: string }) => {
+    try {
+      const campaignCode = payload?.campaignCode?.trim();
+      if (!campaignCode) return { success: false, error: 'Missing campaign code' };
+      const serverBaseUrl = getServerApiBaseUrl();
+      const url = appendKeyfromQuery(`${serverBaseUrl}/api/credits-reset-campaign/free-credits/claim`);
+      const resp = await fetchWithAuth(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ campaignCode }),
+      });
+      const body = (await resp.json()) as {
+        code: number;
+        message?: string;
+        data?: Record<string, unknown>;
+      };
+      if (!resp.ok || body.code !== 0 || !body.data) {
+        return { success: false, error: body.message || `Claim failed (${resp.status})` };
+      }
+      return { success: true, data: body.data };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Claim failed',
+      };
+    }
+  });
+
   ipcMain.handle('auth:getActiveClientBanner', async () => {
     try {
       const serverBaseUrl = getServerApiBaseUrl();
@@ -5735,69 +6023,157 @@ if (!gotTheLock) {
     }
   });
 
+  ipcMain.handle(ShareDeploymentIpc.SelectPersistencePath, async (event, input: unknown) => {
+    try {
+      const options = sanitizeShareDeploymentSelectPersistencePathInput(input);
+      const ownerWindow = BrowserWindow.fromWebContents(event.sender);
+      let defaultPath: string | undefined;
+      try {
+        const stats = await fs.promises.stat(options.projectDirectory);
+        if (stats.isDirectory()) {
+          defaultPath = options.projectDirectory;
+        }
+      } catch {
+        defaultPath = undefined;
+      }
+      const dialogOptions = {
+        properties: options.kind === ShareDeploymentPersistenceBindingKind.File
+          ? ['openFile'] as 'openFile'[]
+          : ['openDirectory'] as 'openDirectory'[],
+        defaultPath,
+      };
+      const result = ownerWindow
+        ? await dialog.showOpenDialog(ownerWindow, dialogOptions)
+        : await dialog.showOpenDialog(dialogOptions);
+      if (result.canceled || result.filePaths.length === 0) {
+        return {
+          success: true,
+        };
+      }
+      const binding = await buildShareDeploymentPersistenceBindingFromPath(
+        options.projectDirectory,
+        result.filePaths[0],
+      );
+      return {
+        success: true,
+        binding,
+      };
+    } catch (error) {
+      console.error('[ShareDeployment] failed to select service data path:', error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to select service data path',
+      };
+    }
+  });
+
   ipcMain.handle(ShareDeploymentIpc.CreateNodeDeployment, async (_event, input: unknown) => {
     let archivePath: string | undefined;
     try {
       const options = sanitizeShareDeploymentCreateNodeInput(input);
+      const operationSourceKey = buildNodeDeploymentClientSourceKey({
+        sessionId: options.sessionId,
+        localServiceUrl: options.localServiceUrl,
+        projectDirectory: options.projectDirectory,
+      });
       console.debug(
         `[ShareDeployment] received node deployment request for session ${options.sessionId} and artifact ${options.artifactId}`,
       );
-      const packaged = await packageNodeServiceDeployment({
-        projectDirectory: options.projectDirectory,
-        localServiceUrl: options.localServiceUrl,
-        installCommand: options.installCommand,
-        buildCommand: options.buildCommand,
-        startCommand: options.startCommand,
-        port: options.port,
-      });
-      archivePath = packaged.archivePath;
-      const isStaticDeployment = packaged.deploymentKind === ShareDeploymentKind.StaticSite;
-      const clientSourceKey = isStaticDeployment
-        ? buildStaticDeploymentClientSourceKey({
-            sessionId: options.sessionId,
-            localServiceUrl: options.localServiceUrl,
-            projectDirectory: options.projectDirectory,
-          })
-        : buildNodeDeploymentClientSourceKey({
-            sessionId: options.sessionId,
-            localServiceUrl: options.localServiceUrl,
-            projectDirectory: options.projectDirectory,
-          });
-      const result = isStaticDeployment
-        ? await uploadStaticDeployment(
-            getServerApiBaseUrl(),
-            getHtmlSharePublicBaseUrl(),
-            fetchWithAuth,
+      return await shareDeploymentOperationCoordinator.run(operationSourceKey, async () => {
+        const packaged = await packageNodeServiceDeployment({
+          projectDirectory: options.projectDirectory,
+          localServiceUrl: options.localServiceUrl,
+          installCommand: options.installCommand,
+          buildCommand: options.buildCommand,
+          startCommand: options.startCommand,
+          port: options.port,
+          persistence: options.persistence,
+        });
+        archivePath = packaged.archivePath;
+        const analysis = options.persistence
+          ? {
+              ...packaged.analysis,
+              persistence: options.persistence,
+            }
+          : packaged.analysis;
+        const isStaticDeployment = packaged.deploymentKind === ShareDeploymentKind.StaticSite;
+        const clientSourceKey = isStaticDeployment
+          ? buildStaticDeploymentClientSourceKey({
+              sessionId: options.sessionId,
+              localServiceUrl: options.localServiceUrl,
+              projectDirectory: options.projectDirectory,
+            })
+          : operationSourceKey;
+        const serverBaseUrl = getServerApiBaseUrl();
+        const publicBaseUrl = getHtmlSharePublicBaseUrl();
+        const result = isStaticDeployment
+          ? await uploadStaticDeployment(
+              serverBaseUrl,
+              publicBaseUrl,
+              fetchWithAuth,
+              {
+                ...options,
+                archivePath: packaged.archivePath,
+                sourceSha256: packaged.sourceSha256,
+                analysis,
+                archiveBytes: packaged.archiveBytes,
+                clientSourceKey,
+                deploymentKind: ShareDeploymentKind.StaticSite,
+                entryFile: packaged.entryFile ?? 'index.html',
+                spaFallback: packaged.spaFallback ?? true,
+              },
+            )
+          : await uploadNodeDeployment(
+              serverBaseUrl,
+              publicBaseUrl,
+              fetchWithAuth,
+              {
+                ...options,
+                archivePath: packaged.archivePath,
+                sourceSha256: packaged.sourceSha256,
+                analysis,
+                archiveBytes: packaged.archiveBytes,
+                clientSourceKey,
+                deploymentKind: ShareDeploymentKind.NodeService,
+              },
+            );
+        let finalResult = result;
+        if (result.success && result.deployment) {
+          const accessSync = await reconcileShareDeploymentAccess(
+            result.deployment,
             {
-              ...options,
-              archivePath: packaged.archivePath,
-              sourceSha256: packaged.sourceSha256,
-              analysis: packaged.analysis,
-              archiveBytes: packaged.archiveBytes,
-              clientSourceKey,
-              deploymentKind: ShareDeploymentKind.StaticSite,
-              entryFile: packaged.entryFile ?? 'index.html',
-              spaFallback: packaged.spaFallback ?? true,
+              accessMode: options.accessMode ?? HtmlShareAccessMode.Code,
+              previousAccessMode: options.previousAccessMode,
+              targetShareStatus: options.targetShareStatus ?? HtmlShareStatus.Live,
             },
-          )
-        : await uploadNodeDeployment(
-            getServerApiBaseUrl(),
-            getHtmlSharePublicBaseUrl(),
-            fetchWithAuth,
             {
-              ...options,
-              archivePath: packaged.archivePath,
-              sourceSha256: packaged.sourceSha256,
-              analysis: packaged.analysis,
-              archiveBytes: packaged.archiveBytes,
-              clientSourceKey,
-              deploymentKind: ShareDeploymentKind.NodeService,
+              updateAccessMode: (shareId, accessMode) => updateHtmlShareAccessMode(
+                serverBaseUrl,
+                publicBaseUrl,
+                fetchWithAuth,
+                shareId,
+                accessMode,
+              ),
+              updateStatus: (shareId, status) => updateHtmlShareStatus(
+                serverBaseUrl,
+                publicBaseUrl,
+                fetchWithAuth,
+                shareId,
+                status,
+              ),
             },
           );
-      console.debug(
-        `[ShareDeployment] local service deployment request finished with kind ${packaged.deploymentKind} success ${result.success} and code ${result.code ?? 'none'}`,
-      );
-      return result;
+          finalResult = {
+            ...result,
+            deployment: accessSync.deployment,
+            accessSyncError: formatShareDeploymentAccessSyncError(accessSync.failures),
+          };
+        }
+        console.debug(
+          `[ShareDeployment] local service deployment request finished with kind ${packaged.deploymentKind} success ${finalResult.success} and code ${finalResult.code ?? 'none'}`,
+        );
+        return finalResult;
+      });
     } catch (error) {
       console.error('[ShareDeployment] failed to create node deployment:', error);
       return {
@@ -5834,6 +6210,36 @@ if (!gotTheLock) {
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Failed to load deployment',
+      };
+    }
+  });
+
+  ipcMain.handle(ShareDeploymentIpc.GetPersistence, async (_event, deploymentId: unknown) => {
+    try {
+      const id = sanitizeShareDeploymentPersistenceDeploymentIdInput(deploymentId);
+      return await getDeploymentPersistence(getServerApiBaseUrl(), fetchWithAuth, id);
+    } catch (error) {
+      console.error('[ShareDeployment] failed to load service data:', error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to load service data',
+      };
+    }
+  });
+
+  ipcMain.handle(ShareDeploymentIpc.DownloadPersistenceArchive, async (_event, input: unknown) => {
+    try {
+      const options = sanitizeShareDeploymentDownloadPersistenceInput(input);
+      return await downloadDeploymentPersistenceArchive(
+        getServerApiBaseUrl(),
+        fetchWithAuth,
+        options,
+      );
+    } catch (error) {
+      console.error('[ShareDeployment] failed to download service data:', error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to download service data',
       };
     }
   });
@@ -6450,7 +6856,13 @@ if (!gotTheLock) {
           );
         }
 
-        const normalizedMediaSelection = normalizeMediaSelectionState(options.mediaSelection);
+        const skinTurn = getSkinRuntimeController().prepareTurn({
+          sessionId: session.id,
+          kitIds: options.kitIds,
+          mediaSelection: normalizeMediaSelectionState(options.mediaSelection),
+          mediaGenerationEntitled: cachedMediaGenerationEntitled,
+        });
+        const { workflowKind, mediaSelection: normalizedMediaSelection } = skinTurn;
         if (normalizedMediaSelection && normalizedMediaSelection.mode !== 'none') {
           mediaSelectionBySession.set(session.id, normalizedMediaSelection);
         } else {
@@ -6511,6 +6923,7 @@ if (!gotTheLock) {
             imageAttachments: options.imageAttachments,
             agentId: options.agentId,
             mediaSelection: normalizedMediaSelection,
+            workflowKind,
             mediaReferences: options.mediaReferences,
             selectedTextSnippets,
           })
@@ -6620,7 +7033,13 @@ if (!gotTheLock) {
           };
         }
 
-        const normalizedMediaSelection = normalizeMediaSelectionState(options.mediaSelection);
+        const skinTurn = getSkinRuntimeController().prepareTurn({
+          sessionId: options.sessionId,
+          kitIds: options.kitIds,
+          mediaSelection: normalizeMediaSelectionState(options.mediaSelection),
+          mediaGenerationEntitled: cachedMediaGenerationEntitled,
+        });
+        const { workflowKind, mediaSelection: normalizedMediaSelection } = skinTurn;
         if (normalizedMediaSelection && normalizedMediaSelection.mode !== 'none') {
           mediaSelectionBySession.set(options.sessionId, normalizedMediaSelection);
         } else {
@@ -6660,6 +7079,7 @@ if (!gotTheLock) {
             resolvedKitCapabilities: options.resolvedKitCapabilities,
             imageAttachments: options.imageAttachments,
             mediaSelection: normalizedMediaSelection,
+            workflowKind,
             mediaReferences: options.mediaReferences,
             selectedTextSnippets,
           })
@@ -6867,6 +7287,7 @@ if (!gotTheLock) {
       const coworkStoreInstance = getCoworkStore();
       coworkStoreInstance.deleteSession(sessionId);
       mediaSelectionBySession.delete(sessionId);
+      skinRuntimeController?.handleSessionDeleted(sessionId);
       mediaReferencesBySession.delete(sessionId);
       getDesktopNotificationManager().handleSessionDeleted(sessionId);
       // Remove any pending media tasks for this session
@@ -6910,6 +7331,7 @@ if (!gotTheLock) {
       coworkStoreInstance.deleteSessions(sessionIds);
       const router = getCoworkEngineRouter();
       for (const sessionId of sessionIds) {
+        skinRuntimeController?.handleSessionDeleted(sessionId);
         getDesktopNotificationManager().handleSessionDeleted(sessionId);
         try {
           getIMGatewayManager()?.getIMStore()?.deleteSessionMappingByCoworkSessionId(sessionId);
@@ -10209,7 +10631,7 @@ if (!gotTheLock) {
           ? `script-src 'self' 'unsafe-inline' http://localhost:${devPort} ws://localhost:${devPort}`
           : "script-src 'self'",
         "style-src 'self' 'unsafe-inline' https:",
-        `img-src 'self' data: blob: https: http: ${ArtifactPreviewProtocol.LocalFile}:`,
+        `img-src 'self' data: blob: https: http: ${ArtifactPreviewProtocol.LocalFile}: ${SKIN_PRIVILEGED_SCHEME.scheme}:`,
         // 允许连接到所有域名，不做限制
         'connect-src *',
         "font-src 'self' data: blob: https:",
@@ -10808,6 +11230,7 @@ if (!gotTheLock) {
 
     // 注册 localfile:// 自定义协议，用于安全加载本地媒体文件。
     protocol.handle(ArtifactPreviewProtocol.LocalFile, createLocalFileProtocolResponse);
+    registerSkinElectronIntegration(getSkinRuntimeController().store);
 
     profiler.mark('initStore');
     console.log('[Main] initApp: starting initStore()');

@@ -17,6 +17,10 @@ import {
 } from '../../../common/openclawSession';
 import { CoworkIpcChannel } from '../../../shared/cowork/constants';
 import {
+  buildCoworkErrorDetail,
+  type CoworkErrorDetail,
+} from '../../../shared/cowork/errorDetail';
+import {
   type CoworkGoal,
   normalizeCoworkGoal,
 } from '../../../shared/cowork/goal';
@@ -59,7 +63,11 @@ import {
   parseChannelSessionKey,
   parseManagedSessionKey,
 } from '../openclawChannelSessionSync';
-import { OPENCLAW_AGENT_TIMEOUT_SECONDS } from '../openclawConfigSync';
+import {
+  OPENCLAW_AGENT_TIMEOUT_SECONDS,
+  type OpenClawProviderModelSource,
+  resolveModelSourceForOpenClawProvider,
+} from '../openclawConfigSync';
 import {
   OpenClawEngineManager,
   type OpenClawEngineStatus,
@@ -98,6 +106,7 @@ import {
 import { buildCoworkTopKEvidenceBridgeResult } from './coworkTopKEvidence';
 import { buildCoworkWorkspaceRehydrationBridge } from './coworkWorkspaceRehydration';
 import { extractCronDeliveredTarget } from './cronDeliveryTarget';
+import { buildMediaGenerationTurnInstruction } from './mediaGenerationTurnInstruction';
 import { OpenClawApprovalController } from './openclawApprovalController';
 import {
   applyLocalTimestampsToEntries,
@@ -517,6 +526,8 @@ type ChatEventPayload = {
   failoverReason?: string;
   providerRuntimeFailureKind?: string;
   providerErrorType?: string;
+  httpCode?: string;
+  providerErrorMessagePreview?: string;
   rawErrorPreview?: string;
   rawErrorHash?: string;
 };
@@ -546,6 +557,10 @@ const OPENCLAW_GENERIC_LLM_REQUEST_FAILED = 'LLM request failed.';
 const OpenClawFailureFinalText = {
   AgentFailedBeforeReply: 'Agent failed before reply:',
   SessionFileLocked: 'session file locked (timeout',
+  // OpenClaw's generic external-run failure copy (verbose off, e.g. cron/IM
+  // sessions). Detect it so the session surfaces an error instead of a
+  // normal-looking assistant reply.
+  GenericRunFailure: 'Something went wrong while processing your request',
 } as const;
 
 const OpenClawHistoryRole = {
@@ -920,7 +935,8 @@ export function isPlanModeResponseComplete(text: string): boolean {
 function isOpenClawFailureFinalText(text: string): boolean {
   const trimmed = text.trim();
   return trimmed.includes(OpenClawFailureFinalText.AgentFailedBeforeReply)
-    || trimmed.includes(OpenClawFailureFinalText.SessionFileLocked);
+    || trimmed.includes(OpenClawFailureFinalText.SessionFileLocked)
+    || trimmed.includes(OpenClawFailureFinalText.GenericRunFailure);
 }
 
 export function isSignificantAssistantStreamReset(previousLength: number, nextLength: number): boolean {
@@ -1368,6 +1384,8 @@ export type OpenClawSafeRuntimeErrorMetadata = {
   failoverReason?: string;
   providerRuntimeFailureKind?: string;
   providerErrorType?: string;
+  httpCode?: string;
+  providerErrorMessagePreview?: string;
   rawErrorPreview?: string;
   rawErrorHash?: string;
 };
@@ -1419,6 +1437,8 @@ function normalizeOpenClawSafeRuntimeErrorMetadata(
     'failoverReason',
     'providerRuntimeFailureKind',
     'providerErrorType',
+    'httpCode',
+    'providerErrorMessagePreview',
     'rawErrorPreview',
     'rawErrorHash',
   ] as const) {
@@ -1484,6 +1504,48 @@ export function resolveOpenClawRuntimeErrorMessage(
   }
 
   return normalized;
+}
+
+export type OpenClawRuntimeErrorDetailOptions = {
+  /** Turn model reference ("providerId/modelId") used when gateway metadata lacks provider/model. */
+  fallbackModelRef?: string;
+  /** Classifies an OpenClaw provider id back to its LobsterAI Settings entry. */
+  resolveModelSource?: (openclawProviderId: string) => OpenClawProviderModelSource | undefined;
+};
+
+const splitModelRef = (modelRef: string | undefined): { provider?: string; model?: string } => {
+  const trimmed = modelRef?.trim();
+  if (!trimmed) return {};
+  const slashIndex = trimmed.indexOf('/');
+  if (slashIndex <= 0) return { model: trimmed };
+  return {
+    provider: trimmed.slice(0, slashIndex),
+    model: trimmed.slice(slashIndex + 1) || undefined,
+  };
+};
+
+/**
+ * Preserves the redacted technical detail of a runtime error next to the
+ * normalized display copy, so the UI can offer a "technical details"
+ * disclosure. Returns undefined when there is nothing beyond the display copy.
+ */
+export function buildOpenClawRuntimeErrorDetail(
+  rawErrorMessage: string,
+  displayMessage: string,
+  metadata?: OpenClawSafeRuntimeErrorMetadata,
+  options?: OpenClawRuntimeErrorDetailOptions,
+): CoworkErrorDetail | undefined {
+  const fallbackRef = splitModelRef(options?.fallbackModelRef);
+  const provider = metadata?.provider?.trim() || fallbackRef.provider;
+  const model = metadata?.model?.trim() || fallbackRef.model;
+  const sourceInfo = provider ? options?.resolveModelSource?.(provider) : undefined;
+  return buildCoworkErrorDetail({
+    rawErrorMessage,
+    displayMessage,
+    metadata: { ...metadata, provider, model },
+    modelSource: sourceInfo?.source,
+    providerDisplayName: sourceInfo?.providerDisplayName,
+  });
 }
 
 const extractTextBlocksAndSignals = (
@@ -1924,62 +1986,6 @@ const toToolInputRecord = (value: unknown): Record<string, unknown> => {
     return {};
   }
   return { value };
-};
-
-const buildMediaGenerationTurnInstruction = (selection?: CoworkMediaSelection, hasMediaSkillActive?: boolean): string => {
-  if (!selection || selection.mode === 'none') {
-    if (hasMediaSkillActive) {
-      return [
-        '[LobsterAI media generation tools — NOT AVAILABLE]',
-        'The lobsterai_image_generate and lobsterai_video_generate tools are NOT available for this turn.',
-        'Do NOT call lobsterai_image_generate or lobsterai_video_generate.',
-        'However, a media generation skill (e.g. seedream, seedance) is provided in the system prompt. You may use it to fulfill image or video generation requests.',
-      ].join('\n');
-    }
-    return '';
-  }
-
-  const lines = [
-    '[LobsterAI media generation turn instruction]',
-    'The user selected a LobsterAI media generation model for this turn.',
-    'IMPORTANT: Do NOT read or use the "seedance" or "seedream" skills for this request.',
-    'The LobsterAI media generation tools (lobsterai_image_generate / lobsterai_video_generate) replace those skills when a media model is selected.',
-    'Do not run any skill scripts for image or video generation. Use only the lobsterai_* tools specified below.',
-  ];
-
-  if (selection.mode === 'image') {
-    lines.push('If the current user request asks to create, generate, draw, render, or make an image/photo/picture, you must call the lobsterai_image_generate tool exactly once with action="generate".');
-    lines.push('Use the current user request and relevant prior conversation as the image prompt.');
-    lines.push('Do not answer with only a text prompt when the user asked for an image.');
-    const imageModel = selection.imageModelId?.trim() || selection.modelId?.trim();
-    if (imageModel) {
-      lines.push(`You MUST use model "${imageModel}" for image generation. Do NOT use any other model for the generate action, even if other models appear in the available model list.`);
-    }
-  } else if (selection.mode === 'video') {
-    lines.push('If the current user request asks to create, generate, render, or make a video, you must call the lobsterai_video_generate tool exactly once with action="generate".');
-    lines.push('Use the current user request and relevant prior conversation as the video prompt.');
-    lines.push('Do not answer with only a text prompt when the user asked for a video.');
-    const videoModel = selection.videoModelId?.trim() || selection.modelId?.trim();
-    if (videoModel) {
-      lines.push(`You MUST use model "${videoModel}" for video generation. Do NOT use any other model for the generate action, even if other models appear in the available model list.`);
-    }
-  } else {
-    lines.push('If the current user request asks for image generation, call lobsterai_image_generate with action="generate".');
-    lines.push('If the current user request asks for video generation, call lobsterai_video_generate with action="generate".');
-    lines.push('Use the current user request and relevant prior conversation as the media prompt.');
-    if (selection.imageModelId?.trim()) {
-      lines.push(`For image generation, you MUST use model "${selection.imageModelId.trim()}". Do NOT use a different model.`);
-    }
-    if (selection.videoModelId?.trim()) {
-      lines.push(`For video generation, you MUST use model "${selection.videoModelId.trim()}". Do NOT use a different model.`);
-    }
-  }
-
-  if (!selection.imageModelId && !selection.videoModelId && selection.modelId?.trim()) {
-    lines.push(`You MUST use model "${selection.modelId.trim()}" for media generation. Do NOT use a different model unless the user explicitly requests a different LobsterAI media model by name.`);
-  }
-
-  return lines.join('\n');
 };
 
 const MediaReferenceTypeLabel = {
@@ -4032,6 +4038,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       imageAttachments: options.imageAttachments,
       agentId: options.agentId,
       mediaSelection: options.mediaSelection,
+      workflowKind: options.workflowKind,
       mediaReferences: options.mediaReferences,
       selectedTextSnippets: options.selectedTextSnippets,
     });
@@ -4048,6 +4055,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       resolvedKitCapabilities: options.resolvedKitCapabilities,
       imageAttachments: options.imageAttachments,
       mediaSelection: options.mediaSelection,
+      workflowKind: options.workflowKind,
       mediaReferences: options.mediaReferences,
       selectedTextSnippets: options.selectedTextSnippets,
     });
@@ -4529,6 +4537,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       imageAttachments?: CoworkImageAttachment[];
       agentId?: string;
       mediaSelection?: CoworkMediaSelection;
+      workflowKind?: CoworkStartOptions['workflowKind'];
       mediaReferences?: CoworkMediaAttachmentRef[];
       selectedTextSnippets?: CoworkSelectedTextSnippet[];
     },
@@ -4714,7 +4723,11 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     const outboundSystemPrompt = [
       systemPromptText,
       planModeExecutionApproved ? buildPlanModeExecutionOverridePrompt() : '',
-      buildMediaGenerationTurnInstruction(options.mediaSelection, hasMediaSkillActive),
+      buildMediaGenerationTurnInstruction(
+        options.mediaSelection,
+        hasMediaSkillActive,
+        options.workflowKind,
+      ),
     ].filter(p => p?.trim()).join('\n\n');
     const planMode = isPlanModeSystemPrompt(outboundSystemPrompt);
     if (planModeExecutionApproved) {
@@ -5507,6 +5520,28 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     const rawCurrentModel = agent?.model || '';
     if (!rawCurrentModel) return '';
     return this.normalizeModelRef(rawCurrentModel);
+  }
+
+  /** Builds the persisted error detail, annotated with the failing model's LobsterAI source. */
+  private buildTurnErrorDetail(
+    sessionId: string,
+    turn: ActiveTurn | undefined,
+    rawErrorMessage: string,
+    displayMessage: string,
+    metadata: OpenClawSafeRuntimeErrorMetadata | undefined,
+  ): CoworkErrorDetail | undefined {
+    let fallbackModelRef = turn?.model?.trim() || '';
+    if (!fallbackModelRef) {
+      try {
+        fallbackModelRef = this.resolveCurrentModelForSession(sessionId);
+      } catch {
+        fallbackModelRef = '';
+      }
+    }
+    return buildOpenClawRuntimeErrorDetail(rawErrorMessage, displayMessage, metadata, {
+      fallbackModelRef: fallbackModelRef || undefined,
+      resolveModelSource: resolveModelSourceForOpenClawProvider,
+    });
   }
 
   private finalizeStoppedStreamingMessage(
@@ -6881,6 +6916,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         // If a different run started while the fallback was pending, leave it alone.
         if (errorRunId && !turn.knownRunIds.has(errorRunId)) return;
         const errorMessage = resolveOpenClawRuntimeErrorMessage(rawErrorMessage, errorMetadata);
+        const errorDetail = this.buildTurnErrorDetail(sessionId, turn, rawErrorMessage, errorMessage, errorMetadata);
         console.log(`[OpenClawRuntime] lifecycle error fallback surfaced an error after waiting for the gateway chat error event in session ${sessionId}: ${errorMessage}`);
         // Abort the retrying run on the gateway so the session is freed for new messages.
         // Without this, the gateway continues retrying indefinitely and rejects subsequent chat.send requests.
@@ -6899,7 +6935,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         const errorMsg = this.store.addMessage(sessionId, {
           type: 'system',
           content: errorMessage,
-          metadata: { error: errorMessage },
+          metadata: { error: errorMessage, ...(errorDetail ? { errorDetail } : {}) },
         });
         this.emit('message', sessionId, errorMsg);
         this.emit('error', sessionId, errorMessage);
@@ -8022,16 +8058,16 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       return;
     }
     if (finalTextIsOpenClawFailure) {
-      const errorMessage = resolveOpenClawRuntimeErrorMessage(
-        finalText.trim() || 'OpenClaw run failed',
-        normalizeOpenClawSafeRuntimeErrorMetadata(payload),
-      );
+      const rawErrorMessage = finalText.trim() || 'OpenClaw run failed';
+      const errorMetadata = normalizeOpenClawSafeRuntimeErrorMetadata(payload);
+      const errorMessage = resolveOpenClawRuntimeErrorMessage(rawErrorMessage, errorMetadata);
+      const errorDetail = this.buildTurnErrorDetail(sessionId, turn, rawErrorMessage, errorMessage, errorMetadata);
       const erroredSessionKey = turn.sessionKey;
       this.store.updateSession(sessionId, { status: 'error' });
       const errorMsg = this.store.addMessage(sessionId, {
         type: 'system',
         content: errorMessage,
-        metadata: { error: errorMessage },
+        metadata: { error: errorMessage, ...(errorDetail ? { errorDetail } : {}) },
       });
       this.emit('message', sessionId, errorMsg);
       this.emit('error', sessionId, errorMessage);
@@ -8184,16 +8220,15 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       const rawErrorMessage = payload.errorMessage?.trim()
         || errorMessageFromMessage?.trim()
         || 'OpenClaw run failed';
-      const errorMessage = resolveOpenClawRuntimeErrorMessage(
-        rawErrorMessage,
-        normalizeOpenClawSafeRuntimeErrorMetadata(payload),
-      );
+      const errorMetadata = normalizeOpenClawSafeRuntimeErrorMetadata(payload);
+      const errorMessage = resolveOpenClawRuntimeErrorMessage(rawErrorMessage, errorMetadata);
+      const errorDetail = this.buildTurnErrorDetail(sessionId, turn, rawErrorMessage, errorMessage, errorMetadata);
       const erroredSessionKey = turn.sessionKey;
       this.store.updateSession(sessionId, { status: 'error' });
       const errorMsg = this.store.addMessage(sessionId, {
         type: 'system',
         content: errorMessage,
-        metadata: { error: errorMessage },
+        metadata: { error: errorMessage, ...(errorDetail ? { errorDetail } : {}) },
       });
       this.emit('message', sessionId, errorMsg);
       this.emit('error', sessionId, errorMessage);
@@ -8838,10 +8873,8 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   private handleChatError(sessionId: string, turn: ActiveTurn, payload: ChatEventPayload): void {
     console.log('[OpenClawRuntime] handleChatError payload:', JSON.stringify(payload).slice(0, 1000));
     const rawErrorMessage = payload.errorMessage?.trim() || 'OpenClaw run failed';
-    let errorMessage = resolveOpenClawRuntimeErrorMessage(
-      rawErrorMessage,
-      normalizeOpenClawSafeRuntimeErrorMetadata(payload),
-    );
+    const errorMetadata = normalizeOpenClawSafeRuntimeErrorMetadata(payload);
+    let errorMessage = resolveOpenClawRuntimeErrorMessage(rawErrorMessage, errorMetadata);
 
     // Detect model API errors that are likely caused by unsupported image content
     // in tool results (e.g., Read tool returning image blocks for non-vision models).
@@ -8850,6 +8883,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     if (/^400\b/.test(errorMessage)) {
       errorMessage += '\n\n[Hint: If the model attempted to read an image file, this may be because the model does not support image input. Consider using a vision-capable model or avoid sending image files.]';
     }
+    const errorDetail = this.buildTurnErrorDetail(sessionId, turn, rawErrorMessage, errorMessage, errorMetadata);
 
     const erroredSessionKey = turn.sessionKey;
     this.clearContextMaintenanceState(sessionId, turn, 'chat error');
@@ -8858,7 +8892,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     const errorMsg = this.store.addMessage(sessionId, {
       type: 'system',
       content: errorMessage,
-      metadata: { error: errorMessage },
+      metadata: { error: errorMessage, ...(errorDetail ? { errorDetail } : {}) },
     });
     this.emit('message', sessionId, errorMsg);
     this.emit('error', sessionId, errorMessage);

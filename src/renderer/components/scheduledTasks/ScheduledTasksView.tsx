@@ -1,4 +1,4 @@
-import { ArrowLeftIcon } from '@heroicons/react/24/outline';
+import { ArrowLeftIcon, PlusIcon } from '@heroicons/react/24/outline';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 
@@ -26,8 +26,8 @@ interface ScheduledTasksViewProps {
 
 type TabType = 'tasks' | 'history';
 
-const pageGutterClass = 'px-6 sm:px-8 lg:px-10';
-const pageContentClass = 'mx-auto w-full max-w-[880px]';
+const pageGutterClass = 'px-6';
+const pageContentClass = 'mx-auto w-full max-w-[1120px]';
 
 type DeleteTaskInfo = {
   id: string;
@@ -198,7 +198,10 @@ const ScheduledTasksView: React.FC<ScheduledTasksViewProps> = ({
   const showTabs = viewMode === 'list' && !selectedTaskId;
 
   return (
-    <div className="flex flex-col h-full">
+    <div
+      data-skin-management-page="true"
+      className="relative z-10 flex flex-col bg-background h-full"
+    >
       {/* Header */}
       <div className="draggable flex h-12 items-center justify-between px-4 border-b border-border shrink-0">
         <div className="flex items-center space-x-3 h-8">
@@ -236,46 +239,50 @@ const ScheduledTasksView: React.FC<ScheduledTasksViewProps> = ({
         </div>
       </div>
 
-      {/* Page header: title + subtitle + tabs + New Task button */}
+      {/* Page header: description + New Task action + tabs */}
       {showTabs && (
         <div className="shrink-0">
-          <div className={`${pageGutterClass} pt-5 pb-1`}>
+          <div className={`${pageGutterClass} pt-5`}>
             <div className={pageContentClass}>
-              <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0">
-                  <h2 className="text-xl font-semibold text-foreground">
-                    {i18nService.t('scheduledTasksTitle')}
-                  </h2>
-                  <p className="mt-1 text-sm text-secondary">
-                    {i18nService.t('scheduledTasksPageSubtitle')}
-                  </p>
-                </div>
-                {activeTab === 'tasks' && (
-                  <button
-                    type="button"
-                    onClick={handleCreateNew}
-                    disabled={taskListStatus !== ScheduledTaskDataStatus.Ready}
-                    className="shrink-0 rounded-lg bg-primary px-3.5 py-1.5 text-[14px] font-medium leading-5 text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-primary"
-                  >
-                    {i18nService.t('scheduledTasksNewTask')}
-                  </button>
-                )}
+              <div className="flex items-center justify-between gap-4">
+                <p className="min-w-0 truncate text-sm text-secondary">
+                  {i18nService.t('scheduledTasksPageSubtitle')}
+                </p>
+                <button
+                  type="button"
+                  onClick={handleCreateNew}
+                  disabled={taskListStatus !== ScheduledTaskDataStatus.Ready}
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-primary px-3.5 py-1.5 text-[13px] font-medium leading-5 text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-primary"
+                >
+                  <PlusIcon className="h-4 w-4" />
+                  {i18nService.t('scheduledTasksNewTask')}
+                </button>
               </div>
-              <div className="mt-4 inline-flex rounded-lg bg-surface-raised p-0.5">
+              <div className="mt-4 flex items-center border-b border-border">
                 {(['tasks', 'history'] as const).map(tab => (
                   <button
                     key={tab}
                     type="button"
                     onClick={() => handleTabChange(tab)}
-                    className={`rounded-md px-3.5 py-1 text-[13px] leading-5 transition-colors ${
+                    className={`relative px-2.5 pb-2.5 pt-0.5 text-[13px] font-semibold transition-colors ${
                       activeTab === tab
-                        ? 'bg-surface text-foreground shadow-subtle font-medium'
+                        ? 'text-foreground'
                         : 'text-secondary hover:text-foreground'
                     }`}
                   >
                     {i18nService.t(
                       tab === 'tasks' ? 'scheduledTasksTabTasks' : 'scheduledTasksTabHistory',
                     )}
+                    {tab === 'tasks' && tasks.length > 0 && (
+                      <span className="ml-1.5 rounded-full bg-surface-raised px-1.5 py-0.5 text-[10px] font-medium text-secondary">
+                        {tasks.length}
+                      </span>
+                    )}
+                    <div
+                      className={`absolute bottom-[-1px] left-0 right-0 h-0.5 rounded-full transition-colors ${
+                        activeTab === tab ? 'bg-primary' : 'bg-transparent'
+                      }`}
+                    />
                   </button>
                 ))}
               </div>

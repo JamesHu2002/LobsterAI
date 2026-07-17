@@ -53,7 +53,18 @@ describe('WindowsAppTitleBar', () => {
     expect(html).toContain('class="truncate text-sm font-medium text-foreground"');
   });
 
-  test('does not render on macOS', () => {
-    expect(renderTitleBar('darwin')).toBe('');
+  test.each(['darwin', 'linux'])('does not render on %s', (platform) => {
+    expect(renderTitleBar(platform)).toBe('');
+  });
+
+  test('uses uniform Windows caption glyphs with full-size hit targets', () => {
+    const html = renderTitleBar('win32');
+
+    expect(html.match(/w-\[46px\]/g)).toHaveLength(3);
+    expect(html.match(/h-3 w-3/g)).toHaveLength(3);
+    expect(html).toContain('aria-label="Minimize"');
+    expect(html).toContain('aria-label="Maximize"');
+    expect(html).toContain('aria-label="Close"');
+    expect(html).toContain('bg-surface-raised pl-3');
   });
 });

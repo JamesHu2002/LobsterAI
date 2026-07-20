@@ -1,7 +1,8 @@
 import type { IpcMain } from 'electron';
 
 import { NativeSandboxIpcChannel } from '../../shared/nativeSandbox/constants';
-import type { NativeSandboxServiceApi } from './nativeSandboxService';
+import type { NativeSandboxSetEnabledRequest } from '../../shared/nativeSandbox/types';
+import type { NativeSandboxControlServiceApi } from './nativeSandboxControlService';
 
 interface NativeSandboxLogger {
   log: (...args: unknown[]) => void;
@@ -9,7 +10,7 @@ interface NativeSandboxLogger {
 
 export interface RegisterNativeSandboxIpcHandlersOptions {
   ipcMain: Pick<IpcMain, 'handle'>;
-  createService: () => NativeSandboxServiceApi;
+  createService: () => NativeSandboxControlServiceApi;
   logger?: NativeSandboxLogger;
 }
 
@@ -23,8 +24,8 @@ export const registerNativeSandboxIpcHandlers = ({
   createService,
   logger = console,
 }: RegisterNativeSandboxIpcHandlersOptions): void => {
-  let service: NativeSandboxServiceApi | null = null;
-  const getService = (): NativeSandboxServiceApi => {
+  let service: NativeSandboxControlServiceApi | null = null;
+  const getService = (): NativeSandboxControlServiceApi => {
     if (!service) service = createService();
     return service;
   };
@@ -53,4 +54,22 @@ export const registerNativeSandboxIpcHandlers = ({
     );
     return result;
   });
+
+  ipcMain.handle(
+    NativeSandboxIpcChannel.SetEnabled,
+    async (_event, request: NativeSandboxSetEnabledRequest) => {
+      if (!request || typeof request.enabled !== 'boolean') {
+        throw new TypeError('Invalid native sandbox mode request.');
+      }
+      const enabled = request.enabled;
+      logger.log(`[NativeSandbox] ${enabled ? 'Enable' : 'Disable'} requested by the user.`);
+      const result = await getService().setEnabled(enabled);
+      logger.log(
+        `[NativeSandbox] Mode switch finished (success=${result.success}, `
+        + `enabled=${result.enabled}, stage=${result.stage}, `
+        + `rolledBack=${Boolean(result.rolledBack)}).`,
+      );
+      return result;
+    },
+  );
 };

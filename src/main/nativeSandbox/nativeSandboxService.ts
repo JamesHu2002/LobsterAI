@@ -45,10 +45,7 @@ const toError = (code: NativeSandboxError['code'], error: unknown): NativeSandbo
   message: error instanceof Error ? error.message : String(error),
 });
 
-/**
- * Owns Windows SRT provisioning and diagnostics only. M1 deliberately does not
- * connect this service to OpenClaw command execution.
- */
+/** Owns Windows SRT provisioning and host-level health diagnostics. */
 export class NativeSandboxService implements NativeSandboxServiceApi {
   private readonly platform: NodeJS.Platform;
   private readonly architecture: string;
@@ -132,6 +129,7 @@ export class NativeSandboxService implements NativeSandboxServiceApi {
       helperPath: this.helperPath,
       installed: false,
       healthy: false,
+      enabled: false,
       backendConnected: false,
       busy: false,
       lastError,

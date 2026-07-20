@@ -122,6 +122,27 @@ const NativeSandboxStatusCard: React.FC<NativeSandboxStatusCardProps> = ({
           valueClassName={status?.healthy ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-700 dark:text-amber-400'}
         />
         <StatusRow
+          label={i18nService.t('sandboxModeStatusLabel')}
+          value={status
+            ? status.enabled
+              ? i18nService.t('sandboxModeEnabled')
+              : i18nService.t('sandboxModeDisabled')
+            : pendingValue}
+        />
+        <StatusRow
+          label={i18nService.t('sandboxBackendStatusLabel')}
+          value={status
+            ? !status.enabled
+              ? i18nService.t('sandboxBackendDisabled')
+              : status.backendConnected
+                ? i18nService.t('sandboxBackendReady')
+                : i18nService.t('sandboxBackendUnavailable')
+            : pendingValue}
+          valueClassName={status?.backendConnected
+            ? 'text-emerald-600 dark:text-emerald-400'
+            : 'text-secondary'}
+        />
+        <StatusRow
           label={i18nService.t('sandboxLastCheckedLabel')}
           value={formatCheckedAt(status?.checkedAt)}
         />

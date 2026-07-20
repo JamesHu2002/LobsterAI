@@ -65,6 +65,10 @@ const nativeSandboxBridge: NativeSandboxBridge = {
   getStatus: () => ipcRenderer.invoke(NativeSandboxIpcChannel.GetStatus),
   install: () => ipcRenderer.invoke(NativeSandboxIpcChannel.Install),
   repair: () => ipcRenderer.invoke(NativeSandboxIpcChannel.Repair),
+  setEnabled: (enabled: boolean) => ipcRenderer.invoke(
+    NativeSandboxIpcChannel.SetEnabled,
+    { enabled },
+  ),
 };
 
 // 暴露安全的 API 到渲染进程

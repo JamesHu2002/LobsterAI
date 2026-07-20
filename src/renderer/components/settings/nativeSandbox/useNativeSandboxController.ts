@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { NativeSandboxOperation } from '../../../../shared/nativeSandbox/constants';
+import {
+  NativeSandboxErrorCode,
+  NativeSandboxOperation,
+} from '../../../../shared/nativeSandbox/constants';
 import type {
   NativeSandboxOperation as NativeSandboxOperationValue,
   NativeSandboxStatus,
@@ -14,8 +17,22 @@ export interface NativeSandboxController {
   operationNotice: string | null;
   refreshStatus: () => Promise<void>;
   runOperation: (operation: NativeSandboxOperationValue) => Promise<void>;
+  setEnabled: (enabled: boolean) => Promise<void>;
   status: NativeSandboxStatus | null;
 }
+
+const resolveOperationError = (
+  status: NativeSandboxStatus,
+  error: string | undefined,
+  fallbackKey: 'sandboxModeSwitchFailed' | 'sandboxOperationFailed' | 'sandboxStatusLoadFailed',
+): string => {
+  if (status.lastError?.code === NativeSandboxErrorCode.UnsafeWorkspaceAcl) {
+    return i18nService.t('sandboxUnsafeWorkspaceAclError');
+  }
+  return error
+    || status.lastError?.message
+    || i18nService.t(fallbackKey);
+};
 
 export const useNativeSandboxController = (): NativeSandboxController => {
   const [status, setStatus] = useState<NativeSandboxStatus | null>(null);
@@ -38,11 +55,11 @@ export const useNativeSandboxController = (): NativeSandboxController => {
 
       setStatus(result.status);
       if (!result.success) {
-        setOperationError(
-          result.error
-          || result.status.lastError?.message
-          || i18nService.t('sandboxStatusLoadFailed'),
-        );
+        setOperationError(resolveOperationError(
+          result.status,
+          result.error,
+          'sandboxStatusLoadFailed',
+        ));
       }
     } catch (error) {
       if (!isMountedRef.current) return;
@@ -86,11 +103,11 @@ export const useNativeSandboxController = (): NativeSandboxController => {
       if (result.cancelled) {
         setOperationNotice(i18nService.t('sandboxActionCancelled'));
       } else if (!result.success) {
-        setOperationError(
-          result.error
-          || result.status.lastError?.message
-          || i18nService.t('sandboxOperationFailed'),
-        );
+        setOperationError(resolveOperationError(
+          result.status,
+          result.error,
+          'sandboxOperationFailed',
+        ));
       }
     } catch (error) {
       if (!isMountedRef.current) return;
@@ -107,6 +124,49 @@ export const useNativeSandboxController = (): NativeSandboxController => {
     }
   }, [status?.busy]);
 
+  const setEnabled = useCallback(async (enabled: boolean) => {
+    if (operationInFlightRef.current || status?.busy) return;
+
+    operationInFlightRef.current = true;
+    setActiveOperation(
+      enabled ? NativeSandboxOperation.Enable : NativeSandboxOperation.Disable,
+    );
+    setOperationError(null);
+    setOperationNotice(null);
+
+    try {
+      const result = await window.electron.nativeSandbox.setEnabled(enabled);
+      if (!isMountedRef.current) return;
+
+      setStatus(result.status);
+      if (result.cancelled) {
+        setOperationNotice(i18nService.t('sandboxActionCancelled'));
+      } else if (!result.success) {
+        setOperationError(resolveOperationError(
+          result.status,
+          result.error,
+          'sandboxModeSwitchFailed',
+        ));
+      } else {
+        setOperationNotice(i18nService.t(
+          enabled ? 'sandboxEnabledNotice' : 'sandboxDisabledNotice',
+        ));
+      }
+    } catch (error) {
+      if (!isMountedRef.current) return;
+
+      console.error('[SandboxSettings] Failed to switch native sandbox mode', error);
+      setOperationError(
+        error instanceof Error ? error.message : i18nService.t('sandboxModeSwitchFailed'),
+      );
+    } finally {
+      operationInFlightRef.current = false;
+      if (isMountedRef.current) {
+        setActiveOperation(null);
+      }
+    }
+  }, [status?.busy]);
+
   return {
     activeOperation,
     isLoading,
@@ -114,6 +174,7 @@ export const useNativeSandboxController = (): NativeSandboxController => {
     operationNotice,
     refreshStatus,
     runOperation,
+    setEnabled,
     status,
   };
 };

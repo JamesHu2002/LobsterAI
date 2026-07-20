@@ -1,4 +1,6 @@
 import {
+  NativeSandboxBackendState,
+  NativeSandboxControlStage,
   NativeSandboxErrorCode,
   NativeSandboxNetworkState,
   NativeSandboxOperation,
@@ -20,6 +22,12 @@ export type NativeSandboxErrorCode =
 
 export type NativeSandboxNetworkState =
   typeof NativeSandboxNetworkState[keyof typeof NativeSandboxNetworkState];
+
+export type NativeSandboxControlStage =
+  typeof NativeSandboxControlStage[keyof typeof NativeSandboxControlStage];
+
+export type NativeSandboxBackendState =
+  typeof NativeSandboxBackendState[keyof typeof NativeSandboxBackendState];
 
 export interface NativeSandboxError {
   code: NativeSandboxErrorCode;
@@ -52,8 +60,11 @@ export interface NativeSandboxStatus {
   helperPath?: string;
   installed: boolean;
   healthy: boolean;
-  /** M1 only provisions and diagnoses SRT; command execution remains local. */
+  /** Persisted product mode, independent from transient backend health. */
+  enabled: boolean;
   backendConnected: boolean;
+  backendState?: NativeSandboxBackendState;
+  managedByEnterprise?: boolean;
   busy: boolean;
   operation?: NativeSandboxOperation;
   user?: NativeSandboxUserStatus;
@@ -67,4 +78,26 @@ export interface NativeSandboxOperationResult {
   status: NativeSandboxStatus;
   cancelled?: boolean;
   error?: string;
+}
+
+export interface NativeSandboxSetEnabledRequest {
+  enabled: boolean;
+}
+
+export interface NativeSandboxSetEnabledResult extends NativeSandboxOperationResult {
+  enabled: boolean;
+  previousEnabled: boolean;
+  stage: NativeSandboxControlStage;
+  rolledBack?: boolean;
+}
+
+export interface NativeSandboxBackendProbeResult {
+  ok: boolean;
+  registered: boolean;
+  runtimeEnabled: boolean;
+  state: NativeSandboxBackendState;
+  backendId?: string;
+  runtimeVersion?: string;
+  policyVersion?: string;
+  errorCode?: string;
 }

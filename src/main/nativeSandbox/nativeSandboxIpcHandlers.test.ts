@@ -2,13 +2,17 @@ import type { IpcMain } from 'electron';
 import { describe, expect, test, vi } from 'vitest';
 
 import {
+  NativeSandboxControlStage,
   NativeSandboxIpcChannel,
   NativeSandboxPlatform,
   NativeSandboxState,
 } from '../../shared/nativeSandbox/constants';
-import type { NativeSandboxOperationResult } from '../../shared/nativeSandbox/types';
+import type {
+  NativeSandboxOperationResult,
+  NativeSandboxSetEnabledResult,
+} from '../../shared/nativeSandbox/types';
+import type { NativeSandboxControlServiceApi } from './nativeSandboxControlService';
 import { registerNativeSandboxIpcHandlers } from './nativeSandboxIpcHandlers';
-import type { NativeSandboxServiceApi } from './nativeSandboxService';
 
 type RegisteredHandler = (event: unknown, ...args: unknown[]) => unknown;
 
@@ -23,6 +27,7 @@ const createResult = (): NativeSandboxOperationResult => ({
     helperAvailable: true,
     installed: true,
     healthy: true,
+    enabled: false,
     backendConnected: false,
     busy: false,
     checkedAt: 123,
@@ -35,10 +40,22 @@ const createHarness = () => {
     handlers.set(channel, listener);
   });
   const result = createResult();
-  const service: NativeSandboxServiceApi = {
+  const toggleResult: NativeSandboxSetEnabledResult = {
+    ...result,
+    enabled: true,
+    previousEnabled: false,
+    stage: NativeSandboxControlStage.Idle,
+    status: {
+      ...result.status,
+      enabled: true,
+      backendConnected: true,
+    },
+  };
+  const service: NativeSandboxControlServiceApi = {
     getStatus: vi.fn(async () => result),
     install: vi.fn(async () => result),
     repair: vi.fn(async () => result),
+    setEnabled: vi.fn(async () => toggleResult),
   };
   const createService = vi.fn(() => service);
   const logger = { log: vi.fn() };
@@ -49,7 +66,7 @@ const createHarness = () => {
     logger,
   });
 
-  return { createService, handlers, logger, result, service };
+  return { createService, handlers, logger, result, service, toggleResult };
 };
 
 describe('registerNativeSandboxIpcHandlers', () => {
@@ -60,8 +77,37 @@ describe('registerNativeSandboxIpcHandlers', () => {
       NativeSandboxIpcChannel.GetStatus,
       NativeSandboxIpcChannel.Install,
       NativeSandboxIpcChannel.Repair,
+      NativeSandboxIpcChannel.SetEnabled,
     ]);
     expect(createService).not.toHaveBeenCalled();
+  });
+
+  test('delegates the dedicated transactional mode switch', async () => {
+    const { handlers, logger, service, toggleResult } = createHarness();
+    const setEnabled = handlers.get(NativeSandboxIpcChannel.SetEnabled);
+
+    await expect(setEnabled?.({}, { enabled: true })).resolves.toBe(toggleResult);
+
+    expect(service.setEnabled).toHaveBeenCalledWith(true);
+    expect(logger.log).toHaveBeenNthCalledWith(
+      1,
+      '[NativeSandbox] Enable requested by the user.',
+    );
+    expect(logger.log).toHaveBeenNthCalledWith(
+      2,
+      '[NativeSandbox] Mode switch finished (success=true, enabled=true, '
+      + 'stage=idle, rolledBack=false).',
+    );
+  });
+
+  test('rejects malformed mode requests instead of treating them as disable', async () => {
+    const { handlers, service } = createHarness();
+    const setEnabled = handlers.get(NativeSandboxIpcChannel.SetEnabled);
+
+    await expect(setEnabled?.({}, { enabled: 'yes' })).rejects.toThrow(
+      'Invalid native sandbox mode request.',
+    );
+    expect(service.setEnabled).not.toHaveBeenCalled();
   });
 
   test('constructs one shared service lazily on the first invocation', async () => {

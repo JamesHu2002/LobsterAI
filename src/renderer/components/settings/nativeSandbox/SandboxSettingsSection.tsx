@@ -5,6 +5,7 @@ import {
 } from '@heroicons/react/24/outline';
 import React, { useMemo } from 'react';
 
+import { NativeSandboxOperation } from '../../../../shared/nativeSandbox/constants';
 import { i18nService } from '../../../services/i18n';
 import NativeSandboxStatusCard from './NativeSandboxStatusCard';
 import { buildNativeSandboxViewModel } from './nativeSandboxViewModel';
@@ -23,6 +24,30 @@ const SandboxSettingsSection: React.FC = () => {
     controller.operationError,
     controller.status,
   ]);
+  const isEnabled = controller.status?.enabled === true;
+  const isModeSwitching = controller.activeOperation === NativeSandboxOperation.Enable
+    || controller.activeOperation === NativeSandboxOperation.Disable;
+  const switchDisabled = controller.isLoading
+    || Boolean(controller.status?.busy)
+    || isModeSwitching
+    || (
+      !isEnabled
+      && (
+        !controller.status?.supported
+        || !controller.status.helperAvailable
+        || controller.status.managedByEnterprise === true
+      )
+    );
+  const modeBadgeKey = isEnabled
+    ? controller.status?.backendConnected
+      ? 'sandboxBackendConnected'
+      : 'sandboxBackendDegraded'
+    : 'sandboxBackendDisabled';
+  const modeBadgeClassName = isEnabled && controller.status?.backendConnected
+    ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
+    : isEnabled
+      ? 'bg-red-500/10 text-red-700 dark:text-red-400'
+      : 'bg-surface-raised text-secondary';
 
   return (
     <div className="space-y-5">
@@ -48,8 +73,8 @@ const SandboxSettingsSection: React.FC = () => {
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <h4 className="text-sm font-medium text-foreground">{i18nService.t('sandboxEnableTitle')}</h4>
-              <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400">
-                {i18nService.t('sandboxBackendPending')}
+              <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${modeBadgeClassName}`}>
+                {i18nService.t(modeBadgeKey)}
               </span>
             </div>
             <p className="mt-1 max-w-[560px] text-sm leading-5 text-secondary">
@@ -59,12 +84,17 @@ const SandboxSettingsSection: React.FC = () => {
           <button
             type="button"
             role="switch"
-            aria-checked="false"
+            aria-checked={isEnabled}
             aria-label={i18nService.t('sandboxEnableTitle')}
-            disabled
-            className="relative h-6 w-11 shrink-0 cursor-not-allowed rounded-full bg-border opacity-60"
+            onClick={() => { void controller.setEnabled(!isEnabled); }}
+            disabled={switchDisabled}
+            className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
+              isEnabled ? 'bg-primary' : 'bg-border'
+            } ${switchDisabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
           >
-            <span className="absolute left-1 top-1 h-4 w-4 rounded-full bg-white shadow-sm" />
+            <span className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
+              isEnabled ? 'translate-x-6' : 'translate-x-1'
+            }`} />
           </button>
         </div>
       </section>
@@ -109,10 +139,10 @@ const SandboxSettingsSection: React.FC = () => {
           <ExclamationTriangleIcon className="mt-0.5 h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
           <div className="min-w-0">
             <h4 className="text-sm font-medium text-foreground">
-              {i18nService.t('sandboxPermissionUnionTitle')}
+              {i18nService.t('sandboxSingleWorkspaceTitle')}
             </h4>
             <p className="mt-1 text-sm leading-6 text-secondary">
-              {i18nService.t('sandboxPermissionUnionDescription')}
+              {i18nService.t('sandboxSingleWorkspaceDescription')}
             </p>
           </div>
         </div>

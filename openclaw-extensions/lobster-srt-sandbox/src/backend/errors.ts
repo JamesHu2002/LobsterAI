@@ -13,16 +13,16 @@ export class LobsterSrtSandboxBackendError extends Error {
   }
 }
 
-export function createCommandExecutionUnavailableError(): LobsterSrtSandboxBackendError {
+export function createBackendDisabledError(): LobsterSrtSandboxBackendError {
   return new LobsterSrtSandboxBackendError(
-    LobsterSrtSandboxBackendErrorCode.CommandExecutionUnavailable,
-    'The lobster-srt command runtime is not connected yet; refusing to execute on the host.',
+    LobsterSrtSandboxBackendErrorCode.BackendDisabled,
+    'The LobsterAI native sandbox is disabled; refusing to execute through the backend.',
   );
 }
 
 export function createBackendUnavailableError(): LobsterSrtSandboxBackendError {
   return new LobsterSrtSandboxBackendError(
     LobsterSrtSandboxBackendErrorCode.BackendUnavailable,
-    'The lobster-srt backend is packaged for M2 validation but cannot be activated until the native M3 runtime boundary is connected.',
+    'The lobster-srt backend is unavailable; refusing to fall back to host execution.',
   );
 }

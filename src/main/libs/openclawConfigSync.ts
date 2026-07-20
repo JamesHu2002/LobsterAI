@@ -16,6 +16,10 @@ import { COWORK_TEMP_DIR_NAME } from '../../shared/cowork/constants';
 import { CoworkErrorModelSource } from '../../shared/cowork/errorDetail';
 import { normalizeMcpServerUrlInput } from '../../shared/mcp/url';
 import {
+  NATIVE_SANDBOX_OPENCLAW_BACKEND_ID,
+  NATIVE_SANDBOX_OPENCLAW_PLUGIN_ID,
+} from '../../shared/nativeSandbox/constants';
+import {
   AuthType,
   OpenClawApi as OpenClawApiConst,
   OpenClawProviderId,
@@ -25,6 +29,10 @@ import {
 import type { Agent, CoworkConfig, CoworkExecutionMode } from '../coworkStore';
 import type { DiscordInstanceConfig, IMSettings, TelegramInstanceConfig } from '../im/types';
 import type { DingTalkInstanceConfig, EmailMultiInstanceConfig, FeishuInstanceConfig, NeteaseBeeChanConfig, NimInstanceConfig, PopoInstanceConfig, QQInstanceConfig, WecomInstanceConfig, WeixinOpenClawConfig } from '../im/types';
+import {
+  createNativeSandboxEnvironment,
+  resolveNativeSandboxHelperPath,
+} from '../nativeSandbox/nativeSandboxEnvironment';
 import { OpenClawSessionKeepAlive } from '../openclawSessionPolicy/constants';
 import { buildOpenClawSessionConfig } from '../openclawSessionPolicy/store';
 import {
@@ -84,6 +92,29 @@ const mapExecutionModeToSandboxMode = (
     default:
       return 'off';
   }
+};
+
+export const buildOpenClawSandboxConfig = (params: {
+  executionMode: CoworkExecutionMode;
+  isEnterprise: boolean;
+  nativeSandboxEnabled: boolean;
+}): {
+  mode: 'off' | 'non-main' | 'all';
+  backend?: string;
+  workspaceAccess?: 'rw';
+  scope?: 'session';
+} => {
+  if (params.nativeSandboxEnabled && !params.isEnterprise) {
+    return {
+      mode: 'all',
+      backend: NATIVE_SANDBOX_OPENCLAW_BACKEND_ID,
+      workspaceAccess: 'rw',
+      scope: 'session',
+    };
+  }
+  return {
+    mode: mapExecutionModeToSandboxMode(params.executionMode, params.isEnterprise),
+  };
 };
 
 /**
@@ -1804,16 +1835,30 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
       }
     }
 
-    const sandboxMode = mapExecutionModeToSandboxMode(
-      coworkConfig.executionMode || 'local',
-      this.isEnterprise(),
+    const enterpriseManaged = this.isEnterprise();
+    const sandboxConfig = buildOpenClawSandboxConfig({
+      executionMode: coworkConfig.executionMode || 'local',
+      isEnterprise: enterpriseManaged,
+      nativeSandboxEnabled: coworkConfig.nativeSandboxEnabled === true,
+    });
+    const nativeSandboxRuntimeEnabled =
+      sandboxConfig.backend === NATIVE_SANDBOX_OPENCLAW_BACKEND_ID;
+    const nativeSandboxHelperPath = resolveNativeSandboxHelperPath(
+      createNativeSandboxEnvironment(app, {
+        resourcesPath: process.resourcesPath,
+        platform: process.platform,
+        arch: process.arch,
+      }),
     );
     const availableProviders = buildProviderModelCatalog(allProvidersMap);
     const agentModelDefaults = Object.keys(perModelCustomDefaults).length > 0
       ? buildCompleteAgentModelDefaults(allProvidersMap, perModelCustomDefaults)
       : {};
     console.log(
-      `[OpenClawConfigSync] sandbox mode: ${sandboxMode} (executionMode: ${coworkConfig.executionMode || 'local'}, enterprise: ${this.isEnterprise()})`,
+      `[OpenClawConfigSync] sandbox mode: ${sandboxConfig.mode}, `
+      + `backend=${sandboxConfig.backend ?? 'default'} `
+      + `(executionMode: ${coworkConfig.executionMode || 'local'}, `
+      + `nativeEnabled: ${nativeSandboxRuntimeEnabled}, enterprise: ${enterpriseManaged})`,
     );
 
     const mainWorkspacePath = getMainAgentWorkspacePath(this.engineManager.getStateDir());
@@ -1831,6 +1876,9 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
     );
     const hasAskUserPlugin = isBundledPluginAvailable('ask-user-question');
     const hasMediaGenPlugin = isBundledPluginAvailable('lobster-media-generation');
+    const hasNativeSandboxPlugin = isBundledPluginAvailable(
+      NATIVE_SANDBOX_OPENCLAW_PLUGIN_ID,
+    );
     // Runtime-bundled xai extension (dist/extensions/xai): provides the Grok
     // model compat hooks (e.g. only grok-4.3 accepts reasoningEffort) plus the
     // OAuth refresh hook for credentials in the auth-profiles store. Declare
@@ -1934,9 +1982,7 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
           model: {
             primary: primaryModel,
           },
-          sandbox: {
-            mode: sandboxMode,
-          },
+          sandbox: sandboxConfig,
           workspace: path.resolve(mainWorkspacePath),
           mediaMaxMb: 30,
           ...(taskWorkingDirectory ? { cwd: path.resolve(taskWorkingDirectory) } : {}),
@@ -2071,6 +2117,17 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
             : {}),
           ...(hasAskUserPlugin ? { 'ask-user-question': { enabled: true } } : {}),
           ...(hasMediaGenPlugin ? { 'lobster-media-generation': { enabled: true } } : {}),
+          ...(hasNativeSandboxPlugin
+            ? {
+                [NATIVE_SANDBOX_OPENCLAW_PLUGIN_ID]: {
+                  enabled: true,
+                  config: {
+                    helperPath: nativeSandboxHelperPath,
+                    runtimeEnabled: nativeSandboxRuntimeEnabled,
+                  },
+                },
+              }
+            : {}),
           // Some OpenClaw versions auto-inject qwen-portal-auth for
           // Qwen/DashScope URLs. Declare it only when the plugin actually
           // exists, otherwise it becomes a stale entry on every startup.
@@ -2101,6 +2158,7 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
           // plugins we rely on must be listed here explicitly or they never
           // load — entries.enabled alone is not enough.
           ...(hasXaiPlugin ? ['xai'] : []),
+          ...(hasNativeSandboxPlugin ? [NATIVE_SANDBOX_OPENCLAW_PLUGIN_ID] : []),
           ...preinstalledPlugins.map(plugin => plugin.pluginId),
           ...userPlugins.filter(plugin => plugin.enabled).map(plugin => plugin.pluginId),
         ])).sort();

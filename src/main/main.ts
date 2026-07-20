@@ -358,7 +358,10 @@ import {
   MediaGenerationRequestType,
   summarizeMediaGenerationParamsForLog,
 } from './mediaGenerationReferences';
-import { registerNativeSandboxModule } from './nativeSandbox';
+import {
+  createNativeSandboxOpenClawCoordinator,
+  registerNativeSandboxModule,
+} from './nativeSandbox';
 import { OpenClawSessionIpc } from './openclawSession/constants';
 import { OpenClawSessionPolicyIpc } from './openclawSessionPolicy/constants';
 import {
@@ -2214,6 +2217,7 @@ type SyncOpenClawConfigOptions = {
   reason: string;
   restartGatewayIfRunning?: boolean;
   expectedImpact?: OpenClawConfigImpact;
+  deferRestartWhenBusy?: boolean;
 };
 
 type SyncOpenClawConfigResult = {
@@ -2443,6 +2447,14 @@ const _syncOpenClawConfigImpl = async (
   }
 
   if (hasActiveGatewayWorkloads()) {
+    if (options.deferRestartWhenBusy === false) {
+      return {
+        success: false,
+        changed: true,
+        status,
+        error: 'OpenClaw Gateway has active workloads; restart was not applied.',
+      };
+    }
     console.log(`${D()} ──── RESTART DEFERRED (active workloads). reason=${options.reason}`);
     scheduleDeferredGatewayRestart(options.reason);
     return {
@@ -3939,7 +3951,53 @@ if (!gotTheLock) {
     getStore().delete(key);
   });
 
-  registerNativeSandboxModule();
+  const nativeSandboxOpenClaw = createNativeSandboxOpenClawCoordinator({
+    syncConfiguration: async enabled => {
+      const syncResult = await syncOpenClawConfig({
+        reason: `native-sandbox:${enabled ? 'enable' : 'disable'}`,
+        restartGatewayIfRunning: true,
+        expectedImpact: OpenClawConfigImpact.Restart,
+        deferRestartWhenBusy: false,
+      });
+      if (!syncResult.success) {
+        throw new Error(syncResult.error || 'OpenClaw Sandbox configuration sync failed.');
+      }
+    },
+    isGatewayRunning: () => getOpenClawEngineManager().getStatus().phase === 'running',
+    ensureGatewayRunning: async () => {
+      const status = await ensureOpenClawRunningForCowork();
+      if (status.phase !== 'running') {
+        throw new Error(status.message || 'OpenClaw Gateway did not start.');
+      }
+    },
+    readGatewayConfig: () => JSON.parse(
+      fs.readFileSync(getOpenClawEngineManager().getConfigPath(), 'utf8'),
+    ),
+    requestGateway: async (method, params, options) => {
+      getCoworkEngineRouter();
+      if (!openClawRuntimeAdapter) {
+        throw new Error('OpenClaw runtime adapter is unavailable.');
+      }
+      await openClawRuntimeAdapter.ensureReady();
+      const client = openClawRuntimeAdapter.getGatewayClient();
+      if (!client) {
+        throw new Error('OpenClaw Gateway client is unavailable.');
+      }
+      return client.request<Record<string, unknown>>(method, params, options);
+    },
+  });
+
+  registerNativeSandboxModule({
+    getEnabled: () => getCoworkStore().getConfig().nativeSandboxEnabled,
+    persistEnabled: enabled => {
+      getCoworkStore().setConfig({ nativeSandboxEnabled: enabled });
+    },
+    isManagedByEnterprise: () => Boolean(getStore().get('enterprise_config')),
+    hasActiveWorkloads: hasActiveGatewayWorkloads,
+    getVerificationWorkspace: () => resolveAgentDefaultWorkingDirectory(AgentId.Main),
+    applyConfiguration: nativeSandboxOpenClaw.applyConfiguration,
+    verifyBackend: nativeSandboxOpenClaw.verifyBackend,
+  });
 
   ipcMain.handle('enterprise:getConfig', async () => {
     try {
@@ -8299,9 +8357,6 @@ if (!gotTheLock) {
       const normalizedAgentEngine = config.agentEngine === 'openclaw'
         ? 'openclaw'
         : undefined;
-      const normalizedNativeSandboxEnabled = typeof config.nativeSandboxEnabled === 'boolean'
-        ? config.nativeSandboxEnabled
-        : undefined;
       const normalizedMemoryEnabled = typeof config.memoryEnabled === 'boolean'
         ? config.memoryEnabled
         : undefined;
@@ -8333,7 +8388,9 @@ if (!gotTheLock) {
       const normalizedConfig: Parameters<CoworkStore['setConfig']>[0] = {
         ...config,
         executionMode: normalizedExecutionMode,
-        nativeSandboxEnabled: normalizedNativeSandboxEnabled,
+        // Native sandbox mode is transactional and may only be changed through
+        // native-sandbox:set-enabled (health check → config sync → restart → verify).
+        nativeSandboxEnabled: undefined,
         agentEngine: normalizedAgentEngine,
         memoryEnabled: normalizedMemoryEnabled,
         memoryImplicitUpdateEnabled: normalizedMemoryImplicitUpdateEnabled,

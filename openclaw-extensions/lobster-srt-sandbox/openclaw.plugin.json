@@ -8,6 +8,17 @@
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "properties": {}
+    "properties": {
+      "helperPath": {
+        "type": "string"
+      },
+      "runtimeEnabled": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "helperPath",
+      "runtimeEnabled"
+    ]
   }
 }

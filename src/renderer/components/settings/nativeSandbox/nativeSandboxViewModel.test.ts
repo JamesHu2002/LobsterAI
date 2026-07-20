@@ -17,6 +17,7 @@ const makeStatus = (overrides: Partial<NativeSandboxStatus> = {}): NativeSandbox
   backendConnected: false,
   busy: false,
   checkedAt: 1,
+  enabled: false,
   healthy: false,
   helperAvailable: true,
   installed: false,

@@ -171,6 +171,87 @@ describe('OpenClawConfigSync runtime config output', () => {
     } as never);
   };
 
+  test('selects lobster-srt only for the explicit non-enterprise test flag', async () => {
+    const { buildOpenClawSandboxConfig } = await import('./openclawConfigSync');
+
+    expect(buildOpenClawSandboxConfig({
+      executionMode: 'local',
+      isEnterprise: false,
+      nativeSandboxEnabled: true,
+    })).toEqual({
+      mode: 'all',
+      backend: 'lobster-srt',
+      workspaceAccess: 'rw',
+      scope: 'session',
+    });
+    expect(buildOpenClawSandboxConfig({
+      executionMode: 'sandbox',
+      isEnterprise: true,
+      nativeSandboxEnabled: true,
+    })).toEqual({
+      mode: 'all',
+    });
+    expect(buildOpenClawSandboxConfig({
+      executionMode: 'local',
+      isEnterprise: false,
+      nativeSandboxEnabled: false,
+    })).toEqual({
+      mode: 'off',
+    });
+  });
+
+  test('writes the native backend and fail-closed plugin gate when enabled', async () => {
+    const sync = await createSync({
+      getCoworkConfig: () => ({
+        workingDirectory: tmpDir,
+        systemPrompt: '',
+        executionMode: 'local',
+        nativeSandboxEnabled: true,
+        agentEngine: 'openclaw',
+        memoryEnabled: false,
+        memoryImplicitUpdateEnabled: false,
+        memoryLlmJudgeEnabled: false,
+        memoryGuardLevel: 'balanced',
+        memoryUserMemoriesMaxItems: 100,
+        skipMissedJobs: false,
+      }),
+    });
+
+    expect(sync.sync('native-sandbox-test').ok).toBe(true);
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+
+    expect(config.agents.defaults.sandbox).toEqual({
+      mode: 'all',
+      backend: 'lobster-srt',
+      workspaceAccess: 'rw',
+      scope: 'session',
+    });
+    expect(config.plugins.entries['lobster-srt-sandbox']).toMatchObject({
+      enabled: true,
+      config: {
+        runtimeEnabled: true,
+      },
+    });
+    expect(config.plugins.entries['lobster-srt-sandbox'].config.helperPath)
+      .toMatch(/[\\/]srt-win[\\/]x64[\\/]srt-win\.exe$/);
+    expect(config.plugins.allow).toContain('lobster-srt-sandbox');
+  });
+
+  test('keeps the native runtime gate closed in the default local mode', async () => {
+    const sync = await createSync();
+
+    expect(sync.sync('native-sandbox-default-off').ok).toBe(true);
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+
+    expect(config.agents.defaults.sandbox).toEqual({ mode: 'off' });
+    expect(config.plugins.entries['lobster-srt-sandbox']).toMatchObject({
+      enabled: true,
+      config: {
+        runtimeEnabled: false,
+      },
+    });
+  });
+
   test('writes OpenClaw config fields required by LobsterAI patches', async () => {
     const legacyWorkingDirectory = path.join(tmpDir, 'legacy-working-directory');
     const mainAgentWorkingDirectory = path.join(tmpDir, 'main-agent-working-directory');

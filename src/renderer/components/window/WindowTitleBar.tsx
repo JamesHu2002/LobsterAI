@@ -26,7 +26,7 @@ const WindowControlAction = {
 } as const;
 type WindowControlAction = typeof WindowControlAction[keyof typeof WindowControlAction];
 
-const WINDOW_CAPTION_BUTTON_CLASS_NAME = 'non-draggable inline-flex h-full w-[46px] shrink-0 items-center justify-center text-foreground/90 outline-none transition-colors duration-100 hover:bg-foreground/[0.06] focus-visible:bg-foreground/[0.06] active:bg-foreground/[0.09]';
+const WINDOW_CAPTION_BUTTON_CLASS_NAME = 'non-draggable inline-flex h-full w-[46px] shrink-0 items-center justify-center text-foreground/90 outline-none transition-colors duration-100 hover:bg-surface focus-visible:bg-surface active:bg-surface/80';
 const WINDOW_CLOSE_CAPTION_BUTTON_CLASS_NAME = 'non-draggable inline-flex h-full w-[46px] shrink-0 items-center justify-center text-foreground/90 outline-none transition-colors duration-100 hover:bg-[#c42b1c] hover:text-white focus-visible:bg-[#c42b1c] focus-visible:text-white active:bg-[#b1261a] active:text-white';
 
 const reportWindowControlAction = (action: WindowControlAction): void => {

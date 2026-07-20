@@ -5325,7 +5325,7 @@ if (!gotTheLock) {
     return quota;
   };
 
-  ipcMain.handle('auth:login', async (_event, { loginUrl }: { loginUrl?: string } = {}) => {
+  ipcMain.handle(AuthIpcChannel.Login, async (_event, { loginUrl }: { loginUrl?: string } = {}) => {
     const baseUrl = loginUrl || `${getServerApiBaseUrl()}/login`;
     const fallbackUrl = appendLoginParams(baseUrl, { source: 'electron' });
     let localCallback: Awaited<ReturnType<typeof startAuthLocalCallback>> | null = null;
@@ -5351,7 +5351,7 @@ if (!gotTheLock) {
       await shell.openExternal(finalUrl);
       return { success: true };
     } catch (error) {
-      await localCallback?.close();
+      // The callback may be shared by another login page and will clean itself up on timeout.
       console.warn('[Auth] local callback login failed, falling back to deep link login:', error);
       try {
         await shell.openExternal(fallbackUrl);

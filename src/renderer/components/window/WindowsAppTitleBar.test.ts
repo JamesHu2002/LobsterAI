@@ -62,6 +62,7 @@ describe('WindowsAppTitleBar', () => {
 
     expect(html.match(/w-\[46px\]/g)).toHaveLength(3);
     expect(html.match(/h-3 w-3/g)).toHaveLength(3);
+    expect(html.match(/hover:bg-surface/g)).toHaveLength(3);
     expect(html).toContain('aria-label="Minimize"');
     expect(html).toContain('aria-label="Maximize"');
     expect(html).toContain('aria-label="Close"');

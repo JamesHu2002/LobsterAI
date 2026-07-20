@@ -2325,7 +2325,7 @@ test('continueSession aborts silently when the session is stopped during the mod
 
 function createReconcileStore(
   messages: Array<Record<string, unknown>>,
-  options: { agentModel?: string; sessionId?: string } = {},
+  options: { agentModel?: string; sessionId?: string; sessionMessageLimit?: number } = {},
 ) {
   const session = {
     id: options.sessionId ?? 'session-1',
@@ -2344,6 +2344,7 @@ function createReconcileStore(
   };
   let nextId = session.messages.length + 1;
   let replaceCallCount = 0;
+  let getAllConversationMessagesCallCount = 0;
   let lastReplaceArgs: { sessionId: string; authoritative: Array<Record<string, unknown>> } | null = null;
   let replaceSessionCallCount = 0;
   let lastReplaceSessionArgs: { sessionId: string; messages: Array<Record<string, unknown>> } | null = null;
@@ -2356,12 +2357,32 @@ function createReconcileStore(
   return {
     session,
     getReplaceCallCount: () => replaceCallCount,
+    getAllConversationMessagesCallCount: () => getAllConversationMessagesCallCount,
     getLastReplaceArgs: () => lastReplaceArgs,
     getReplaceSessionCallCount: () => replaceSessionCallCount,
     getLastReplaceSessionArgs: () => lastReplaceSessionArgs,
     getUpdateSessionCalls: () => updateSessionCalls,
     store: {
-      getSession: (sessionId: string) => (sessionId === session.id ? session : null),
+      getSession: (sessionId: string) => {
+        if (sessionId !== session.id) return null;
+        if (options.sessionMessageLimit == null) return session;
+        return {
+          ...session,
+          messages: session.messages.slice(-options.sessionMessageLimit),
+        };
+      },
+      getRecentConversationMessages: (sessionId: string, limit: number) => {
+        if (sessionId !== session.id) return [];
+        return session.messages
+          .filter((message) => message.type === 'user' || message.type === 'assistant')
+          .slice(-limit);
+      },
+      getAllConversationMessages: (sessionId: string) => {
+        if (sessionId !== session.id) return [];
+        getAllConversationMessagesCallCount += 1;
+        return session.messages
+          .filter((message) => message.type === 'user' || message.type === 'assistant');
+      },
       getAgent: () => ({
         id: session.agentId,
         name: 'Main',
@@ -2832,6 +2853,90 @@ test('reconcileWithHistory: already in sync — skips replace', async () => {
 
   expect(getReplaceCallCount()).toBe(0);
   expect(session.messages.length).toBe(2);
+});
+
+test('reconcileWithHistory: compares beyond the paginated session window', async () => {
+  const messages = Array.from({ length: 31 }, (_, index) => ({
+    id: `msg-${index + 1}`,
+    type: index % 2 === 0 ? 'user' : 'assistant',
+    content: `message ${index + 1}`,
+    timestamp: index + 1,
+    metadata: {},
+  }));
+  const {
+    session,
+    store,
+    getReplaceCallCount,
+    getAllConversationMessagesCallCount,
+  } = createReconcileStore(messages, {
+    sessionMessageLimit: 30,
+  });
+
+  const adapter = new OpenClawRuntimeAdapter(store, {});
+  adapter.gatewayClient = {
+    start: () => {},
+    stop: () => {},
+    request: async () => ({
+      messages: messages.map((message) => ({
+        role: message.type,
+        content: message.content,
+      })),
+    }),
+  };
+
+  await adapter.reconcileWithHistory(session.id, 'agent:main:feishu:group:test');
+  await adapter.reconcileWithHistory(session.id, 'agent:main:feishu:group:test');
+
+  expect(getReplaceCallCount()).toBe(0);
+  expect(getAllConversationMessagesCallCount()).toBe(0);
+  expect(session.messages).toHaveLength(31);
+});
+
+test('reconcileWithHistory: preserves history before a repaired 50-message gateway tail', async () => {
+  const messages = Array.from({ length: 60 }, (_, index) => ({
+    id: `msg-${index + 1}`,
+    type: index % 2 === 0 ? 'user' : 'assistant',
+    content: `message ${index + 1}`,
+    timestamp: index + 1,
+    metadata: {},
+  }));
+  const gatewayMessages = messages.slice(-50).map((message) => ({
+    role: message.type,
+    content: message.content,
+  }));
+  gatewayMessages[gatewayMessages.length - 1] = {
+    role: 'assistant',
+    content: 'message 60 updated',
+  };
+
+  const {
+    session,
+    store,
+    getReplaceCallCount,
+    getAllConversationMessagesCallCount,
+    getLastReplaceArgs,
+  } = createReconcileStore(messages);
+  const adapter = new OpenClawRuntimeAdapter(store, {});
+  adapter.gatewayClient = {
+    start: () => {},
+    stop: () => {},
+    request: async () => ({ messages: gatewayMessages }),
+  };
+
+  await adapter.reconcileWithHistory(session.id, 'agent:main:feishu:group:test');
+  await adapter.reconcileWithHistory(session.id, 'agent:main:feishu:group:test');
+
+  expect(getReplaceCallCount()).toBe(1);
+  expect(getAllConversationMessagesCallCount()).toBe(1);
+  const authoritative = getLastReplaceArgs()!.authoritative;
+  expect(authoritative).toHaveLength(60);
+  expect(authoritative.slice(0, 10).map((entry) => entry.text)).toEqual(
+    Array.from({ length: 10 }, (_, index) => `message ${index + 1}`),
+  );
+  expect(authoritative.at(-1)?.text).toBe('message 60 updated');
+  expect(session.messages).toHaveLength(60);
+  expect(session.messages[0]?.content).toBe('message 1');
+  expect(session.messages.at(-1)?.content).toBe('message 60 updated');
 });
 
 test('reconcileWithHistory: missing assistant message — triggers replace', async () => {
@@ -3565,6 +3670,129 @@ test('chat error can consume quota signal after lifecycle error schedules fallba
     vi.useRealTimers();
     consumeRecentOpenClawTokenProxyQuotaError();
   }
+});
+
+test('stale chat error after a successful deferred final completes the turn instead of erroring', async () => {
+  vi.useFakeTimers();
+  try {
+    const { session, store } = createReconcileStore([
+      { id: 'msg-1', type: 'user', content: 'make a ppt', timestamp: 1, metadata: {} },
+    ]);
+    session.status = 'running';
+    const adapter = new OpenClawRuntimeAdapter(store, {});
+    const errorSpy = vi.fn();
+    adapter.on('error', errorSpy);
+    const sessionKey = `agent:main:lobsterai:${session.id}`;
+    const turn = createActiveTurn(session.id, sessionKey, 'run-stale-error');
+    adapter.activeTurns.set(session.id, turn);
+    adapter.latestTurnTokenBySession.set(session.id, turn.turnToken);
+
+    adapter.handleChatEvent({
+      state: 'final',
+      runId: 'run-stale-error',
+      sessionKey,
+      message: { role: 'assistant', content: 'PPT 制作完成！' },
+    }, 1);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(turn.finalCompletionTimer).toBeDefined();
+
+    adapter.handleChatEvent({
+      state: 'error',
+      runId: 'run-stale-error',
+      sessionKey,
+      errorMessage: '⚠️ 🩹 Apply Patch failed',
+      message: { role: 'assistant', content: [{ type: 'text', text: '⚠️ 🩹 Apply Patch failed' }] },
+    }, 2);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(errorSpy).not.toHaveBeenCalled();
+    expect(session.status).toBe('completed');
+    expect(adapter.activeTurns.has(session.id)).toBe(false);
+    expect(session.messages.some((message) => (
+      message.type === 'system' && String(message.content).includes('Apply Patch failed')
+    ))).toBe(false);
+  } finally {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  }
+});
+
+test('chat error still surfaces when a deferred final exists but the run reported a lifecycle error', async () => {
+  vi.useFakeTimers();
+  try {
+    const { session, store } = createReconcileStore([
+      { id: 'msg-1', type: 'user', content: 'make a ppt', timestamp: 1, metadata: {} },
+    ]);
+    session.status = 'running';
+    const adapter = new OpenClawRuntimeAdapter(store, {});
+    const errorSpy = vi.fn();
+    adapter.on('error', errorSpy);
+    const sessionKey = `agent:main:lobsterai:${session.id}`;
+    const turn = createActiveTurn(session.id, sessionKey, 'run-real-error');
+    adapter.activeTurns.set(session.id, turn);
+    adapter.latestTurnTokenBySession.set(session.id, turn.turnToken);
+
+    adapter.handleChatEvent({
+      state: 'final',
+      runId: 'run-real-error',
+      sessionKey,
+      message: { role: 'assistant', content: 'partial answer' },
+    }, 1);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(turn.finalCompletionTimer).toBeDefined();
+
+    // Simulate the agent dispatch path having recorded a lifecycle error for this run.
+    adapter.terminatedRunIds.add('run-real-error');
+
+    adapter.handleChatEvent({
+      state: 'error',
+      runId: 'run-real-error',
+      sessionKey,
+      errorMessage: 'LLM request failed.',
+    }, 2);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(errorSpy).toHaveBeenCalled();
+    expect(session.status).toBe('error');
+    expect(adapter.activeTurns.has(session.id)).toBe(false);
+  } finally {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  }
+});
+
+test('turn cleanup finalizes a running context compaction message as failed', () => {
+  const { session, store } = createReconcileStore([
+    { id: 'msg-1', type: 'user', content: 'analyze logs', timestamp: 1, metadata: {} },
+  ]);
+  session.status = 'running';
+  const adapter = new OpenClawRuntimeAdapter(store, {});
+  const errorSpy = vi.fn();
+  adapter.on('error', errorSpy);
+  const sessionKey = `agent:main:lobsterai:${session.id}`;
+  const turn = createActiveTurn(session.id, sessionKey, 'run-compaction-stuck');
+  adapter.activeTurns.set(session.id, turn);
+
+  adapter.handleAgentCompactionEvent(session.id, { phase: 'start' });
+
+  const runningMessage = session.messages.find((message) => (
+    message.metadata?.kind === CoworkSystemMessageKind.ContextCompaction
+  ));
+  expect(runningMessage?.metadata?.status).toBe(ContextCompactionStatus.Running);
+
+  adapter.handleChatEvent({
+    state: 'error',
+    runId: 'run-compaction-stuck',
+    sessionKey,
+    errorMessage: 'LLM request failed.',
+  }, 1);
+
+  const compactionMessage = session.messages.find((message) => (
+    message.metadata?.kind === CoworkSystemMessageKind.ContextCompaction
+  ));
+  expect(compactionMessage?.metadata?.status).toBe(ContextCompactionStatus.Failed);
+  expect(session.status).toBe('error');
+  expect(adapter.activeTurns.has(session.id)).toBe(false);
 });
 
 test('chat final stopReason=error replaces generic LLM failure using safe OpenClaw metadata', async () => {
@@ -6693,6 +6921,17 @@ function createHistoryStore(messages: Array<Record<string, unknown>>) {
     session,
     store: {
       getSession: (sessionId: string) => (sessionId === session.id ? session : null),
+      getRecentConversationMessages: (sessionId: string, limit: number) => {
+        if (sessionId !== session.id) return [];
+        return session.messages
+          .filter((message) => message.type === 'user' || message.type === 'assistant')
+          .slice(-limit);
+      },
+      getAllConversationMessages: (sessionId: string) => {
+        if (sessionId !== session.id) return [];
+        return session.messages
+          .filter((message) => message.type === 'user' || message.type === 'assistant');
+      },
       addMessage: (sessionId: string, message: Record<string, unknown>) => {
         expect(sessionId).toBe(session.id);
         const created = {

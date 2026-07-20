@@ -1,7 +1,17 @@
-export const NATIVE_SANDBOX_RUNTIME_VERSION = '0.0.65';
-export const NATIVE_SANDBOX_POLICY_VERSION = 'm3-single-workspace-v1';
-export const NATIVE_SANDBOX_OPENCLAW_BACKEND_ID = 'lobster-srt';
-export const NATIVE_SANDBOX_OPENCLAW_PLUGIN_ID = 'lobster-srt-sandbox';
+export const NATIVE_SANDBOX_PROTOCOL_VERSION = 1;
+export const NATIVE_SANDBOX_POLICY_VERSION = 'workspace-write-v1';
+export const NATIVE_SANDBOX_OPENCLAW_BACKEND_ID = 'lobster-native';
+export const NATIVE_SANDBOX_OPENCLAW_PLUGIN_ID = 'lobster-native-sandbox';
+export const NATIVE_SANDBOX_RETIRED_OPENCLAW_PLUGIN_IDS = [
+  'lobster-srt-sandbox',
+] as const;
+
+/**
+ * M0 intentionally keeps the product switch unavailable while the native
+ * Windows executor is developed. Persisted M3 test flags are ignored and
+ * cleared by the main-process composition root.
+ */
+export const NATIVE_SANDBOX_ACTIVATION_AVAILABLE = false;
 
 export const NativeSandboxIpcChannel = {
   GetStatus: 'native-sandbox:get-status',
@@ -11,7 +21,20 @@ export const NativeSandboxIpcChannel = {
 } as const;
 
 export const NativeSandboxGatewayMethod = {
-  Status: 'lobster-srt-sandbox.status',
+  Status: 'lobster-native-sandbox.status',
+} as const;
+
+export const NativeSandboxRuntimeKind = {
+  LegacyWindowsAdapter: 'legacy-windows-adapter',
+  NativeWindows: 'native-windows',
+  NativeMacOS: 'native-macos',
+  Mock: 'mock',
+} as const;
+
+export const NativeSandboxNetworkMode = {
+  Disabled: 'disabled',
+  ManagedProxy: 'managed-proxy',
+  Allowlist: 'allowlist',
 } as const;
 
 export const NativeSandboxPlatform = {
@@ -44,8 +67,10 @@ export const NativeSandboxOperation = {
 export const NativeSandboxErrorCode = {
   UnsupportedPlatform: 'unsupported-platform',
   UnsupportedArchitecture: 'unsupported-architecture',
-  HelperUnavailable: 'helper-unavailable',
+  ActivationUnavailable: 'activation-unavailable',
+  RuntimeExecutableUnavailable: 'runtime-executable-unavailable',
   RuntimeUnavailable: 'runtime-unavailable',
+  RuntimeVersionIncompatible: 'runtime-version-incompatible',
   StatusCheckFailed: 'status-check-failed',
   InstallFailed: 'install-failed',
   RepairFailed: 'repair-failed',
@@ -57,15 +82,6 @@ export const NativeSandboxErrorCode = {
   RollbackFailed: 'rollback-failed',
   InvalidWorkspace: 'invalid-workspace',
   UnsafeWorkspaceAcl: 'unsafe-workspace-acl',
-} as const;
-
-export const NativeSandboxNetworkState = {
-  Unknown: 'unknown',
-  Absent: 'absent',
-  Installed: 'installed',
-  CannotRead: 'cannot-read',
-  Verified: 'verified',
-  VerificationFailed: 'verification-failed',
 } as const;
 
 export const NativeSandboxControlStage = {

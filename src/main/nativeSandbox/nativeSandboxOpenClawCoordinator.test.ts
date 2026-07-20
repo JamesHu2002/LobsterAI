@@ -3,6 +3,7 @@ import { describe, expect, test, vi } from 'vitest';
 import {
   NATIVE_SANDBOX_OPENCLAW_BACKEND_ID,
   NATIVE_SANDBOX_OPENCLAW_PLUGIN_ID,
+  NATIVE_SANDBOX_PROTOCOL_VERSION,
   NativeSandboxBackendState,
   NativeSandboxErrorCode,
   NativeSandboxGatewayMethod,
@@ -48,6 +49,7 @@ const createHarness = (options: {
     runtimeEnabled: true,
     state: NativeSandboxBackendState.Ready,
     backendId: NATIVE_SANDBOX_OPENCLAW_BACKEND_ID,
+    protocolVersion: NATIVE_SANDBOX_PROTOCOL_VERSION,
   }));
   const coordinator = createNativeSandboxOpenClawCoordinator({
     syncConfiguration,
@@ -143,6 +145,27 @@ describe('NativeSandboxOpenClawCoordinator', () => {
       errorCode: NativeSandboxErrorCode.ConfigurationFailed,
     });
     expect(harness.requestGateway).not.toHaveBeenCalled();
+  });
+
+  test('fails closed when the executor protocol is incompatible', async () => {
+    const harness = createHarness({ configEnabled: true });
+    harness.requestGateway.mockResolvedValueOnce({
+      ok: true,
+      registered: true,
+      runtimeEnabled: true,
+      state: NativeSandboxBackendState.Ready,
+      backendId: NATIVE_SANDBOX_OPENCLAW_BACKEND_ID,
+      protocolVersion: NATIVE_SANDBOX_PROTOCOL_VERSION + 1,
+    });
+
+    await expect(harness.coordinator.verifyBackend({
+      enabled: true,
+      prepare: false,
+      workspaceDir: 'D:\\workspace',
+    })).resolves.toMatchObject({
+      ok: false,
+      errorCode: NativeSandboxErrorCode.RuntimeVersionIncompatible,
+    });
   });
 });
 

@@ -5,7 +5,6 @@ import {
 } from '@heroicons/react/24/outline';
 import React from 'react';
 
-import { NATIVE_SANDBOX_RUNTIME_VERSION } from '../../../../shared/nativeSandbox/constants';
 import type {
   NativeSandboxOperation,
   NativeSandboxStatus,
@@ -93,15 +92,19 @@ const NativeSandboxStatusCard: React.FC<NativeSandboxStatusCardProps> = ({
           valueClassName={status?.supported ? 'text-foreground' : 'text-amber-700 dark:text-amber-400'}
         />
         <StatusRow
-          label={i18nService.t('sandboxRuntimeVersionLabel')}
-          value={status?.runtimeVersion || NATIVE_SANDBOX_RUNTIME_VERSION}
+          label={i18nService.t('sandboxRuntimeKindLabel')}
+          value={status?.runtimeKind || pendingValue}
         />
         <StatusRow
-          label={i18nService.t('sandboxHelperStatusLabel')}
+          label={i18nService.t('sandboxRuntimeVersionLabel')}
+          value={status?.runtimeVersion || pendingValue}
+        />
+        <StatusRow
+          label={i18nService.t('sandboxRuntimeComponentStatusLabel')}
           value={status
-            ? status.helperAvailable
-              ? i18nService.t('sandboxHelperAvailable')
-              : i18nService.t('sandboxHelperMissing')
+            ? status.runtimeAvailable
+              ? i18nService.t('sandboxRuntimeComponentAvailable')
+              : i18nService.t('sandboxRuntimeComponentMissing')
             : pendingValue}
         />
         <StatusRow

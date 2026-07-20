@@ -12,7 +12,7 @@ import type {
   NativeSandboxSetEnabledResult,
   NativeSandboxStatus,
 } from '../../shared/nativeSandbox/types';
-import type { NativeSandboxServiceApi } from './nativeSandboxService';
+import type { NativeSandboxProvisioner } from './domain/nativeSandboxProvisioner';
 
 export interface NativeSandboxControlLogger {
   log: (message: string) => void;
@@ -20,7 +20,7 @@ export interface NativeSandboxControlLogger {
 }
 
 export interface NativeSandboxControlDependencies {
-  diagnostics: NativeSandboxServiceApi;
+  provisioner: NativeSandboxProvisioner;
   getEnabled: () => boolean;
   persistEnabled: (enabled: boolean) => void;
   isManagedByEnterprise: () => boolean;
@@ -35,7 +35,7 @@ export interface NativeSandboxControlDependencies {
   logger?: NativeSandboxControlLogger;
 }
 
-export interface NativeSandboxControlServiceApi extends NativeSandboxServiceApi {
+export interface NativeSandboxControlServiceApi extends NativeSandboxProvisioner {
   setEnabled: (enabled: boolean) => Promise<NativeSandboxSetEnabledResult>;
 }
 
@@ -80,16 +80,16 @@ export class NativeSandboxControlService implements NativeSandboxControlServiceA
   }
 
   async getStatus(): Promise<NativeSandboxOperationResult> {
-    const result = await this.dependencies.diagnostics.getStatus();
+    const result = await this.dependencies.provisioner.getStatus();
     return this.decorateResult(result, { verifyBackend: true });
   }
 
   async install(): Promise<NativeSandboxOperationResult> {
-    return this.runLifecycleOperation(() => this.dependencies.diagnostics.install());
+    return this.runLifecycleOperation(() => this.dependencies.provisioner.install());
   }
 
   async repair(): Promise<NativeSandboxOperationResult> {
-    return this.runLifecycleOperation(() => this.dependencies.diagnostics.repair());
+    return this.runLifecycleOperation(() => this.dependencies.provisioner.repair());
   }
 
   setEnabled(enabled: boolean): Promise<NativeSandboxSetEnabledResult> {
@@ -169,7 +169,7 @@ export class NativeSandboxControlService implements NativeSandboxControlServiceA
           workspaceDir,
         });
         this.assertProbeMatches(enabled, probe);
-        const current = await this.dependencies.diagnostics.getStatus();
+        const current = await this.dependencies.provisioner.getStatus();
         this.auditToggle('unchanged', enabled, stage);
         return this.toToggleResult(this.decorateResult(current, { probe }), {
           enabled,
@@ -193,7 +193,7 @@ export class NativeSandboxControlService implements NativeSandboxControlServiceA
       });
       this.assertProbeMatches(enabled, probe);
 
-      const current = await this.dependencies.diagnostics.getStatus();
+      const current = await this.dependencies.provisioner.getStatus();
       this.auditToggle('succeeded', enabled, stage);
       return this.toToggleResult(this.decorateResult(current, { probe }), {
         enabled,
@@ -224,7 +224,7 @@ export class NativeSandboxControlService implements NativeSandboxControlServiceA
         }
       }
 
-      const current = await this.dependencies.diagnostics.getStatus();
+      const current = await this.dependencies.provisioner.getStatus();
       const explicitCode = (error as { code?: unknown } | undefined)?.code;
       const errorCode = rollbackError
         ? NativeSandboxErrorCode.RollbackFailed
@@ -253,11 +253,22 @@ export class NativeSandboxControlService implements NativeSandboxControlServiceA
   }
 
   private async ensureHealthy(): Promise<NativeSandboxOperationResult> {
-    let result = await this.dependencies.diagnostics.getStatus();
+    let result = await this.dependencies.provisioner.getStatus();
+    if (!result.status.activationAvailable) {
+      const lastError: NativeSandboxError = {
+        code: NativeSandboxErrorCode.ActivationUnavailable,
+        message: 'The native Sandbox executor is not available in this milestone.',
+      };
+      return {
+        success: false,
+        status: this.decorateStatus(result.status, { lastError }),
+        error: lastError.message,
+      };
+    }
     if (result.status.healthy) return result;
     result = result.status.installed
-      ? await this.dependencies.diagnostics.repair()
-      : await this.dependencies.diagnostics.install();
+      ? await this.dependencies.provisioner.repair()
+      : await this.dependencies.provisioner.install();
     if (result.cancelled) {
       return {
         ...result,
@@ -280,8 +291,19 @@ export class NativeSandboxControlService implements NativeSandboxControlServiceA
   private async runLifecycleOperation(
     operation: () => Promise<NativeSandboxOperationResult>,
   ): Promise<NativeSandboxOperationResult> {
+    const current = await this.dependencies.provisioner.getStatus();
+    if (!current.status.lifecycleAvailable) {
+      const lastError: NativeSandboxError = {
+        code: NativeSandboxErrorCode.ActivationUnavailable,
+        message: 'Runtime installation is unavailable while the native executor is being built.',
+      };
+      return {
+        success: false,
+        error: lastError.message,
+        status: this.decorateStatus(current.status, { lastError }),
+      };
+    }
     if (this.dependencies.hasActiveWorkloads()) {
-      const current = await this.dependencies.diagnostics.getStatus();
       return {
         success: false,
         error: 'A task or scheduled job is still running. Wait before changing Sandbox setup.',

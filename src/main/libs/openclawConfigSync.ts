@@ -16,8 +16,10 @@ import { COWORK_TEMP_DIR_NAME } from '../../shared/cowork/constants';
 import { CoworkErrorModelSource } from '../../shared/cowork/errorDetail';
 import { normalizeMcpServerUrlInput } from '../../shared/mcp/url';
 import {
+  NATIVE_SANDBOX_ACTIVATION_AVAILABLE,
   NATIVE_SANDBOX_OPENCLAW_BACKEND_ID,
   NATIVE_SANDBOX_OPENCLAW_PLUGIN_ID,
+  NATIVE_SANDBOX_RETIRED_OPENCLAW_PLUGIN_IDS,
 } from '../../shared/nativeSandbox/constants';
 import {
   AuthType,
@@ -31,8 +33,10 @@ import type { DiscordInstanceConfig, IMSettings, TelegramInstanceConfig } from '
 import type { DingTalkInstanceConfig, EmailMultiInstanceConfig, FeishuInstanceConfig, NeteaseBeeChanConfig, NimInstanceConfig, PopoInstanceConfig, QQInstanceConfig, WecomInstanceConfig, WeixinOpenClawConfig } from '../im/types';
 import {
   createNativeSandboxEnvironment,
-  resolveNativeSandboxHelperPath,
 } from '../nativeSandbox/nativeSandboxEnvironment';
+import {
+  resolveNativeSandboxRuntimeDescriptor,
+} from '../nativeSandbox/nativeSandboxRuntimeDescriptor';
 import { OpenClawSessionKeepAlive } from '../openclawSessionPolicy/constants';
 import { buildOpenClawSessionConfig } from '../openclawSessionPolicy/store';
 import {
@@ -97,6 +101,7 @@ const mapExecutionModeToSandboxMode = (
 export const buildOpenClawSandboxConfig = (params: {
   executionMode: CoworkExecutionMode;
   isEnterprise: boolean;
+  nativeSandboxActivationAvailable?: boolean;
   nativeSandboxEnabled: boolean;
 }): {
   mode: 'off' | 'non-main' | 'all';
@@ -104,7 +109,11 @@ export const buildOpenClawSandboxConfig = (params: {
   workspaceAccess?: 'rw';
   scope?: 'session';
 } => {
-  if (params.nativeSandboxEnabled && !params.isEnterprise) {
+  if (
+    params.nativeSandboxActivationAvailable === true
+    && params.nativeSandboxEnabled
+    && !params.isEnterprise
+  ) {
     return {
       mode: 'all',
       backend: NATIVE_SANDBOX_OPENCLAW_BACKEND_ID,
@@ -1839,11 +1848,12 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
     const sandboxConfig = buildOpenClawSandboxConfig({
       executionMode: coworkConfig.executionMode || 'local',
       isEnterprise: enterpriseManaged,
+      nativeSandboxActivationAvailable: NATIVE_SANDBOX_ACTIVATION_AVAILABLE,
       nativeSandboxEnabled: coworkConfig.nativeSandboxEnabled === true,
     });
     const nativeSandboxRuntimeEnabled =
       sandboxConfig.backend === NATIVE_SANDBOX_OPENCLAW_BACKEND_ID;
-    const nativeSandboxHelperPath = resolveNativeSandboxHelperPath(
+    const nativeSandboxRuntime = resolveNativeSandboxRuntimeDescriptor(
       createNativeSandboxEnvironment(app, {
         resourcesPath: process.resourcesPath,
         platform: process.platform,
@@ -2122,7 +2132,10 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
                 [NATIVE_SANDBOX_OPENCLAW_PLUGIN_ID]: {
                   enabled: true,
                   config: {
-                    helperPath: nativeSandboxHelperPath,
+                    runtimeExecutablePath: nativeSandboxRuntime.executablePath,
+                    runtimeKind: nativeSandboxRuntime.runtimeKind,
+                    runtimeVersion: nativeSandboxRuntime.runtimeVersion,
+                    protocolVersion: nativeSandboxRuntime.protocolVersion,
                     runtimeEnabled: nativeSandboxRuntimeEnabled,
                   },
                 },
@@ -2145,9 +2158,16 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
           // a process that always fails.  See openclaw/openclaw#62588.
           'acpx': { enabled: false },
         };
+        const retiredNativeSandboxPlugins = new Set<string>(
+          NATIVE_SANDBOX_RETIRED_OPENCLAW_PLUGIN_IDS,
+        );
         const existingAllow = Array.isArray((existingPlugins as Record<string, unknown>).allow)
           ? ((existingPlugins as Record<string, unknown>).allow as unknown[])
-              .filter((id): id is string => typeof id === 'string' && id.length > 0)
+              .filter((id): id is string => (
+                typeof id === 'string'
+                && id.length > 0
+                && !retiredNativeSandboxPlugins.has(id)
+              ))
           : [];
         const trustedPluginAllow = Array.from(new Set([
           ...existingAllow,

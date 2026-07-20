@@ -4,7 +4,7 @@
 >
 > 全面修订：2026-07-20
 >
-> 当前状态：方案重规划，Windows 优先，macOS 预留
+> 当前状态：M0 已实施，待端侧验收；Windows 优先，macOS 预留
 >
 > 适用范围：LobsterAI、内置 OpenClaw runtime、Windows 原生执行后端
 >
@@ -693,18 +693,28 @@ LobsterAI version
 
 ## 10. 平台中性 runtime 接口
 
-业务层只依赖平台中性接口：
+LobsterAI 的控制面和 OpenClaw extension 位于不同进程，不能共享一个内存中的 runtime 对象。实现上因此拆成两个平台中性边界：
 
 ```ts
-interface NativeSandboxRuntime {
-  getCapabilities(): Promise<RuntimeCapabilities>;
-  getInstallStatus(): Promise<InstallStatus>;
-  installOrRepair(request: InstallRequest): Promise<InstallResult>;
-  verify(policy: SandboxPolicySnapshot): Promise<VerificationResult>;
-  spawn(request: SpawnRequest): Promise<SandboxProcess>;
-  dispose(): Promise<void>;
+// Electron main：只负责状态、安装和修复，不接收模型生成的命令。
+interface NativeSandboxProvisioner {
+  getStatus(): Promise<NativeSandboxOperationResult>;
+  install(): Promise<NativeSandboxOperationResult>;
+  repair(): Promise<NativeSandboxOperationResult>;
+}
+
+// OpenClaw extension：只负责受限命令和受控文件 I/O，不执行系统安装。
+interface NativeSandboxExecutor {
+  getStatus(): NativeSandboxExecutorStatus;
+  prepareWorkspace(workspaceDir: string): Promise<void>;
+  wrapCommand(request: SandboxCommandRequest): Promise<SandboxWrappedCommand>;
+  runIsolatedCommand(request: SandboxCommandRequest): Promise<SandboxCommandResult>;
+  createFsIo(request: SandboxFsIoRequest): SandboxFsIo;
+  reset(): Promise<void>;
 }
 ```
+
+两个进程通过版本化配置和 gateway 状态协议核对 `backendId`、`runtimeKind`、`runtimeVersion` 与 `protocolVersion`。后续 Windows/macOS 实现分别接入这两个边界，产品控制逻辑和 OpenClaw backend 不直接依赖 SID、ACL、Seatbelt profile 或某个第三方 runtime。
 
 核心数据结构不得出现 Windows SID、ACL 或 macOS profile 等平台字段：
 
@@ -726,9 +736,9 @@ interface SandboxPolicySnapshot {
 平台实现：
 
 ```text
-NativeSandboxRuntime
-  ├─ WindowsSandboxRuntime
-  └─ MacSandboxRuntime         # 后续
+NativeSandboxProvisioner / NativeSandboxExecutor
+  ├─ Windows native implementation
+  └─ macOS native implementation         # 后续
 ```
 
 Windows 专有类型应停留在：
@@ -1027,7 +1037,7 @@ rollback-failed
 
 | Milestone | 目标 | 可交付状态 | 当前状态 | 粗估人日 | 是否阻塞 Windows 首发 |
 | --- | --- | --- | --- | ---: | --- |
-| M0 | 架构转向与中性边界 | 沙箱关闭时完全回归，旧后端不再扩展 | 待实施，已有较多可复用基线 | 3-5 | 是 |
+| M0 | 架构转向与中性边界 | 沙箱关闭时完全回归，旧后端不再扩展 | 已实施，待端侧验收 | 3-5 | 是 |
 | M1 | Windows runner 技术原型 | CLI 可证明进程树和 workspace 写边界 | 未开始 | 10-18 | 是 |
 | M2 | 单 workspace 产品内测版 | 用户可在已有工程中开关并执行真实任务 | 未开始，可复用现有 UI/接入层 | 7-12 | 是 |
 | M3 | 安装态与系统安全加固 | setup、网络、签名、修复和失败关闭完整 | 未开始 | 12-22 | 是 |
@@ -1054,20 +1064,21 @@ Windows 剩余总量粗估：
 ### 17.2 主要工作
 
 1. 引入平台中性类型：
-   - `NativeSandboxRuntime`
-   - `SandboxPolicySnapshot`
-   - `RuntimeCapabilities`
-   - `SpawnRequest`
-   - `InstallStatus`
-2. 把现有 control service 依赖改为接口注入。
-3. 将 backend 标识迁移为 `lobster-native`。
-4. 统一状态、错误码和审计常量。
-5. 标记旧 runtime adapter 为待移除，不再增加功能。
-6. 建立 Windows/macOS 平台目录。
-7. 保留 feature flag 和 kill switch。
+   - `NativeSandboxProvisioner`
+   - `NativeSandboxExecutor`
+   - `NativeSandboxPolicySnapshot`
+   - `NativeSandboxRuntimeCapabilities`
+   - `NativeSandboxRuntimeDescriptor`
+2. 把现有 control service 依赖改为 `NativeSandboxProvisioner` 接口注入。
+3. 把 OpenClaw backend 的命令执行依赖改为 `NativeSandboxExecutor` 接口注入。
+4. 将 backend/plugin 标识迁移为 `lobster-native` / `lobster-native-sandbox`。
+5. 统一 runtime kind、协议版本、状态、错误码和审计常量。
+6. 将旧 runtime 的 provisioner、executor 和文件 I/O 收到 `legacy/`，不再增加功能。
+7. 为 Windows/macOS 预留 runtime kind、策略快照和版本协议入口；平台实现从 M1 开始进入独立目录。
 8. 保证 Sandbox 关闭时仍走原有 OpenClaw 实机路径。
-9. 补充 mock runtime，支持不启动原生 helper 的单元测试。
-10. 更新设计文档、威胁模型和迁移清单。
+9. 对升级前已保存的 `enabled=true` 做失败关闭迁移：启动时强制改回关闭并同步实机配置。
+10. 使用 mock provisioner/executor 覆盖不启动原生 helper 的启用、失败、回滚和 backend 测试。
+11. 更新设计文档、威胁模型和迁移清单。
 
 ### 17.3 不包含
 
@@ -1094,6 +1105,16 @@ Windows 剩余总量粗估：
 ### 17.5 完成门禁
 
 M0 可以独立提交。此时设置页开关可以保持不可用或仅限开发开关，不宣传 Sandbox 已可用。
+
+### 17.6 本次实施结果
+
+截至 2026-07-20：
+
+- 产品开关、安装和修复入口保持不可用，不会调用旧 runtime 完成激活；
+- OpenClaw 生成配置在 M0 固定为 sandbox off，历史启用状态会安全回落为关闭；
+- 原有实现仅作为 `legacy` 诊断/对照适配器保留，未删除依赖和打包资源；
+- `lobster-native-sandbox` 已建立独立的 provisioner/executor、协议版本和 backend 身份边界；
+- 尚未实现 restricted token、Capability SID、ACL、Job Object、原生 runner 或网络隔离，这些从 M1 开始交付。
 
 ## 18. M1：Windows runner 技术原型
 

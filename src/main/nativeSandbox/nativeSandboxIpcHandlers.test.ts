@@ -5,6 +5,7 @@ import {
   NativeSandboxControlStage,
   NativeSandboxIpcChannel,
   NativeSandboxPlatform,
+  NativeSandboxRuntimeKind,
   NativeSandboxState,
 } from '../../shared/nativeSandbox/constants';
 import type {
@@ -23,8 +24,12 @@ const createResult = (): NativeSandboxOperationResult => ({
     architecture: 'x64',
     supported: true,
     state: NativeSandboxState.Ready,
+    runtimeKind: NativeSandboxRuntimeKind.Mock,
     runtimeVersion: '0.0.65',
-    helperAvailable: true,
+    protocolVersion: 1,
+    runtimeAvailable: true,
+    activationAvailable: true,
+    lifecycleAvailable: true,
     installed: true,
     healthy: true,
     enabled: false,

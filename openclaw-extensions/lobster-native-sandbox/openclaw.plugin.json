@@ -1,0 +1,36 @@
+{
+  "id": "lobster-native-sandbox",
+  "activation": {
+    "onStartup": true
+  },
+  "name": "Lobster Native Sandbox",
+  "description": "Windows native sandbox backend for LobsterAI task workspaces.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "runtimeExecutablePath": {
+        "type": "string"
+      },
+      "runtimeKind": {
+        "type": "string"
+      },
+      "runtimeVersion": {
+        "type": "string"
+      },
+      "protocolVersion": {
+        "type": "number"
+      },
+      "runtimeEnabled": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "runtimeExecutablePath",
+      "runtimeKind",
+      "runtimeVersion",
+      "protocolVersion",
+      "runtimeEnabled"
+    ]
+  }
+}

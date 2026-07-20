@@ -92,7 +92,8 @@ export const buildNativeSandboxViewModel = ({
     actionOperation,
     canOperate: Boolean(
       status?.supported
-      && status.helperAvailable
+      && status.runtimeAvailable
+      && status.lifecycleAvailable
       && !isOperating
       && !isLoading
     ),

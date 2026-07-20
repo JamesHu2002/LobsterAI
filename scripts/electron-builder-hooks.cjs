@@ -169,7 +169,7 @@ function ensureBundledLocalExtensions(runtimeRoot, buildHint) {
     'mcp-bridge',
     'ask-user-question',
     'lobster-media-generation',
-    'lobster-srt-sandbox',
+    'lobster-native-sandbox',
   ];
   const missingCompiledExtensions = requiredLocalExtensions.filter(
     (extensionId) => !hasCompiledLocalExtension(runtimeRoot, extensionId),

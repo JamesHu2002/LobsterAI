@@ -34,7 +34,8 @@ const SandboxSettingsSection: React.FC = () => {
       !isEnabled
       && (
         !controller.status?.supported
-        || !controller.status.helperAvailable
+        || !controller.status.runtimeAvailable
+        || !controller.status.activationAvailable
         || controller.status.managedByEnterprise === true
       )
     );
@@ -139,10 +140,10 @@ const SandboxSettingsSection: React.FC = () => {
           <ExclamationTriangleIcon className="mt-0.5 h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
           <div className="min-w-0">
             <h4 className="text-sm font-medium text-foreground">
-              {i18nService.t('sandboxSingleWorkspaceTitle')}
+                {i18nService.t('sandboxM0BoundaryTitle')}
             </h4>
             <p className="mt-1 text-sm leading-6 text-secondary">
-              {i18nService.t('sandboxSingleWorkspaceDescription')}
+              {i18nService.t('sandboxM0BoundaryDescription')}
             </p>
           </div>
         </div>

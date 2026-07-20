@@ -2,9 +2,10 @@ import {
   NativeSandboxBackendState,
   NativeSandboxControlStage,
   NativeSandboxErrorCode,
-  NativeSandboxNetworkState,
+  NativeSandboxNetworkMode,
   NativeSandboxOperation,
   NativeSandboxPlatform,
+  NativeSandboxRuntimeKind,
   NativeSandboxState,
 } from './constants';
 
@@ -20,8 +21,11 @@ export type NativeSandboxOperation =
 export type NativeSandboxErrorCode =
   typeof NativeSandboxErrorCode[keyof typeof NativeSandboxErrorCode];
 
-export type NativeSandboxNetworkState =
-  typeof NativeSandboxNetworkState[keyof typeof NativeSandboxNetworkState];
+export type NativeSandboxRuntimeKind =
+  typeof NativeSandboxRuntimeKind[keyof typeof NativeSandboxRuntimeKind];
+
+export type NativeSandboxNetworkMode =
+  typeof NativeSandboxNetworkMode[keyof typeof NativeSandboxNetworkMode];
 
 export type NativeSandboxControlStage =
   typeof NativeSandboxControlStage[keyof typeof NativeSandboxControlStage];
@@ -34,30 +38,17 @@ export interface NativeSandboxError {
   message: string;
 }
 
-export interface NativeSandboxUserStatus {
-  provisioned: boolean;
-  credentialPresent: boolean;
-  groupExists: boolean;
-  inBuiltinUsers: boolean;
-  inSandboxGroup: boolean;
-  hiddenFromLogon: boolean;
-  sid?: string;
-}
-
-export interface NativeSandboxNetworkStatus {
-  state: NativeSandboxNetworkState;
-  filters?: number;
-  portRange?: [number, number];
-}
-
 export interface NativeSandboxStatus {
   platform: NativeSandboxPlatform;
   architecture: string;
   supported: boolean;
   state: NativeSandboxState;
+  runtimeKind: NativeSandboxRuntimeKind;
   runtimeVersion: string;
-  helperAvailable: boolean;
-  helperPath?: string;
+  protocolVersion: number;
+  runtimeAvailable: boolean;
+  activationAvailable: boolean;
+  lifecycleAvailable: boolean;
   installed: boolean;
   healthy: boolean;
   /** Persisted product mode, independent from transient backend health. */
@@ -67,8 +58,6 @@ export interface NativeSandboxStatus {
   managedByEnterprise?: boolean;
   busy: boolean;
   operation?: NativeSandboxOperation;
-  user?: NativeSandboxUserStatus;
-  network?: NativeSandboxNetworkStatus;
   lastError?: NativeSandboxError;
   checkedAt: number;
 }
@@ -97,7 +86,42 @@ export interface NativeSandboxBackendProbeResult {
   runtimeEnabled: boolean;
   state: NativeSandboxBackendState;
   backendId?: string;
+  runtimeKind?: NativeSandboxRuntimeKind;
   runtimeVersion?: string;
+  protocolVersion?: number;
   policyVersion?: string;
   errorCode?: string;
+}
+
+export interface NativeSandboxResourceLimits {
+  timeoutMs?: number;
+  maxProcesses?: number;
+  maxOutputBytes?: number;
+}
+
+/**
+ * Serialized, platform-neutral policy contract. M0 defines the boundary; the
+ * native Windows runner starts consuming it in M1.
+ */
+export interface NativeSandboxPolicySnapshot {
+  protocolVersion: number;
+  policyVersion: string;
+  taskId: string;
+  agentId: string;
+  cwd: string;
+  writableRoots: string[];
+  readableRoots: string[];
+  protectedPaths: string[];
+  scratchDir: string;
+  networkMode: NativeSandboxNetworkMode;
+  limits: NativeSandboxResourceLimits;
+}
+
+export interface NativeSandboxRuntimeCapabilities {
+  runtimeKind: NativeSandboxRuntimeKind;
+  runtimeVersion: string;
+  protocolVersion: number;
+  supportedNetworkModes: NativeSandboxNetworkMode[];
+  supportsMultipleWritableRoots: boolean;
+  enforcesProcessTree: boolean;
 }

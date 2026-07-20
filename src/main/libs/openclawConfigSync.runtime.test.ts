@@ -171,22 +171,32 @@ describe('OpenClawConfigSync runtime config output', () => {
     } as never);
   };
 
-  test('selects lobster-srt only for the explicit non-enterprise test flag', async () => {
+  test('selects lobster-native only when activation is explicitly available', async () => {
     const { buildOpenClawSandboxConfig } = await import('./openclawConfigSync');
 
     expect(buildOpenClawSandboxConfig({
       executionMode: 'local',
       isEnterprise: false,
+      nativeSandboxActivationAvailable: true,
       nativeSandboxEnabled: true,
     })).toEqual({
       mode: 'all',
-      backend: 'lobster-srt',
+      backend: 'lobster-native',
       workspaceAccess: 'rw',
       scope: 'session',
     });
     expect(buildOpenClawSandboxConfig({
+      executionMode: 'local',
+      isEnterprise: false,
+      nativeSandboxActivationAvailable: false,
+      nativeSandboxEnabled: true,
+    })).toEqual({
+      mode: 'off',
+    });
+    expect(buildOpenClawSandboxConfig({
       executionMode: 'sandbox',
       isEnterprise: true,
+      nativeSandboxActivationAvailable: true,
       nativeSandboxEnabled: true,
     })).toEqual({
       mode: 'all',
@@ -194,13 +204,14 @@ describe('OpenClawConfigSync runtime config output', () => {
     expect(buildOpenClawSandboxConfig({
       executionMode: 'local',
       isEnterprise: false,
+      nativeSandboxActivationAvailable: true,
       nativeSandboxEnabled: false,
     })).toEqual({
       mode: 'off',
     });
   });
 
-  test('writes the native backend and fail-closed plugin gate when enabled', async () => {
+  test('keeps the M0 backend fail-closed when a stale enabled flag is persisted', async () => {
     const sync = await createSync({
       getCoworkConfig: () => ({
         workingDirectory: tmpDir,
@@ -220,21 +231,38 @@ describe('OpenClawConfigSync runtime config output', () => {
     expect(sync.sync('native-sandbox-test').ok).toBe(true);
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 
-    expect(config.agents.defaults.sandbox).toEqual({
-      mode: 'all',
-      backend: 'lobster-srt',
-      workspaceAccess: 'rw',
-      scope: 'session',
-    });
-    expect(config.plugins.entries['lobster-srt-sandbox']).toMatchObject({
+    expect(config.agents.defaults.sandbox).toEqual({ mode: 'off' });
+    expect(config.plugins.entries['lobster-native-sandbox']).toMatchObject({
       enabled: true,
       config: {
-        runtimeEnabled: true,
+        protocolVersion: 1,
+        runtimeEnabled: false,
+        runtimeKind: 'legacy-windows-adapter',
+        runtimeVersion: '0.0.65',
       },
     });
-    expect(config.plugins.entries['lobster-srt-sandbox'].config.helperPath)
+    expect(config.plugins.entries['lobster-native-sandbox'].config.runtimeExecutablePath)
       .toMatch(/[\\/]srt-win[\\/]x64[\\/]srt-win\.exe$/);
-    expect(config.plugins.allow).toContain('lobster-srt-sandbox');
+    expect(config.plugins.allow).toContain('lobster-native-sandbox');
+  });
+
+  test('removes the retired Sandbox plugin from a persisted OpenClaw allowlist', async () => {
+    fs.writeFileSync(configPath, JSON.stringify({
+      plugins: {
+        allow: [
+          'lobster-srt-sandbox',
+          'existing-plugin',
+        ],
+      },
+    }, null, 2));
+    const sync = await createSync();
+
+    expect(sync.sync('native-sandbox-retired-plugin').ok).toBe(true);
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+
+    expect(config.plugins.allow).not.toContain('lobster-srt-sandbox');
+    expect(config.plugins.allow).toContain('lobster-native-sandbox');
+    expect(config.plugins.allow).toContain('existing-plugin');
   });
 
   test('keeps the native runtime gate closed in the default local mode', async () => {
@@ -244,7 +272,7 @@ describe('OpenClawConfigSync runtime config output', () => {
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 
     expect(config.agents.defaults.sandbox).toEqual({ mode: 'off' });
-    expect(config.plugins.entries['lobster-srt-sandbox']).toMatchObject({
+    expect(config.plugins.entries['lobster-native-sandbox']).toMatchObject({
       enabled: true,
       config: {
         runtimeEnabled: false,

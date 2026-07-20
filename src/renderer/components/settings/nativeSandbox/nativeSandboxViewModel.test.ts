@@ -3,6 +3,7 @@ import { describe, expect, test } from 'vitest';
 import {
   NativeSandboxOperation,
   NativeSandboxPlatform,
+  NativeSandboxRuntimeKind,
   NativeSandboxState,
 } from '../../../../shared/nativeSandbox/constants';
 import type { NativeSandboxStatus } from '../../../../shared/nativeSandbox/types';
@@ -19,9 +20,13 @@ const makeStatus = (overrides: Partial<NativeSandboxStatus> = {}): NativeSandbox
   checkedAt: 1,
   enabled: false,
   healthy: false,
-  helperAvailable: true,
+  runtimeAvailable: true,
+  activationAvailable: false,
+  lifecycleAvailable: true,
   installed: false,
   platform: NativeSandboxPlatform.Windows,
+  protocolVersion: 1,
+  runtimeKind: NativeSandboxRuntimeKind.Mock,
   runtimeVersion: '0.0.65',
   state: NativeSandboxState.NotInstalled,
   supported: true,
@@ -123,7 +128,8 @@ describe('buildNativeSandboxViewModel', () => {
 
   test.each([
     { name: 'unsupported platform', status: makeStatus({ supported: false }) },
-    { name: 'missing helper', status: makeStatus({ helperAvailable: false }) },
+    { name: 'missing runtime', status: makeStatus({ runtimeAvailable: false }) },
+    { name: 'lifecycle unavailable', status: makeStatus({ lifecycleAvailable: false }) },
     { name: 'backend busy', status: makeStatus({ busy: true }) },
   ])('disables operations for $name', ({ status }) => {
     expect(buildNativeSandboxViewModel({ ...baseInput, status }).canOperate).toBe(false);

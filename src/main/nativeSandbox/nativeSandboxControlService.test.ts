@@ -5,6 +5,7 @@ import {
   NativeSandboxControlStage,
   NativeSandboxErrorCode,
   NativeSandboxPlatform,
+  NativeSandboxRuntimeKind,
   NativeSandboxState,
 } from '../../shared/nativeSandbox/constants';
 import type {
@@ -23,8 +24,12 @@ const createStatus = (
   architecture: 'x64',
   supported: true,
   state: NativeSandboxState.Ready,
+  runtimeKind: NativeSandboxRuntimeKind.Mock,
   runtimeVersion: '0.0.65',
-  helperAvailable: true,
+  protocolVersion: 1,
+  runtimeAvailable: true,
+  activationAvailable: true,
+  lifecycleAvailable: true,
   installed: true,
   healthy: true,
   enabled: false,
@@ -49,7 +54,7 @@ const createHarness = (options: {
 } = {}) => {
   let enabled = options.enabled ?? false;
   const status = options.status ?? createStatus({ enabled });
-  const diagnostics = {
+  const provisioner = {
     getStatus: vi.fn(async () => ({ success: true, status })),
     install: vi.fn(async () => createResult({ enabled, healthy: true, installed: true })),
     repair: vi.fn(async () => createResult({ enabled, healthy: true, installed: true })),
@@ -67,7 +72,7 @@ const createHarness = (options: {
     enabled = nextEnabled;
   });
   const dependencies: NativeSandboxControlDependencies = {
-    diagnostics,
+    provisioner,
     getEnabled: () => enabled,
     persistEnabled,
     isManagedByEnterprise: () => options.managed ?? false,
@@ -84,7 +89,7 @@ const createHarness = (options: {
   return {
     applyConfiguration,
     dependencies,
-    diagnostics,
+    provisioner,
     getEnabled: () => enabled,
     persistEnabled,
     service: new NativeSandboxControlService(dependencies),
@@ -93,6 +98,48 @@ const createHarness = (options: {
 };
 
 describe('NativeSandboxControlService', () => {
+  test('fails closed when M0 has no activatable native executor', async () => {
+    const harness = createHarness({
+      status: createStatus({
+        activationAvailable: false,
+      }),
+    });
+
+    const result = await harness.service.setEnabled(true);
+
+    expect(result).toMatchObject({
+      success: false,
+      enabled: false,
+      stage: NativeSandboxControlStage.HealthCheck,
+      status: {
+        lastError: {
+          code: NativeSandboxErrorCode.ActivationUnavailable,
+        },
+      },
+    });
+    expect(harness.persistEnabled).not.toHaveBeenCalled();
+    expect(harness.applyConfiguration).not.toHaveBeenCalled();
+    expect(harness.verifyBackend).not.toHaveBeenCalled();
+  });
+
+  test('does not expose legacy installation or repair through the M0 lifecycle API', async () => {
+    const harness = createHarness({
+      status: createStatus({
+        lifecycleAvailable: false,
+      }),
+    });
+
+    const installResult = await harness.service.install();
+    const repairResult = await harness.service.repair();
+
+    expect(installResult.status.lastError?.code)
+      .toBe(NativeSandboxErrorCode.ActivationUnavailable);
+    expect(repairResult.status.lastError?.code)
+      .toBe(NativeSandboxErrorCode.ActivationUnavailable);
+    expect(harness.provisioner.install).not.toHaveBeenCalled();
+    expect(harness.provisioner.repair).not.toHaveBeenCalled();
+  });
+
   test('enables only after health, config apply and prepared backend verification', async () => {
     const harness = createHarness();
 
@@ -125,8 +172,8 @@ describe('NativeSandboxControlService', () => {
     const result = await harness.service.setEnabled(true);
 
     expect(result.success).toBe(true);
-    expect(harness.diagnostics.install).toHaveBeenCalledOnce();
-    expect(harness.diagnostics.repair).not.toHaveBeenCalled();
+    expect(harness.provisioner.install).toHaveBeenCalledOnce();
+    expect(harness.provisioner.repair).not.toHaveBeenCalled();
   });
 
   test('keeps mode disabled when the UAC installation is cancelled', async () => {
@@ -137,7 +184,7 @@ describe('NativeSandboxControlService', () => {
         healthy: false,
       }),
     });
-    harness.diagnostics.install.mockResolvedValue({
+    harness.provisioner.install.mockResolvedValue({
       ...createResult({
         state: NativeSandboxState.NotInstalled,
         installed: false,
@@ -163,7 +210,7 @@ describe('NativeSandboxControlService', () => {
         healthy: false,
       }),
     });
-    harness.diagnostics.repair.mockResolvedValue({
+    harness.provisioner.repair.mockResolvedValue({
       ...createResult({
         enabled: false,
         state: NativeSandboxState.Degraded,
@@ -290,8 +337,8 @@ describe('NativeSandboxControlService', () => {
 
     expect(result.success).toBe(true);
     expect(result.enabled).toBe(false);
-    expect(harness.diagnostics.install).not.toHaveBeenCalled();
-    expect(harness.diagnostics.repair).not.toHaveBeenCalled();
+    expect(harness.provisioner.install).not.toHaveBeenCalled();
+    expect(harness.provisioner.repair).not.toHaveBeenCalled();
     expect(harness.persistEnabled).toHaveBeenCalledWith(false);
   });
 });

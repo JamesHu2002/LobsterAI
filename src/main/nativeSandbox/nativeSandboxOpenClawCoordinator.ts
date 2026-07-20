@@ -1,9 +1,11 @@
 import {
   NATIVE_SANDBOX_OPENCLAW_BACKEND_ID,
   NATIVE_SANDBOX_OPENCLAW_PLUGIN_ID,
+  NATIVE_SANDBOX_PROTOCOL_VERSION,
   NativeSandboxBackendState,
   NativeSandboxErrorCode,
   NativeSandboxGatewayMethod,
+  NativeSandboxRuntimeKind,
 } from '../../shared/nativeSandbox/constants';
 import type {
   NativeSandboxBackendProbeResult,
@@ -72,8 +74,16 @@ export const parseNativeSandboxBackendProbe = (
   runtimeEnabled: raw.runtimeEnabled === true,
   state: parseBackendState(raw.state),
   backendId: typeof raw.backendId === 'string' ? raw.backendId : undefined,
+  runtimeKind: Object.values(NativeSandboxRuntimeKind).includes(
+    raw.runtimeKind as NativeSandboxBackendProbeResult['runtimeKind'],
+  )
+    ? raw.runtimeKind as NativeSandboxBackendProbeResult['runtimeKind']
+    : undefined,
   runtimeVersion: typeof raw.runtimeVersion === 'string'
     ? raw.runtimeVersion
+    : undefined,
+  protocolVersion: typeof raw.protocolVersion === 'number'
+    ? raw.protocolVersion
     : undefined,
   policyVersion: typeof raw.policyVersion === 'string'
     ? raw.policyVersion
@@ -145,7 +155,18 @@ export const createNativeSandboxOpenClawCoordinator = (
         },
         { timeoutMs: 30_000 },
       );
-      return parseNativeSandboxBackendProbe(raw);
+      const probe = parseNativeSandboxBackendProbe(raw);
+      if (
+        probe.backendId !== NATIVE_SANDBOX_OPENCLAW_BACKEND_ID
+        || probe.protocolVersion !== NATIVE_SANDBOX_PROTOCOL_VERSION
+      ) {
+        return {
+          ...probe,
+          ok: false,
+          errorCode: NativeSandboxErrorCode.RuntimeVersionIncompatible,
+        };
+      }
+      return probe;
     },
   };
 };

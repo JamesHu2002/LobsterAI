@@ -3,6 +3,10 @@
 const fs = require('fs');
 const path = require('path');
 
+const RETIRED_LOCAL_EXTENSION_IDS = [
+  'lobster-srt-sandbox',
+];
+
 function syncLocalOpenClawExtensions(runtimeRoot) {
   const rootDir = path.resolve(__dirname, '..');
   const sourceDir = path.join(rootDir, 'openclaw-extensions');
@@ -18,10 +22,20 @@ function syncLocalOpenClawExtensions(runtimeRoot) {
     throw new Error(`Runtime extensions directory does not exist: ${targetExtensionsDir}`);
   }
 
+  for (const extensionId of RETIRED_LOCAL_EXTENSION_IDS) {
+    fs.rmSync(path.join(targetExtensionsDir, extensionId), {
+      recursive: true,
+      force: true,
+    });
+  }
+
   const copied = [];
   const entries = fs.readdirSync(sourceDir, { withFileTypes: true });
   for (const entry of entries) {
-    if (!entry.isDirectory()) {
+    if (
+      !entry.isDirectory()
+      || RETIRED_LOCAL_EXTENSION_IDS.includes(entry.name)
+    ) {
       continue;
     }
     const src = path.join(sourceDir, entry.name);

@@ -6,7 +6,7 @@ const path = require('path');
 const SRT_PACKAGE_NAME = '@anthropic-ai/sandbox-runtime';
 const EXPECTED_SRT_VERSION = '0.0.65';
 const WINDOWS_X64_MACHINE = 0x8664;
-const EXTENSION_ID = 'lobster-srt-sandbox';
+const EXTENSION_ID = 'lobster-native-sandbox';
 
 function readJson(filePath) {
   try {

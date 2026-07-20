@@ -1,5 +1,3 @@
-import path from 'path';
-
 import { NativeSandboxPlatform } from '../../shared/nativeSandbox/constants';
 import type { NativeSandboxPlatform as NativeSandboxPlatformValue } from '../../shared/nativeSandbox/types';
 
@@ -34,27 +32,6 @@ export const createNativeSandboxEnvironment = (
   platform: runtimeProcess.platform,
   architecture: runtimeProcess.arch,
 });
-
-export const resolveNativeSandboxHelperPath = (
-  environment: Pick<
-    NativeSandboxEnvironment,
-    'appPath' | 'resourcesPath' | 'isPackaged' | 'architecture'
-  >,
-): string => {
-  if (environment.isPackaged) {
-    return path.join(environment.resourcesPath, 'sandbox-runtime', 'srt-win.exe');
-  }
-  return path.join(
-    environment.appPath,
-    'node_modules',
-    '@anthropic-ai',
-    'sandbox-runtime',
-    'vendor',
-    'srt-win',
-    environment.architecture,
-    'srt-win.exe',
-  );
-};
 
 export const mapNativeSandboxPlatform = (
   platform: NodeJS.Platform,

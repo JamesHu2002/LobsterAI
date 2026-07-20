@@ -1,888 +1,1668 @@
-# Windows 原生沙箱分阶段实施计划
+# Lobster 原生沙箱分阶段实施计划
 
-- 日期：2026-07-16
-- 状态：M1、M1.4、M2 与 M3 代码已实现；M1 仍待 Windows 人工安装/安装包签名验收，M3 仍限定为默认关闭的内部测试能力并待端侧验收
-- 首期平台：Windows
-- 运行时基线：`@anthropic-ai/sandbox-runtime` `0.0.65`（精确锁定）
-- 核心取舍：支持多任务 workspace 并发，接受 Windows 沙箱账号对这些 workspace 的权限并集
+> 文档日期：2026-07-16
+>
+> 全面修订：2026-07-20
+>
+> 当前状态：方案重规划，Windows 优先，macOS 预留
+>
+> 适用范围：LobsterAI、内置 OpenClaw runtime、Windows 原生执行后端
+>
+> 首发目标：Windows x64 内测版
 
-## 概述
+## 1. 文档目的
 
-本计划为 LobsterAI 增加一个不依赖 Docker 的 Windows 原生沙箱执行模式。新模式复用现有 OpenClaw Agent 运行链路，通过 LobsterAI 本地扩展注册沙箱 backend，并使用 SRT 的 Windows 原生能力约束命令进程树的文件与网络访问。
+本文给出 LobsterAI 原生沙箱的完整目标方案、模块边界、迁移策略和分阶段验收计划。
 
-首期目标不是一次性替换当前实机执行，而是建立一条可独立启用、可诊断、可回退、默认不改变现有行为的新执行路径。实施按阶段推进：前几个阶段只建立接口、打包、诊断和兼容基础，随后接入单 workspace，验证稳定后再开放多 workspace 并发和产品入口。
+本次修订不再把外部 sandbox runtime 作为核心执行依赖，而是由 LobsterAI 维护一套轻量、可版本化、可签名、可独立升级的原生执行后端。第一版只交付 Windows 能力，但从接口、协议和目录结构上预留 macOS 后端。
 
-Windows 首期采用一个共享的 `srt-sandbox` 本地账号。多个并发 workspace 被授权后，该账号获得这些目录权限的并集。因此，本方案提供的是“已授权 workspace 集合与电脑其余区域之间”的 OS 级边界，不承诺并发 workspace 彼此之间的 OS 级隔离。
+方案需要同时满足以下原则：
 
-macOS 本期不实现实际沙箱能力，只预留平台 backend 接口、能力检测和资源解析入口，避免 Windows 逻辑散落到业务层。后续增加 macOS backend 时，不应重写会话、配置、审计和 UI 主流程。
+1. 不依赖 Docker、虚拟机或用户预装的容器环境。
+2. 用户可以直接选择已有工程目录，不要求复制工程或新建“特殊权限目录”。
+3. 沙箱关闭时，原有实机执行路径和行为保持不变。
+4. 沙箱开启后，命令及其子进程的写入范围由操作系统强制限制。
+5. OpenClaw 的结构化文件工具与 shell 命令使用同一份 workspace 策略。
+6. 网络默认关闭；后续开放时必须通过显式策略，而不是由命令自行决定。
+7. 安装、配置、执行、拒绝、审批和异常均有产品级审计记录。
+8. 任一安全组件异常时失败关闭，不自动退回无沙箱实机执行。
+9. 不把 Windows 特有机制扩散到 UI、业务配置和 OpenClaw 接入层。
+10. 每个 milestone 都可以单独合入、单独回归，不依赖一次性“大爆炸”切换。
 
-## 背景与术语
+## 2. 结论摘要
 
-### Agent workspace
+### 2.1 整体选择
 
-OpenClaw 持久化 Agent 身份、记忆和工作指令的目录，例如 `workspace-main` 或 `workspace-{agentId}`。它不等同于用户当前选择的项目目录，并且在本方案中继续保持原有职责。
+本版采用：
 
-### Task workspace
+- LobsterAI 自有的 `NativeSandboxRuntime` 平台抽象；
+- OpenClaw 自定义 sandbox backend：`lobster-native`；
+- Windows 自有 Rust runtime：
+  - `lobster-sandbox-setup.exe`
+  - `lobster-command-runner.exe`
+- workspace 写权限由 Windows restricted token、Capability SID、ACL 和 Job Object 共同约束；
+- 结构化文件工具继续走 LobsterAI 的文件桥接和路径策略；
+- 网络能力由安装态的 Windows 网络隔离规则控制；
+- UI 继续使用设置页中的临时 “Sandbox（测试）” tab；
+- macOS 后续通过独立原生后端接入同一平台接口。
 
-一次 LobsterAI 会话实际工作的目录，即会话 `cwd`。文件读取、修改和命令执行应以此目录为当前任务根目录。本文没有特别说明时，`workspace` 均指 task workspace。
+### 2.2 第一版明确保证什么
 
-### 实机模式
+Windows 第一版的核心安全承诺是：
 
-当前未启用新沙箱 backend 的执行方式。命令和文件工具保持现有 OpenClaw/LobsterAI 行为。
+> 沙箱命令及其子进程只能写入本次任务明确授权的 workspace、必要的受控临时目录及少量声明式运行目录；不能写入其他工程目录、用户目录或系统目录。
 
-### 权限并集
+同时保证：
 
-若会话 A 授权 `D:\project-a`，会话 B 授权 `D:\project-b`，且两者同时使用共享的 Windows 沙箱账号，则该账号在 OS 层可访问 `project-a ∪ project-b`。即使每个会话在产品层仍绑定自己的 `cwd`，由命令启动的进程也可能访问并集中的另一目录。
+- 进程以受限、非管理员上下文运行；
+- 子进程继承相同限制；
+- 网络默认不可用；
+- 结构化文件操作不能绕过 workspace 边界；
+- 路径规范化、符号链接、junction、reparse point 等不能将写入逃逸到 workspace 外；
+- 沙箱启动失败、运行时损坏、版本不兼容或健康检查失败时拒绝执行；
+- 用户关闭沙箱后恢复原有实机执行行为。
 
-## 用户场景
+### 2.3 第一版不承诺什么
 
-### 场景一：继续使用现有实机模式
+`workspace-write` 的首发目标是“严格限制写入”，不是完整虚拟机。
 
-用户没有启用 Windows 原生沙箱，或灰度开关尚未开放。LobsterAI 的命令执行、文件读写、会话恢复、上下文压缩、Agent 记忆和工作目录行为均与当前版本一致；应用启动时不检查安装、不创建系统账号，也不弹出 UAC。
+首发版不承诺：
 
-### 场景二：单 workspace 沙箱任务
+- 对所有 workspace 外文件实现内核级禁止读取；
+- 隐藏宿主机的所有进程、注册表、设备或系统信息；
+- 对管理员或已经控制宿主机的恶意用户提供隔离；
+- 对未经过 LobsterAI/OpenClaw 执行链路启动的进程进行保护；
+- 记录所有内核文件 I/O；
+- 自动理解任意命令的业务风险并替用户作出审批决定；
+- 沙箱 Electron renderer、OpenClaw gateway、浏览器或独立 MCP 服务本身。
 
-用户在 `D:\github\project-a` 开启沙箱会话。Agent 可以在该目录内读取和修改文件，可以运行 `npm test` 及其子进程；尝试读取 `C:\Users\<user>\Documents\private.txt` 或写入其他未授权目录时应被拒绝。若沙箱初始化失败，任务明确失败并给出修复入口，不静默切回实机执行。
+因此产品文案必须把首发能力描述为“受限执行与 workspace 写保护”，不能宣传成虚拟机级隔离。
 
-### 场景三：多 workspace 并发
+### 2.4 多 workspace 的目标变化
 
-用户同时运行两个会话：
+旧方案倾向于让一个长期运行的 sandbox session 持有多个 workspace 的权限并集。本版不再接受这一限制。
 
-- 会话 A 的 `cwd` 为 `D:\github\project-a`；
-- 会话 B 的 `cwd` 为 `D:\github\project-b`。
+新方案以“每次命令、每个任务显式授予根目录能力”为目标：
 
-两者可以并发运行，无需为了目录授权而全局串行。产品层文件工具仍各自限制在本会话的 task workspace；但命令进程树使用同一个 Windows 沙箱账号，因此 OS 级可见范围为 A、B 两个目录的权限并集。并集以外的目录仍不可访问。
+- 任务 A 只获得 workspace A 的写能力；
+- 任务 B 只获得 workspace B 的写能力；
+- 两者可以并发；
+- A 不能因为 B 正在运行而获得 workspace B 的写权限；
+- agent 内部 workspace 与用户工程 workspace 分别建模，不混为一个全局根目录。
 
-### 场景四：首次安装与修复
+## 3. 用户诉求与典型场景
 
-用户首次选择沙箱模式时，LobsterAI 展示用途与权限说明，再按需触发一次需要管理员授权的安装。用户取消 UAC、安装中断或状态不完整时，现有实机模式不受影响；沙箱任务保持不可执行，直到诊断或修复成功。
+### 3.1 用户诉求
 
-### 场景五：升级与卸载
+用户希望在公司内部推广 LobsterAI，但不能接受 Agent 直接继承登录用户的全部文件和网络权限。
 
-应用升级不得无故删除已经建立的沙箱系统状态。正式卸载时，在应用资源尚可用的阶段尝试清理沙箱账号、网络规则和 LobsterAI 建立的目录授权；清理失败要留下可操作的提示，但不能使应用永久无法卸载。
+从用户角度，核心诉求可以拆为：
 
-## 目标
+1. **原工程可直接使用**：选择现有 Git 工程后即可打开沙箱，不需要迁移文件或改变目录所有权。
 
-1. Windows 上提供无需 Docker 的 task workspace 读写边界。
-2. 命令及其子进程必须经过 SRT 启动，不能仅依靠工具调用前的字符串判断。
-3. OpenClaw 文件工具必须经过 task workspace 根路径校验，不能因 Gateway 自身拥有宿主权限而绕过边界。
-4. 支持多个不同 task workspace 的会话并发，并明确采用共享账号权限并集语义。
-5. 未启用沙箱时，现有实机行为、配置和启动链路保持不变。
-6. 用户明确选择沙箱后采用 fail-closed：沙箱不可用时拒绝执行，不自动降级为实机。
-7. 提供安装、状态检测、修复、升级和卸载的完整生命周期。
-8. 提供可关联会话、工具调用、策略版本和执行结果的本地结构化审计事件。
-9. 预留 macOS backend 接口和能力状态，不在本期交付 macOS 沙箱实现。
+2. **workspace 内正常工作**：Agent 可以编辑源码、创建文件、安装项目依赖、运行测试和构建命令。
 
-## 非目标
+3. **workspace 外不能随意修改**：即使命令使用绝对路径、PowerShell、Python、Node.js 或启动子进程，也不能改写其他目录。
 
-1. 不提供并发 task workspace 之间的 OS 级强隔离。
-2. 不在首期引入容器或虚拟机运行环境。
-3. 不改变 Agent workspace 的记忆、身份和指令持久化职责。
-4. 不在首期沙箱化 Electron Renderer、主进程或 OpenClaw Gateway 本身。
-5. 不承诺自动约束绕过 OpenClaw 工具系统的外部程序、独立 MCP 服务或浏览器自动化进程；这些能力需分别确定进程归属和边界。
-6. 不在首期实现内核级全量文件 I/O 审计、集中式审计平台或防篡改远端日志。
-7. 不在首期新增“命令是否危险”的智能分类器。审批策略与 OS 强制边界是两层不同能力，可在后续独立演进。
-8. 不在本期交付 macOS、Linux 或 Windows ARM64 的正式可用承诺；若现有发布矩阵包含这些目标，必须显示为不支持或单独通过发布门槛。
-9. 测试版不追求最终设置页信息架构，也不增加按 Agent、按会话或按 workspace 的独立开关；正式入口后续统一重新整合。
+4. **网络默认不可用**：项目测试、脚本或恶意命令不能自行上传文件、下载任意内容或连接内网服务。
 
-## 核心设计决策
+5. **失败不降级**：用户选择沙箱后，如果沙箱不可用，应看到明确错误，而不是任务悄悄改为实机执行。
 
-### 1. 集成边界
+6. **行为可追溯**：管理员和用户可以知道何时开启沙箱、执行了什么类型的操作、什么被拒绝、最终是否成功。
 
-采用以下组合：
+7. **安装成本可控**：应用安装包内自带所需 runtime；仅在首次安装或修复系统级规则时请求一次 Windows 管理员授权。
 
-- LobsterAI 主进程负责产品配置、SRT 安装/诊断/修复、IPC 和用户交互；
-- LobsterAI 本地 OpenClaw 扩展负责注册 `lobster-srt` sandbox backend；
-- SRT 负责 Windows 沙箱账号、命令进程树、文件 ACL 和网络出口边界；
-- 一个最小的固定版本 OpenClaw 补丁负责解决“持久 Agent workspace 与独立 task cwd 共存”及系统提示词中的路径语义；
-- 自定义 Windows `SandboxFsBridge` 负责 OpenClaw 文件工具的 task workspace 路径约束。
+### 3.2 示例：允许的操作
 
-backend 注册、命令包装和文件桥接均使用现有插件扩展点，不放入 OpenClaw 核心补丁。补丁只覆盖当前扩展点无法表达的 task cwd 兼容问题，并随固定 OpenClaw 版本存放。
+假设用户选择：
 
-### 2. 两条工具执行路径
+```text
+D:\projects\demo-app
+```
 
-LLM 返回的 tool call 不需要被转换成 SRT 专有的“编辑文件参数”。OpenClaw 先按现有逻辑选择工具，然后由工具类型进入不同执行路径：
+沙箱应允许：
 
-- `exec`/shell：backend 将原命令和执行上下文交给 SRT，由 SRT 在受限 Windows 账号下启动完整进程树；
-- `read`/`write`/`edit`/`apply_patch`：通过自定义 `SandboxFsBridge` 校验并解析路径，再由桥接层执行文件操作。
+- 修改 `D:\projects\demo-app\src\App.tsx`；
+- 创建 `D:\projects\demo-app\dist\`；
+- 在该目录运行 `npm test`；
+- `npm test` 启动的 Node.js 子进程写测试缓存；
+- 编译器写入项目内的 `node_modules/.cache`；
+- 在受控临时目录生成中间文件；
+- 通过结构化文件工具读取和修改项目内文件。
 
-SRT 只能约束由它启动的进程，无法约束仍运行在宿主账号下的 OpenClaw Gateway 直接访问文件。因此，自定义文件桥不是可选优化，而是文件工具安全边界的一部分。
+### 3.3 示例：必须拒绝的操作
 
-### 3. 产品层限制与 OS 层限制
+同一任务应拒绝：
 
-本方案明确保留两层不同粒度：
+- `Set-Content C:\Users\<user>\Desktop\secret.txt ...`；
+- 修改另一个工程 `D:\projects\finance-app`；
+- 通过 `..\..\`、junction 或符号链接逃逸；
+- 先启动 PowerShell，再由 PowerShell 启动 Python 改写 workspace 外文件；
+- 修改 LobsterAI 的安装目录或 sandbox runtime；
+- 修改受保护的 agent 配置和安全策略；
+- 连接公网、局域网或 loopback 上未授权的服务；
+- runtime 异常后改为无沙箱执行。
 
-- 产品层：每个会话的文件工具只允许访问自己的 task workspace；
-- OS 层：所有同时授权给共享沙箱账号的 workspace 构成权限并集，命令进程树可访问该并集。
+### 3.4 示例：两个任务并发
 
-这意味着在场景 A、B 并发时，A 会话的 `write` 工具不能指定 B 的路径，但 A 的 shell 命令可能访问 B。UI、帮助信息、审计记录和验收用例必须明确这一点，不能将其描述为 session 级安全隔离。
+```text
+任务 A -> D:\projects\frontend
+任务 B -> D:\projects\backend
+```
 
-### 4. 默认关闭与失败关闭
+预期：
 
-依赖存在、扩展加载或 SRT 已安装，均不代表自动启用沙箱。只有明确的产品设置和能力检查同时满足时，配置同步才选择 `lobster-srt` backend。
+- A 可以写 `frontend`，不能写 `backend`；
+- B 可以写 `backend`，不能写 `frontend`；
+- 两个任务都可以读取其运行所需的系统程序和依赖；
+- 一个任务结束后，其 Capability 授权被回收或进入可审计的缓存生命周期；
+- 两个任务的审计记录可分别归属到对应 session、agent 和 workspace。
 
-- 未启用：继续走实机模式；
-- 已启用且健康：走 Windows 原生沙箱；
-- 已启用但缺失、损坏或平台不支持：拒绝执行并提示诊断/修复；
-- 不允许在最后一种情况下静默回退实机。
+## 4. 术语与目录语义
 
-### 5. 状态真值
+### 4.1 `agentWorkspaceDir`
 
-Windows 实际存在的本地账号、文件 ACL、WFP 规则及其行为验证是系统安全状态的最终真值。SRT 自有状态数据库只作为 SRT 的持久协调状态，记录安装标记、加密材料和 ACL 引用计数等信息；健康检查与崩溃恢复必须核对数据库记录和 Windows 实际状态，不能只信任任意一方。
+`agentWorkspaceDir` 是 OpenClaw agent 的内部工作目录，用于 agent 指令、身份、记忆及运行所需的内部文件。
 
-LobsterAI 不复制 SRT 数据库中的密钥或敏感状态，也不维护另一个“已安装”布尔真值。
+它不是用户当前打开的工程目录。
 
-LobsterAI 自身只保存：
+安全策略中应把它作为单独的、由产品管理的根目录：
 
-- 用户选择的执行模式；
-- 最近一次诊断结果和时间；
-- 最近检测到的 SRT 版本；
-- 是否需要显示安装或修复提示；
-- 非敏感的策略版本与审计元数据。
+- 默认只授权任务所需的最小读写范围；
+- 不因某个 agent 曾使用多个工程，就自动合并所有工程权限；
+- 其受保护子路径可以比普通工程更严格。
 
-## 总体架构
+### 4.2 `taskWorkspaceDir`
+
+`taskWorkspaceDir` 是用户当前 session 的工作目录，也就是命令的 `cwd` 和用户期望 Agent 操作的工程根目录。
+
+在首发 `workspace-write` 模式下，它通常是任务最主要的可写根目录。
+
+### 4.3 `cwd`
+
+`cwd` 是某一次命令的启动目录。
+
+要求：
+
+- `cwd` 必须位于本次命令允许的根目录内；
+- `cwd` 不是权限边界本身；
+- 命令即使从合法 `cwd` 启动，也不能写入未授权绝对路径；
+- 切换目录不能扩展 Capability。
+
+### 4.4 `protectedPaths`
+
+`protectedPaths` 是即使位于可写 workspace 内，也需要禁止或限制写入的路径集合。
+
+候选示例：
+
+- sandbox 状态和安全配置；
+- agent 管理文件；
+- runtime 安装目录；
+- Git hooks 或其他可造成持久化执行的敏感入口。
+
+具体默认清单必须通过兼容性测试确定，不能一次性禁止整个 `.git` 等正常开发所需目录。
+
+### 4.5 `scratchDir`
+
+`scratchDir` 是每个 sandbox task 独立的临时可写目录，用于：
+
+- 临时文件；
+- shell 重定向；
+- 编译或工具链中间文件；
+- HOME/TEMP 等环境变量的受控映射。
+
+任务结束后按策略清理；异常退出时由恢复流程回收。
+
+## 5. 已有实现基线与迁移判断
+
+当前分支已经完成了一部分产品层和 OpenClaw 集成层工作。本次是执行后端重规划，不应推倒重来。
+
+### 5.1 继续保留
+
+以下能力原则上保留并改为平台中性命名：
+
+- 设置页 Sandbox（测试）tab；
+- Electron main/preload/renderer 的 IPC 边界；
+- sandbox 配置存储、状态查询和健康检查入口；
+- OpenClaw config 同步；
+- 自定义 OpenClaw sandbox backend 接入点；
+- `agentWorkspaceDir` / `taskWorkspaceDir` 语义；
+- Windows 路径规范化和根目录策略；
+- `SandboxFsBridge` 及结构化文件操作入口；
+- 启用、关闭、重启 gateway、失败回滚的事务框架；
+- 状态、错误码、审计事件和 UI 展示的大部分数据模型；
+- 已有单元测试和集成测试中不依赖旧 runtime 的部分。
+
+### 5.2 需要替换或重命名
+
+以下部分改为 Lobster 原生实现：
+
+- 旧外部 runtime 的初始化、session 和命令执行适配；
+- 旧 helper 的安装、版本检测和资源打包；
+- runtime 专有的文件 I/O adapter；
+- backend 和 extension 中带有旧 runtime 含义的命名；
+- 旧 runtime 依赖、资源、版本常量和修复脚本；
+- 以长期 session 权限并集为前提的 workspace 授权逻辑。
+
+典型迁移命名：
+
+| 旧职责/名称 | 新职责/名称 |
+| --- | --- |
+| `srtWindowsRuntime.ts` | `windowsSandboxRuntime.ts` |
+| `srtWindowsSession.ts` | `windowsSandboxSession.ts` |
+| runtime 专有 FsIo | `nativeSandboxFsIo.ts` 或 runner-backed FsIo |
+| `lobster-srt` backend | `lobster-native` backend |
+| runtime 专有 extension 目录 | `lobster-native-sandbox` extension |
+
+最终命名以代码实际边界为准，迁移时不做无关的大范围重命名。
+
+### 5.3 旧阶段与新阶段的映射
+
+| 既有成果 | 本次处理 |
+| --- | --- |
+| 原 M1：设置、诊断、配置骨架 | 保留，吸收到新 M0/M2 |
+| 原 M1.4：代码拆分重构 | 保留，继续按领域目录维护 |
+| 原 M2：workspace 语义、路径策略、文件桥接、backend 骨架 | 保留，吸收到新 M0/M2 |
+| 原 M3：启停事务、命令接入、边界探测 | 产品层保留；执行 runtime 部分由新 M1/M2 替换 |
+| 原 M4/M5 | 取消原定义，改由新 M3-M5 覆盖 |
+
+当前已有代码可以降低产品集成工作量，但不能视为新的 Windows 原生安全后端已经完成。
+
+## 6. 目标架构
+
+### 6.1 总体架构图
 
 ```mermaid
 flowchart LR
-    UI["Renderer：模式选择、状态与修复入口"] --> MAIN["Electron Main：配置、生命周期与审计"]
-    MAIN --> SYNC["OpenClaw 配置同步"]
-    SYNC --> GW["OpenClaw Gateway"]
-    GW --> PLUGIN["lobster-srt 本地扩展"]
-    PLUGIN --> EXEC["命令 backend"]
-    PLUGIN --> FS["Windows SandboxFsBridge"]
-    EXEC --> SRT["SRT Windows Runtime"]
-    SRT --> PROC["受限账号下的命令进程树"]
-    FS --> POLICY["task workspace 路径策略"]
-    POLICY --> FILES["宿主文件系统操作"]
-    MAIN --> STATUS["安装、健康检查、修复与卸载"]
-    STATUS --> SRT
+    U["用户 / Sandbox 设置页"] --> C["Lobster Sandbox Control Service"]
+    C --> CFG["配置、健康检查、启停事务"]
+    C --> SETUP["Windows Setup Service"]
+    SETUP --> SE["lobster-sandbox-setup.exe"]
+
+    CFG --> O["OpenClaw Gateway"]
+    O --> P["lobster-native sandbox backend"]
+
+    P -->|exec / process| R["NativeSandboxRuntime"]
+    R --> W["WindowsSandboxRuntime"]
+    W --> RE["lobster-command-runner.exe"]
+    RE --> PROC["受限 PowerShell / npm / Python / 子进程树"]
+
+    P -->|read / write / edit| F["SandboxFsBridge"]
+    F --> PP["Path Policy + protectedPaths"]
+    PP --> IO["NativeSandboxFsIo"]
+
+    CFG --> A["Audit Store"]
+    P --> A
+    R --> A
+
+    R -. "未来同一接口" .-> M["MacSandboxRuntime"]
 ```
 
-### 代码组织与依赖边界
+### 6.2 信任边界
 
-沙箱功能按运行边界分别收口在同名的 `nativeSandbox` 二级目录中，而不是把 Main、Renderer、Shared 和 OpenClaw 代码物理混放在一个目录。各目录职责与允许依赖如下：
+```mermaid
+flowchart TB
+    subgraph Trusted["受信任产品控制面"]
+        UI["Lobster UI"]
+        MAIN["Electron Main"]
+        POLICY["Sandbox Policy"]
+        AUDIT["Audit Store"]
+        INSTALL["Setup / Update Controller"]
+    end
+
+    subgraph Runtime["受保护 runtime"]
+        SETUP["setup.exe"]
+        RUNNER["command-runner.exe"]
+    end
+
+    subgraph Restricted["受限执行域"]
+        SHELL["Shell / Tool"]
+        CHILD["Child Process Tree"]
+    end
+
+    UI --> MAIN
+    MAIN --> POLICY
+    MAIN --> INSTALL
+    INSTALL --> SETUP
+    POLICY --> RUNNER
+    RUNNER --> SHELL
+    SHELL --> CHILD
+    MAIN --> AUDIT
+    RUNNER --> AUDIT
+```
+
+关键约束：
+
+- LLM 和命令不能直接调用 `setup.exe`；
+- `setup.exe` 不执行任何模型生成的命令；
+- `command-runner.exe` 不接受“关闭限制”之类的请求参数；
+- runtime 安装目录对普通用户和 sandbox token 不可写；
+- Electron main 负责策略，runner 负责操作系统级执行；
+- renderer 只通过 IPC 使用受控 API，不接触 helper 路径、凭据或系统策略。
+
+## 7. 策略层、执行层、审批层和审计层
+
+“沙箱”不是单一的命令拒绝函数，也不等同于 Docker。完整方案分四层。
+
+### 7.1 策略层
+
+决定本次操作应获得什么能力：
+
+- 可写根目录；
+- 可读根目录提示和产品层限制；
+- `cwd`；
+- `protectedPaths`；
+- scratch 目录；
+- 网络模式；
+- 环境变量；
+- 超时、最大进程数和资源限制；
+- session、agent、task、workspace 归属。
+
+策略层产生不可变的 `SandboxPolicySnapshot`，执行过程中不得由子进程修改。
+
+### 7.2 执行层
+
+把策略变成操作系统强制约束：
+
+- restricted token；
+- Capability SID；
+- ACL；
+- Job Object；
+- 独立进程树；
+- 网络隔离规则；
+- 受控环境变量和临时目录；
+- runtime 安装目录保护。
+
+即使 PowerShell、npm 或 Python 尝试绕过产品判断，操作系统仍拒绝越界写入。
+
+### 7.3 审批层
+
+审批回答的是“这次是否允许扩权”，不是沙箱本身。
+
+首发测试版建议：
+
+- 不提供运行中临时扩权；
+- workspace 外写入直接拒绝；
+- 网络直接拒绝；
+- 需要新 workspace 时，由用户回到产品 UI 明确修改任务目录或配置；
+- 不让 LLM 自己将失败操作改为实机重试。
+
+后续如增加审批，也只能生成新的策略快照并重新启动受限命令，不能修改正在运行的 token。
+
+### 7.4 审计层
+
+审计记录产品可观察的安全事件，例如：
+
+- runtime 安装、修复、升级和卸载；
+- 用户开启或关闭 sandbox；
+- 策略快照的摘要；
+- 命令启动、结束、超时和取消；
+- 结构化文件读写；
+- workspace 越界拒绝；
+- 网络拒绝；
+- runtime 校验失败；
+- gateway 配置同步和回滚；
+- 用户审批或配置变更。
+
+审计不等于录制屏幕，也不等于记录所有内核 I/O。
+
+## 8. Windows 原生安全模型
+
+### 8.1 受限 token
+
+`lobster-command-runner.exe` 为每次命令创建受限 token，最低要求包括：
+
+- 移除管理员和高权限 SID；
+- 禁用不需要的 privileges；
+- 使用 `WRITE_RESTRICTED` 写限制；
+- 添加本次命令的 workspace Capability SID；
+- 不继承调用者的管理员能力；
+- 不允许子进程创建脱离 Job Object 的无限制进程；
+- 明确设置安全的环境变量和工作目录。
+
+restricted token 的作用是降低进程身份权限；它与 Capability/ACL 一起决定可写范围。
+
+### 8.2 每个可写根目录的 Capability SID
+
+每个规范化的可写根目录对应稳定、可重建的 Capability 标识。
+
+示意：
 
 ```text
-src/shared/nativeSandbox/
-  constants.ts
-  types.ts
-  api.ts
-
-src/main/nativeSandbox/
-  index.ts
-  nativeSandboxModule.ts
-  nativeSandboxIpcHandlers.ts
-  nativeSandboxService.ts
-  nativeSandboxEnvironment.ts
-  srtWindowsRuntime.ts
-
-src/renderer/components/settings/nativeSandbox/
-  index.ts
-  SandboxSettingsSection.tsx
-  useNativeSandboxController.ts
-  NativeSandboxStatusCard.tsx
-  nativeSandboxViewModel.ts
-  translations.ts
-
-openclaw-extensions/lobster-srt-sandbox/
-  index.ts
-  src/backend/
-  src/runtime/
-  src/fs/
-  src/workspace/
-  src/audit/
-  src/config/
-
-scripts/native-sandbox/
-  verify-package.cjs
+workspace canonical path
+  -> policy identity + path hash
+  -> Capability SID
+  -> root ACL grant
+  -> command restricted token
 ```
 
-- `shared/nativeSandbox` 只包含跨进程常量、DTO 和 preload API 契约，不依赖 Electron、SRT、Renderer 或 OpenClaw。
-- `main/nativeSandbox` 拥有平台能力、SRT 生命周期、资源解析、IPC 注册和后续启停事务；它可以依赖 shared 契约，但不能依赖 Renderer 组件或 OpenClaw 扩展源码。
-- Renderer 领域目录只通过 preload 契约调用 Main，不导入 SRT、Node.js 或 OpenClaw 配置实现；异步状态和展示映射从大型设置组件中移出。
-- OpenClaw extension 拥有执行 backend、文件桥、workspace lease 和执行侧审计事件生产；它不直接读写 LobsterAI SQLite，也不承担设置页状态管理。
-- 构建脚本放在 `scripts/native-sandbox/`，只校验依赖、资源和产物，不承载运行时业务状态。
+同一个命令只携带其策略声明的 Capability SID。
 
-中央文件只保留最小接入点：`main.ts` 一次注册领域模块，`preload.ts` 暴露一组安全桥，`Settings.tsx` 注册 Tab，i18n 文件聚合领域文案，OpenClaw 配置同步调用纯映射函数，electron-builder hook 调用领域校验器。后续功能不得把生命周期编排、错误映射、loading 状态、路径策略或审计持久化继续堆入这些中央文件。
+这样可以避免：
 
-### 与早期抽象架构的对应关系
+- 依赖“目录权限必须足够小”；
+- 因目录原本授予 `Users` 或 `Authenticated Users` 而初始化失败；
+- 多任务共享一个长期 session 后形成 workspace 权限并集。
 
-整体调用方向不变，但组件职责更明确，并减少了需要自研和维护的本地可执行程序：
+ACL 变更必须：
 
-| 早期抽象节点 | 当前方案 | 主要变化 |
-| --- | --- | --- |
-| Lobster UI / 配置 | `Sandbox（测试）` Tab + Electron Main 生命周期服务 | Renderer 不直接写 OpenClaw 配置；主进程负责校验、安装、持久化和配置同步 |
-| `openclaw.json` | 仍作为生成的 OpenClaw 配置 | 它是配置同步结果，不是 UI 直接编辑的状态源 |
-| Lobster Native Sandbox 插件 | `lobster-srt` 本地 OpenClaw extension/backend | 这一层保留，负责接入 OpenClaw 工具和 SRT |
-| `lobster-sandbox-service` | 主进程生命周期服务 + extension 内运行时协调器 | 不新增独立常驻 service 进程，减少安装、升级、IPC 和崩溃恢复成本 |
-| `lobster-sandbox-setup.exe` | SRT JavaScript API + 独立资源 `srt-win.exe` | 使用固定版本 SRT 完成账号、ACL 和 WFP 生命周期，不另写一套 setup 程序 |
-| `lobster-command-runner.exe` | SRT backend 调用 `srt-win.exe` 启动受限进程树 | 不另写命令 runner；PowerShell、npm、Python 及子进程由 SRT 统一启动 |
-| OpenClaw exec / read / write 共用一路 | exec 走 SRT；read/write/edit 走自定义 `SandboxFsBridge` | SRT 只能约束它启动的进程，因此宿主 Gateway 的文件工具必须有独立路径边界 |
+- 幂等；
+- 可审计；
+- 可恢复；
+- 不夺取用户文件所有权；
+- 不删除用户已有 ACL；
+- 不因卸载破坏原工程权限；
+- 对 junction/reparse point 使用明确规则。
 
-当前方案还比早期抽象图多出三个必要概念：Agent workspace 与 task workspace 的双根语义、多 workspace 的共享权限并集协调，以及健康检查/fail-closed/审计。它们不会改变主调用方向，但决定该链路是否能安全落地和稳定恢复。
+### 8.3 Job Object 和进程树
 
-### 配置流
+所有命令及子进程进入 Job Object，至少控制：
 
-1. Renderer 的测试版设置 Tab 只通过 preload 暴露的 IPC 读取能力、触发安装/修复和修改模式，不直接写 `openclaw.json`。
-2. 主进程验证平台与健康状态，将产品模式映射到 OpenClaw sandbox 配置。
-3. 测试开关是 LobsterAI 全局开关。启用时目标配置为 session 级运行上下文、读写 task workspace、选择 `lobster-srt` backend，并禁用不在本期范围内的 browser sandbox。
-4. sandbox backend 或插件启用状态发生变化时，配置影响判定为需要 Gateway restart，而不是仅同步热配置。
-5. Gateway 重启后由本地扩展注册 backend；扩展没有被选择时不得改变实机执行链路。
+- 子进程继承；
+- 整棵进程树取消；
+- 最大进程数；
+- runtime 退出后的清理；
+- 防止明显的 breakaway；
+- 超时和异常回收。
 
-M3 开放测试开关时，Renderer 不再自行组合状态检查、配置写入和 Gateway 重启，而是调用领域专用的 `native-sandbox:set-enabled`。Main 在单一互斥事务中依次执行“任务空闲检查 → 平台与健康检查 → 持久化目标配置 → 同步 OpenClaw 配置 → 重启 Gateway → 校验 backend 状态”。任一步骤失败都返回结构化阶段和错误码，并补偿恢复此前配置；恢复未完成时保持 fail-closed 并显示可修复状态，不能出现 UI 显示已启用而实际仍走实机的中间态。
+PowerShell、cmd、Node.js、Python、npm、编译器和测试 runner 都必须在同一限制域内。
 
-### 测试版设置入口
+### 8.4 网络隔离
 
-LobsterAI 设置页新增一个独立的 `Sandbox（测试）` Tab。它只是当前开发和验证入口，后续可以重新整合进正式的权限或执行模式设计，本期不为临时页面建设复杂的信息架构。
-
-测试开关使用独立的 Cowork 全局配置 `nativeSandboxEnabled: boolean`，默认值为 `false`。它不复用或改写现有 `executionMode`，避免与当前企业执行模式及既有配置兼容逻辑混在一起。字段仍可存入 `cowork_config`，但 M3 开放开关后 Renderer 不直接通过通用 Cowork config IPC 写入，而是调用领域专用 `native-sandbox:set-enabled`，由主进程完成健康检查、持久化、OpenClaw 配置同步、Gateway 重启和失败补偿。
-
-当 `nativeSandboxEnabled` 为 `false` 时，配置同步必须完整保留现有 sandbox 映射行为；只有该字段为 `true`、测试功能已开放且 Windows 健康检查通过时，才覆盖为 `lobster-srt` backend。若当前环境的执行模式由企业配置管理，则测试开关隐藏或禁用，不覆盖受管策略。
-
-页面只包含以下必要内容：
-
-- 一个全局“启用 Sandbox”开关；
-- 当前能力/健康状态和固定 SRT 版本；
-- 一个随状态变化的“安装”或“修复”按钮；
-- 简短说明：仅支持 Windows、切换会重启 Gateway、多 workspace 使用共享权限并集；
-- 最近一次错误及可复制的非敏感诊断摘要。
-
-开关行为固定为：
-
-1. 打开时先检查能力和健康状态；未安装则在用户确认后触发 UAC 安装。
-2. 只有完整健康检查通过后才持久化启用状态、同步 OpenClaw 配置并重启 Gateway；用户取消或安装失败时开关保持关闭。
-3. 已处于启用状态但运行时随后降级时，开关仍显示已启用/异常，新的沙箱任务 fail-closed，并提供修复按钮。
-4. 关闭时同步 sandbox `off` 并重启 Gateway，但不卸载 SRT、不删除系统账号或网络规则。
-5. 有任务正在执行时不做热切换；测试版要求等待任务结束后再切换，并给出简单提示。
-6. 测试版不提供每个 session 的覆盖值、高级网络规则、workspace 列表管理或审计导出。
-
-### task cwd 与 Agent workspace
-
-OpenClaw 当前在沙箱开启时会拒绝与持久 workspace 不同的 task cwd，普通执行和上下文压缩链路均存在该限制。本方案使用最小版本补丁实现：
-
-- 在 sandbox context 和相关调用链中显式区分 `agentWorkspaceDir` 与 `taskWorkspaceDir`，不能只删除现有 cwd guard；
-- 保留 `agentWorkspaceDir` 作为记忆、身份、启动文件和持久上下文目录；
-- 接受 LobsterAI 会话传入的 `taskWorkspaceDir`；
-- `workspaceAccess`、shell cwd 和 coding/file 工具根目录均绑定 `taskWorkspaceDir`，不能继续隐式绑定 Agent workspace；
-- Agent workspace 的 bootstrap、记忆读取和持久化继续由既有 Gateway 内部链路处理，不自动暴露给任务命令或通用文件桥；若现有记忆写入依赖 coding/file 工具，则在实施时迁移为专用内部记忆操作或明确、最小的内部桥，不能通过放宽 task workspace 根来兼容；
-- 上下文压缩使用相同路径规则，不因压缩阶段重新落回 Agent workspace；
-- 系统提示词展示真实 Windows task cwd，不输出容器专用路径或命令提示。
-
-## Windows 文件路径策略
-
-自定义 `SandboxFsBridge` 至少支持 OpenClaw 当前使用的 `resolve`、`read`、`write`、`mkdir`、`remove`、`rename` 和 `stat` 语义，并遵守以下规则：
-
-1. 所有相对路径以当前会话 task workspace 为根。
-2. 拒绝指向根目录以外的绝对路径和 `..` 穿越。
-3. 路径比较采用 Windows 大小写不敏感语义，不能只做字符串前缀比较。
-4. 先规范化盘符、分隔符和最终路径，再进行根包含判断。
-5. 对 junction、symlink、reparse point 和 hard link 设计专门测试；无法证明安全的类型在首期拒绝或标记为不支持。
-6. 默认拒绝直接授权盘符根目录、用户 profile 根目录、Windows 系统目录等过宽根路径。
-7. 对嵌套 workspace 去重，例如授权 `D:\repo` 后不重复扩大为另一条等价路径。
-8. 写入和重命名在工具协议要求时保持原子性，失败不能留下越界临时文件。
-9. skill、运行时或工具链所需的额外只读目录必须通过显式、最小化的 read roots 提供，不能直接放开整个用户目录。
-10. workspace 内的路径在检查后到实际操作前发生替换的竞态必须纳入测试；无法消除时采用句柄级校验或拒绝高风险操作。
-
-## 多 workspace 权限并集与并发模型
-
-### 并集形成
-
-Windows backend 使用共享沙箱账号。每个准备执行的 sandbox session 向运行时协调器登记规范化后的 task workspace，并获取一个 lease。实际 OS 权限等于当前已建立授权的 workspace 集合并集。
-
-### 协调规则
-
-1. 新增 workspace、建立 ACL、创建或销毁 SRT session 必须经过进程内全局协调锁，避免重复安装或引用计数竞态。
-2. SRT `0.0.65` 是否支持在既有命令运行时安全扩大 allow roots，必须先以原型和 Windows 行为测试证明，不能作为前置假设。
-3. 若验证支持在线扩容，协调锁只保护权限集合变更，不包围命令整个运行期；权限准备完成后，不同会话命令可以并发。
-4. 若验证不支持在线扩容，则集合变更采用 quiesce/rebuild：暂停接收新的 sandbox exec，等待活动任务归零，重建包含新 workspace 的运行时权限集合，再恢复执行。该模式仍支持集合稳定后的多 workspace 并发，但不承诺新增 workspace 时无等待。
-5. 相同 workspace 的多个会话共享规范化根记录并使用引用计数。
-6. 扩大并集必须在新 workspace 第一次命令执行前完成。
-7. 任何 workspace 仍有活动进程时不得撤销其权限。
-8. 首期若无法可靠地在线缩小权限并集，则将删除标记为 pending，并在无活动任务的维护窗口或 Gateway 重启时统一协调清理；UI 和审计需显示该状态。
-9. Gateway 异常退出后，下次启动必须先做状态核对和遗留授权协调，再允许新的沙箱任务运行。
-10. 不将内存引用计数或 SRT 数据库单独视为 Windows 安全状态真值；崩溃恢复必须同时核对 SRT 持久协调状态和实际系统状态。
-
-### 明确的安全语义
-
-多 workspace 并发是可用性能力，不是隔离域数量的增加。只要 A、B 同时处于授权集合，任一受限命令进程理论上都可访问 A、B。安全边界仍然是：
+首发网络模式：
 
 ```text
-允许：已授权 task workspace 的并集 + 明确配置的最小只读工具目录
-拒绝：其余本机目录
+network = disabled
 ```
 
-## SRT 依赖、构建与资源交付
+目标是对受限身份实施系统级默认拒绝，而不是只删除代理环境变量。
 
-### 依赖方式
+需要覆盖：
 
-根 `package.json` 精确锁定 `@anthropic-ai/sandbox-runtime` `0.0.65`，不使用范围版本。JavaScript API 同时供主进程生命周期服务和本地 OpenClaw 扩展构建使用。
+- 域名访问；
+- 直接 IP；
+- DNS；
+- HTTP/HTTPS；
+- TCP/UDP；
+- loopback；
+- 局域网和私有地址；
+- 子进程；
+- PowerShell、curl、Node.js、Python 等不同客户端。
 
-SRT 为 ESM-only，而 Electron main 当前编译为 CommonJS。主进程采用间接 `import()` loader，避免 TypeScript 将加载转换为 `require()`。扩展预编译时将 SRT JavaScript 依赖打入扩展产物，并检查产物中不存在未解析的 SRT package import。
-
-### Windows helper
-
-`srt-win.exe` 作为独立 Windows `extraResources` 交付，目标位置固定为：
+后续如支持网络，应采用显式策略：
 
 ```text
-resources/sandbox-runtime/srt-win.exe
+disabled
+managed-proxy
+allowlist
 ```
 
-运行时始终使用 `process.resourcesPath` 解析并显式传入 helper 路径。helper 不放入 OpenClaw runtime 目录或资源压缩包，以便：
+首发不支持“任意联网但弹一次确认”。
 
-- 进入现有 Windows PE 签名链；
-- 独立校验架构、版本和完整性；
-- 不与 OpenClaw runtime 的构建、裁剪和修复生命周期耦合；
-- 卸载时可以在安装目录删除前明确调用。
+### 8.5 读取边界
 
-同目录携带对应许可证和第三方声明。构建前检查 package 实际版本、目标架构 helper、扩展预编译产物和未解析依赖；任一不匹配时构建失败。
+Windows `workspace-write` 首发版主要强制写边界。
 
-### 平台接口预留
+需要明确：
 
-业务层只依赖统一接口，例如：
+- 结构化文件工具仍由 Lobster 路径策略限制读取范围；
+- shell 命令的系统级读取隔离弱于写入隔离；
+- runner 可以通过受限身份、环境清理和已知敏感路径拒绝降低读取面；
+- 只有完成额外的强读取隔离设计和测试后，产品才能提供 `workspace-readwrite` 强隐私模式。
+
+因此 UI 和文档不能把第一版描述成“workspace 外完全不可见”。
+
+### 8.6 路径与链接安全
+
+每次文件操作和命令授权至少检查：
+
+- 绝对路径；
+- 盘符大小写和 UNC 形式；
+- `.` / `..`；
+- 短文件名；
+- junction；
+- symbolic link；
+- hard link；
+- reparse point；
+- workspace 根目录在检查后被替换；
+- TOCTOU；
+- 大小写不敏感比较；
+- 不同盘符和网络盘；
+- 文件不存在时父目录的最终解析。
+
+仅用字符串 `startsWith` 判断路径不满足安全要求。
+
+## 9. 两个 Windows helper 如何维护
+
+### 9.1 源码布局
+
+两个 `.exe` 不作为手工维护的黑盒二进制，而是放在仓库内的同一个 Rust workspace：
+
+```text
+native/
+  sandbox-windows/
+    Cargo.toml
+    Cargo.lock
+    crates/
+      lobster-sandbox-core/
+        src/
+      lobster-sandbox-protocol/
+        src/
+      lobster-command-runner/
+        src/
+      lobster-sandbox-setup/
+        src/
+    tests/
+      fixtures/
+      integration/
+    README.md
+    SECURITY.md
+    THIRD_PARTY_NOTICES.md
+```
+
+职责：
+
+- `lobster-sandbox-core`
+  - SID、token、ACL、Job Object、网络规则和路径安全的共享实现；
+- `lobster-sandbox-protocol`
+  - 版本化请求、响应、错误码和序列化；
+- `lobster-command-runner`
+  - 非提权命令执行入口；
+- `lobster-sandbox-setup`
+  - 需要管理员权限的安装、修复、升级、卸载入口。
+
+两个 binary 的 `main` 应保持轻薄，避免复制安全逻辑。
+
+### 9.2 `lobster-sandbox-setup.exe`
+
+只负责系统级生命周期：
+
+- 安装受保护的 runtime；
+- 创建或修复所需本地身份、组和安全对象；
+- 安装网络隔离规则；
+- 设置 runtime 目录 ACL；
+- 写入版本化安装状态；
+- 校验当前安装；
+- 升级、回滚和卸载；
+- 输出机器可读诊断。
+
+约束：
+
+- 只接受固定枚举操作，不接受任意 shell；
+- 输入做严格 schema 校验；
+- 每次提权操作有明确 UAC 文案；
+- 用户取消 UAC 不改变当前有效配置；
+- 部分失败可回滚；
+- 日志不包含敏感凭据；
+- 不从用户可写目录加载 DLL 或执行脚本。
+
+### 9.3 `lobster-command-runner.exe`
+
+只负责每次命令的受限执行：
+
+- 接收版本化 `SpawnRequest`；
+- 校验策略和路径；
+- 创建 restricted token；
+- 绑定 Capability SID；
+- 创建 Job Object；
+- 配置 stdio 或 ConPTY；
+- 启动并监控命令；
+- 转发输出、退出码、取消和超时；
+- 输出结构化结果与安全事件。
+
+约束：
+
+- 永不申请 UAC；
+- 永不创建或修改系统级策略；
+- 不接受任意 ACL 配置；
+- 不允许请求方传入原始 token 或 SID；
+- 不允许通过参数关闭 Job Object、网络隔离或写边界；
+- 仅信任受保护安装目录中的配置和签名资源。
+
+### 9.4 构建产物
+
+源码是权威，`.exe` 是 CI 产物。
+
+建议产物结构：
+
+```text
+vendor/
+  native-sandbox/
+    <runtime-version>/
+      win32-x64/
+        lobster-command-runner.exe
+        lobster-sandbox-setup.exe
+        manifest.json
+        THIRD_PARTY_NOTICES.txt
+      win32-arm64/
+        ...
+```
+
+`manifest.json` 至少包含：
+
+- runtime version；
+- protocol version；
+- setup schema version；
+- target architecture；
+- Git commit；
+- build timestamp；
+- 每个文件的 SHA-256；
+- 签名信息；
+- 最低 LobsterAI 版本。
+
+禁止开发者手工覆盖已发布 binary。
+
+### 9.5 签名、校验与供应链
+
+发布构建要求：
+
+- CI 使用固定 Rust toolchain；
+- `Cargo.lock` 入库；
+- 依赖许可和漏洞扫描；
+- Windows Authenticode 签名；
+- Electron main 启动前检查签名、hash、版本和协议；
+- setup 安装前再次校验；
+- runner 自检安装目录保护；
+- hash 或签名不匹配时失败关闭；
+- 构建 provenance 和第三方声明随包发布。
+
+### 9.6 升级与回滚
+
+runtime 与 LobsterAI 应使用兼容矩阵，而不是假定永远同版本。
+
+建议：
+
+```text
+LobsterAI version
+  -> required runtime range
+  -> required protocol version
+  -> required setup schema
+```
+
+升级流程：
+
+1. 下载或解包新 runtime 到版本目录；
+2. 校验签名和 manifest；
+3. 运行 setup 的 `upgrade`；
+4. 执行健康检查和边界探测；
+5. 原子切换 current 版本；
+6. 保留上一个可用版本；
+7. 失败时恢复旧版本和系统规则。
+
+运行中的任务继续使用启动时锁定的 runtime 版本，不在执行中途热切换。
+
+## 10. 平台中性 runtime 接口
+
+业务层只依赖平台中性接口：
 
 ```ts
-interface NativeSandboxPlatformAdapter {
-  getCapabilities(): Promise<SandboxCapabilities>;
-  getStatus(): Promise<SandboxRuntimeStatus>;
-  install(): Promise<SandboxLifecycleResult>;
-  repair(): Promise<SandboxLifecycleResult>;
-  resolveRuntimeResources(): SandboxRuntimeResources;
+interface NativeSandboxRuntime {
+  getCapabilities(): Promise<RuntimeCapabilities>;
+  getInstallStatus(): Promise<InstallStatus>;
+  installOrRepair(request: InstallRequest): Promise<InstallResult>;
+  verify(policy: SandboxPolicySnapshot): Promise<VerificationResult>;
+  spawn(request: SpawnRequest): Promise<SandboxProcess>;
+  dispose(): Promise<void>;
 }
 ```
 
-Windows 提供实际实现。macOS 首期实现显式的 `unsupported` capability adapter，不下载资源、不尝试执行，也不回退到 Windows 或实机实现。
-
-## 安装、诊断、修复与卸载
-
-### 首次安装
-
-1. 应用启动时不自动弹 UAC。
-2. 用户明确选择或准备启用沙箱时，先展示系统账号、文件权限和网络规则说明。
-3. 主进程使用 single-flight 锁触发安装，避免多个会话重复弹 UAC。
-4. UAC 取消返回可识别的 `cancelled`，不记录为应用崩溃。
-5. 安装调用完成后必须重新执行完整健康检查，不能仅凭退出码宣布成功。
-
-### 健康检查
-
-健康状态至少区分：
-
-- `unsupported`：当前平台或架构不支持；
-- `not-installed`：尚未建立所需系统状态；
-- `installing`：已有安装流程进行中；
-- `healthy`：账号、helper、网络出口和必要状态均通过验证；
-- `degraded`：部分状态存在但验证失败，可尝试修复；
-- `repairing`：已有修复流程进行中；
-- `cancelled`：最近一次用户授权被取消；
-- `error`：无法自动恢复，需要明确错误与建议。
-
-状态值和 IPC channel 使用共享常量，不使用散落的模式字符串。
-
-### 修复
-
-修复流程按顺序执行：
-
-1. 校验应用内 helper 和扩展资源；
-2. 查询 Windows 沙箱账号状态；
-3. 验证网络出口限制的实际行为；
-4. 对缺失或半安装状态运行幂等安装；
-5. 仅在确认版本或配置迁移需要时使用强制重建；
-6. 重新完整检查并记录结构化结果。
-
-### 升级和卸载
-
-- 常规应用升级保留 SRT 状态；发现 schema 或 marker 不兼容时进入显式修复流程。
-- 不在安装更新路径执行卸载命令。
-- 正式卸载需在安装目录被删除前调用 helper 清理；当前安装脚本钩子的实际时序必须在实施阶段验证。
-- 清理失败记录错误并向用户提供手工修复信息，但不阻止应用完成卸载。
-
-## 网络策略
-
-首要交付目标是 workspace 文件边界。网络能力按以下方式收敛，避免阻塞前序阶段：
-
-1. SRT 安装和健康检查必须验证 Windows 网络出口围栏确实存在，不能只检查配置文件。
-2. 单 workspace 首次验收使用不需要联网的命令，先证明文件和进程树边界。
-3. 首期网络规则采用产品级固定策略，不承诺每个 session 有不同网络 allowlist。
-4. 默认拒绝未声明的出站访问；确需联网时通过明确的域名/代理策略开放。
-5. DNS、直接 IP、子进程、替代 shell 和代理环境变量绕过均进入网络专项验收。
-6. OpenClaw Gateway 自身不由受限账号运行，其模型和服务连接不应被子进程网络策略意外阻断。
-
-若网络 allowlist 尚未达到发布质量，可先将联网能力标为不支持，但不能通过关闭 WFP 围栏来宣称沙箱可用。
-
-## 审计设计
-
-本期实现的是控制面与工具层审计，而不是捕获每一次内核文件 I/O。审计事件至少覆盖：
-
-- 模式或策略配置变更；
-- SRT 安装、诊断、修复和卸载；
-- workspace lease 的新增、复用、待回收和清理；
-- shell/exec 请求、开始、结束、超时和拒绝；
-- 文件工具类型、目标相对路径、允许/拒绝及原因；
-- backend 健康检查失败和 fail-closed；
-- 用户审批或 UAC 取消结果；
-- Gateway 重启后的状态协调结果。
-
-建议公共字段包括：
-
-- 时间、事件类型、结果和错误码；
-- request、session、agent 的关联 ID；
-- backend、SRT、OpenClaw 和策略版本；
-- task workspace 标识及当前权限并集的策略摘要；
-- 工具类型、持续时间、退出码或拒绝规则；
-- 审批关联 ID；
-- 脱敏后的诊断上下文。
-
-默认不记录完整命令参数、环境变量、文件内容、stdout/stderr 或令牌。确需记录命令时，应采用可配置的脱敏策略，并明确本地保留周期。日志不得把 SRT 状态数据库中的密钥或 DPAPI 数据复制出来。
-
-M4 的审计职责按事件产生与持久化边界拆分：
-
-- OpenClaw extension 产生 shell/exec、文件桥决策、workspace lease 和 fail-closed 等执行侧事件，并携带可关联但不含秘密的上下文；
-- Main 的 `nativeSandbox` 模块产生安装、诊断、修复、配置启停和 Gateway 协调等控制面事件，统一完成校验、脱敏、持久化、保留周期与查询；
-- shared 目录定义稳定的事件 schema、类型和错误码，不能放入数据库或日志实现；
-- Renderer 仅通过只读 IPC 查询和展示诊断摘要，不直接写审计记录；
-- extension 到 Main 的事件通道必须具备来源校验、大小限制和背压策略，审计写入失败不得放宽安全策略。
-
-## 五个里程碑实施计划
-
-项目排期和对外交付使用 M1～M5 五个里程碑。原九阶段的细粒度内容保留为里程碑内部检查点，用于独立合并、验收和回退，但不再作为九个项目阶段管理。除明确说明外，新能力始终由默认关闭的开关隔离；当前检查点未达到验收门槛，不进入下一检查点。
-
-估算口径为一名熟悉 TypeScript、Electron、OpenClaw 和 Windows 的工程师，包含实现、单元测试和基本联调，不包含正式第三方安全审计。代码量包含测试与构建脚本，不包含生成文件。
-
-| 里程碑 | 结果 | 预计人日 | 预计代码量 |
-| --- | --- | ---: | ---: |
-| M1 基础设施 | SRT 可打包、可安装诊断、测试 Tab 可见，领域目录完成收口，执行仍保持实机 | 14～24 | 约 1.6～3.1k 行 |
-| M2 OpenClaw 安全边界 | 双 workspace 根与 Windows 文件桥完成，可在 mock 环境验收 | 13～23 | 约 1.4～2.7k 行 |
-| M3 单 workspace MVP | 首个真实可运行、失败关闭的 Windows 单 workspace 沙箱 | 10～18 | 约 1.2～2.2k 行 |
-| M4 多 workspace 测试版 | 权限并集并发、全局测试开关和基础审计可用 | 10～21 | 约 1.2～2.4k 行 |
-| M5 发布加固 | 网络、升级卸载和 Windows 发布矩阵达到开放条件 | 10～18 | 约 0.7～1.5k 行 |
-| **合计** |  | **57～104 人日** | **约 6.1～11.9k 行** |
-
-### M1：基础设施
-
-里程碑结果：依赖、扩展骨架、Windows helper、生命周期服务和测试设置入口均已接入，但 backend 不参与实际工具执行，现有实机行为保持不变。
-
-实施记录（2026-07-16）：M1 代码、相关自动化测试、变更文件 lint、Renderer 构建、Electron 编译、扩展预编译及 SRT 打包输入校验已完成。完整测试集另有 4 个与本功能无关的既有 Windows 路径/超时失败，已单独记录，不作为本次代码已通过的表述。为避免未经确认修改开发机系统状态，本次未实际触发 UAC 安装/修复；正式安装包中的 Authenticode 和真实安装/取消/修复流程仍属于 M1 人工验收项。
-
-#### M1.1：冻结基线与建立契约
-
-##### 交付内容
-
-- 固化本设计中的安全边界、权限并集、失败关闭和非目标。
-- 新增共享的模式、状态、能力和错误常量及纯类型接口，并定义默认关闭的 `nativeSandboxEnabled` 全局配置。
-- 定义平台、状态、健康度和 `backendConnected` 契约；M1 仅声明 Windows x64 可支持，macOS、Linux 和未知平台统一返回 `unsupported`，不声称已有对应实现。
-- 用 Cowork 默认配置和生命周期服务测试固化当前实机模式、默认关闭、启动不加载 SRT 等关键基线。
-- 真正的平台执行 adapter、backend 配置和审计事件 schema 分别随 M2～M4 的实际边界引入，避免 M1 产生未被调用的空抽象。
-
-##### 验收
-
-- 默认配置同步结果与当前版本一致，sandbox 仍为关闭状态。
-- 应用启动、Gateway 启动、创建会话、恢复会话、上下文压缩均无行为变化。
-- 在两个不同 `cwd` 的会话中分别执行现有文件工具和 shell，结果与改动前一致。
-- 启动过程没有加载 SRT、创建账号、修改 ACL、设置网络规则或弹出 UAC。
-- 新增类型和纯逻辑测试通过，变更文件 lint、`npm test` 和 Electron main 编译通过。
-
-##### 回退门槛
-
-删除或关闭新常量和接口后，不需要数据迁移即可回到原行为。
-
-#### M1.2：依赖、扩展骨架与 Windows 资源打包
-
-##### 交付内容
-
-- 精确加入 SRT `0.0.65` 根依赖。
-- 新增 `openclaw-extensions/lobster-srt-sandbox/`，完成插件 manifest 和 backend 骨架；backend 不被产品配置选中。
-- 将 Windows helper 作为独立 `extraResources` 打包并纳入签名。
-- 增加版本、架构、PE 文件、许可证、扩展构建和 unresolved import 的构建前校验。
-- 将新扩展加入本地扩展同步、预编译及 packaged runtime 必需列表。
-
-##### 验收
-
-- 开发模式和生产构建可启动，OpenClaw Gateway 正常加载现有扩展。
-- 新扩展可被发现，但默认配置下不注册为当前执行 backend 或不产生任何执行副作用。
-- 解包后的 Windows 产物包含正确架构、固定路径、有效签名的 `srt-win.exe` 和许可证。
-- 扩展产物中不存在未解析的 `@anthropic-ai/sandbox-runtime` import。
-- 故意制造版本或 helper 不匹配时，构建在发布前明确失败。
-- 无需运行真实沙箱；实机模式的文件、命令和会话回归通过。
-
-##### 回退门槛
-
-移除 extension 必需项和 `extraResources` 即可回退；尚无用户状态或系统状态迁移。
-
-#### M1.3：生命周期服务与内部诊断
-
-##### 交付内容
-
-- 新增主进程 SRT loader、资源解析、能力检测和生命周期服务。
-- 新增共享 IPC 常量及 preload 安全桥，只暴露状态查询、显式安装和显式修复。
-- 增加 single-flight、取消、错误分类和非敏感生命周期日志；提权 helper 沿用固定版本 SRT 内置的 60 秒超时。
-- 在设置页新增简单的 `Sandbox（测试）` Tab，先接入状态、版本、安装、修复和诊断摘要；启用开关保持不可用并标注 backend 尚未接通，产品执行模式仍保持实机。
-- Tab 只在 `Settings.tsx` 注册 key、侧栏项和内容 case，实际内容收口到 `settings/nativeSandbox/SandboxSettingsSection.tsx` 及其领域子模块，不继续向大型设置组件堆叠生命周期逻辑。
-- 设计升级保留与正式卸载清理钩子，但不在应用启动或更新时自动提权。
-
-##### 验收
-
-- 普通启动、首次启动和升级启动均不自动弹 UAC。
-- 状态机能稳定区分未安装、健康、降级、取消和错误。
-- 用户取消 UAC 后应用继续可用，现有实机任务不受影响。
-- 重复点击安装/修复只产生一个进行中的系统操作。
-- 重复安装与修复具备幂等结果；完成后重新探测而非信任单一退出码。
-- Windows helper 缺失或损坏时返回可操作错误，不影响 Gateway 的实机启动。
-- 测试 Tab 的所有用户可见文字均有中英文翻译；页面退出、刷新和应用重启后状态展示一致。
-- 基础 Tab 不增加快捷键或外部直达路由，不要求修改顶层 `App.tsx`。
-
-##### 回退门槛
-
-关闭诊断入口即可停止新系统操作；本阶段不得修改默认 execution mode。
-
-#### M1.4：领域目录收口
-
-实施记录（2026-07-16）：Main、Renderer、Shared 和构建脚本的领域目录收口已完成。相关 110 项测试、变更文件 lint、Electron 编译、Renderer/Main 生产构建、SRT 打包输入校验和 builder hook 加载均通过。M1.4 是结构重构、零行为变化：只调整边界和目录，不启用 backend、不改变 IPC 契约、持久化语义或用户行为；本次仍未触发真实安装、修复或 UAC。
-
-预计工作量：2.5～4 人日，其中 Main 领域收口约 1～1.5 人日，Renderer 收口约 1～1.5 人日，Shared、构建脚本、文档与回归约 0.5～1 人日。
-
-##### 交付内容
-
-- 将 Main 生命周期服务、SRT Windows runtime、环境解析和 IPC 注册收口到 `src/main/nativeSandbox/`，对外只暴露领域模块注册入口。
-- 将设置页异步控制、状态展示映射和子组件收口到 `src/renderer/components/settings/nativeSandbox/`，`Settings.tsx` 仅保留 Tab 注册与内容挂载。
-- 共享契约统一位于 `src/shared/nativeSandbox/`；preload 与 renderer 类型使用相同 API 形状，避免手工复制漂移。
-- 将打包校验脚本归档到 `scripts/native-sandbox/verify-package.cjs`，同步 npm script 与 electron-builder hook 引用。
-- 为领域模块注册、IPC 转发、惰性初始化和现有 service 行为补充或迁移测试。
-
-##### 验收
-
-- `main.ts` 中不再包含沙箱 service 单例、环境解析或三个生命周期 IPC handler，只保留一次领域模块注册。
-- `Settings.tsx` 不包含沙箱请求、loading、错误处理或状态映射逻辑。
-- 模块注册不会加载 SRT、检查系统状态或触发 UAC；只有用户显式安装/修复才调用 helper。
-- IPC channel、DTO、错误码、single-flight 语义和 UI 行为保持不变。
-- M1 原有自动化测试继续通过，并新增 IPC 注册/转发与惰性初始化测试。
-- 变更文件 lint、Electron 编译、Renderer 构建及 `npm run sandbox-runtime:verify` 通过；OpenClaw 配置和实机执行行为无变化。
-
-##### 回退门槛
-
-本检查点不得混入功能变更或数据库迁移；如集成回归失败，可整体回退目录重构而不影响 M1 契约和持久化数据。
-
-### M2：OpenClaw 安全边界
-
-里程碑结果：OpenClaw 能明确区分 Agent workspace 与 task workspace，文件工具具有 Windows 原生路径边界；实际 SRT backend 仍可保持关闭，通过 mock 和实机回归先证明边界逻辑。
-
-实施记录（2026-07-16）：M2 双 workspace 语义、固定版本 OpenClaw 补丁、Windows 路径策略、自定义 `SandboxFsBridge`、扩展 backend 骨架和自动化测试已完成。`lobster-srt` 会在完整插件加载阶段注册，但 production factory 在构建 sandbox context 时直接返回结构化 `backend-unavailable`，因此即使手工误配也不会暴露 M2 的 Node 文件桥或回退到宿主执行；设置页启用开关继续保持不可用。
-
-固定版本补丁为 `zzz-openclaw-sandbox-task-workspace.patch`。它同时覆盖普通 turn 与 compaction，将 task cwd 传入 sandbox context、backend factory 和文件桥，保留 Agent workspace 的 Bootstrap、Memory 与身份语义；host-native backend 通过通用 capability 显示真实 Windows task 路径，现有 Docker/SSH backend 继续使用各自的路径语义。补丁应用脚本包含强校验，固定版本漂移或关键语义缺失会显式失败。
-
-M2 文件桥是可替换 I/O adapter 上的策略与兼容实现，不是最终 Windows 强制边界。当前 Node adapter 能拒绝已观察到的 symlink、junction、hardlink、越界路径和常见身份竞态，但不能以 handle-relative I/O 保证阻止同权限进程在检查后替换目录，也不能可靠识别映射为盘符的 SMB volume 或全部 Windows reparse tag。M3 解除 production gate 前必须补齐原生 volume/reparse 检测与句柄级 I/O，并增加经过 OpenClaw 实际 `read`、`write`、`edit`、`apply_patch` 工具栈的 A/B session 集成测试；在这些门槛满足前不得把 Node adapter 作为可启用的安全边界。
-
-#### M2.1：OpenClaw task cwd 兼容补丁
-
-##### 交付内容
-
-- 对固定 OpenClaw 版本增加最小、版本化补丁，使 sandbox context 和相关调用链同时携带 `agentWorkspaceDir`、`taskWorkspaceDir`，允许 sandbox 与独立 task cwd 共存。
-- 同步修复普通 Agent turn 和 compaction 路径。
-- 将系统提示词改为 backend-neutral，并显示真实 Windows task cwd。
-- 将 `workspaceAccess`、exec cwd 和文件工具根明确绑定 task workspace，同时保持持久 Agent workspace 的记忆和启动文件语义不变。
-- 盘点 Agent 记忆读写是否依赖通用 coding/file 工具；如有，先设计专用内部访问链路，不能把 Agent workspace 加入任务文件桥的通用读写根。
-- 新增 patch 应用与漂移测试，防止升级后静默遗漏。
-
-##### 验收
-
-- 自动化测试证明 sandbox 配置下独立 task cwd 不再抛出兼容错误。
-- 测试证明 context 中两个 workspace 字段不会被覆盖、混用或在恢复时丢失。
-- 普通 turn 与 compaction 使用相同 task cwd。
-- `workspaceAccess`、coding/file 工具和 exec 根目录是 task cwd；记忆和启动文件仍来自 Agent workspace，且 Agent workspace 不自动暴露给任务工具。
-- 生成的提示词没有容器专用路径，且 Windows 路径正确。
-- backend 仍保持未启用，现有实机模式的多 cwd 会话、压缩和恢复回归通过。
-
-##### 回退门槛
-
-补丁可独立移除；在 backend 未开放前不产生用户数据迁移。
-
-#### M2.2：Windows 文件桥与路径策略
-
-##### 交付内容
-
-- 实现自定义 Windows `SandboxFsBridge` 和纯路径策略模块。
-- 覆盖读、写、编辑、补丁、目录、删除、重命名和状态查询所需语义。
-- 加入大小写、盘符、UNC、长路径、嵌套根、junction、symlink、reparse point、hard link 及检查/使用竞态用例。
-- 增加 task workspace 过宽根目录拒绝规则和最小只读工具目录配置。
-- 在 mock backend 中验证每个 session 的文件工具根隔离，不启动 SRT。
-
-##### 验收
-
-- 合法 workspace 内路径全部通过现有文件工具兼容测试。
-- `..`、相似前缀、大小写变体、绝对越界路径及链接逃逸被拒绝。
-- A、B 会话的文件工具在产品层各自只能访问自己的 task workspace。
-- 所有安全判断均可在无管理员权限、无 SRT 安装环境中自动测试。
-- 真实执行 backend 仍未开放，实机路径继续使用原实现且无回归。
-
-##### 回退门槛
-
-文件桥只有 `lobster-srt` backend 引用；关闭 backend 后不触及实机文件工具。
-
-### M3：单 workspace MVP
-
-里程碑结果：通过测试开关可以运行首个真实 Windows 单 workspace 沙箱闭环，命令进程树和文件工具均受控，任何运行时异常均失败关闭。
-
-实施状态（2026-07-17）：M3 代码与自动化验证已完成，进入端侧验收。当前测试开关只允许一个活动 task workspace；启用时会检查该 workspace 的实际 Windows ACL 边界，无法证明安全时回滚为关闭，不会静默退回实机执行。
-
-#### M3.1：单 workspace 内部沙箱闭环
-
-##### 交付内容
-
-- 完成 `lobster-srt` backend 的 SRT session 创建、命令包装、进程树回收、超时和 `finalizeExec`。
-- 接入 M2.2 的文件桥。
-- 将设置页 `Sandbox（测试）` 的全局开关接入 backend，仍只作为测试能力开放；Renderer 只调用领域专用 `native-sandbox:set-enabled`。
-- 由 Main 领域模块原子编排健康检查、配置持久化、OpenClaw 同步、Gateway 重启和 backend 复核，失败时补偿恢复旧配置并保持 fail-closed。
-- 加入最小审计：session、workspace、命令生命周期、文件工具决策、策略版本与 fail-closed。
-- 建立默认拒绝的网络基础策略；首轮功能验收使用离线命令。
-- 完成多 workspace 权限集合变更可行性原型，验证 SRT `0.0.65` 是否能在活动命令存在时安全增加 allow roots，并据结果冻结 M4 使用在线扩容还是 quiesce/rebuild。
-
-##### 验收
-
-- 在 workspace 内可读写文件并运行离线测试命令。
-- PowerShell、`cmd.exe`、脚本解释器及其子进程继承相同边界。
-- 命令尝试访问 workspace 外的测试文件时被 OS 边界拒绝。
-- 文件工具尝试越界时由 `SandboxFsBridge` 拒绝并产生可关联审计事件。
-- helper 丢失、账号状态损坏、健康检查失败或 backend 初始化失败时任务 fail-closed。
-- 停止、超时和 Gateway 重启后无残留活动进程。
-- 权限集合变更原型有可重复的 Windows 测试证据；若在线扩容不安全或结果不确定，M4 必须选择 quiesce/rebuild，不得继续按无缝扩容设计。
-- 打开开关时只有健康检查成功后才保存启用状态并重启 Gateway；取消或失败保持关闭。关闭开关会恢复 sandbox `off`，但不卸载 SRT。
-- 任务执行期间切换开关会被阻止并给出等待提示，不进行 backend 热切换。
-- 关闭内部开关后，同一项目的实机行为与阶段前一致。
-
-##### 实施记录与已冻结边界
-
-- `lobster-srt` backend 已使用固定版本 SRT 创建 Windows session；命令以 `shell: false` 方式由受限账号启动，子进程继承同一边界，网络策略为默认拒绝。
-- 文件工具已接入真实 `SandboxFsBridge`，覆盖读取、新建、覆盖、二进制写入、建目录、重命名、递归删除与目录枚举。由于当前 Windows runner 不转发标准输入，请求元数据和二进制内容会短暂写入随机的私有 staging 目录；该目录只授予沙箱账号读取权限，并在正常结束或 reset 时清理。应用异常退出后的遗留清理仍需在后续阶段加固。
-- 启停已由 Main 的领域事务统一编排：任务空闲检查、健康检查、配置持久化、OpenClaw 配置同步、Gateway 重启、backend 复核及失败补偿均不可由 Renderer 分步执行。关闭后生成配置明确取消 backend 选择和运行时 gate。
-- 最小审计当前为 extension 内存事件环，只记录摘要、哈希标识、策略版本、结果和错误码，不记录原始 session key、路径、命令参数、文件内容或环境变量。持久化、查询、保留周期和导出仍属于 M4。
-- Windows 实机烟测已证明：受限身份、workspace 内读写、`cmd.exe` 子进程继承、workspace 外测试文件读写拒绝、直接网络拒绝，以及文件桥的完整操作链路。另有反向用例证明：当 workspace 或其父级 ACL 向 `Authenticated Users` 等宽泛主体授予修改权限时，启用会以 `unsafe-workspace-acl` 失败关闭。
-- SRT `0.0.65` 的 Windows session 在初始化时固定 `allowRead`/`allowWrite`，不支持在每次 exec 上安全增量传入根目录。因此 M4 已冻结为 quiesce/rebuild：暂停接收新沙箱命令，等待活动命令归零，以新的权限集合重建 session，再恢复执行；不采用活动命令期间在线扩容。
-- SRT 的共享本地账号仍可能继承工作目录原有的组 ACL。M3 的边界探针能阻断“当前 workspace 的相邻测试路径可写”这一已知危险配置，但它不是对整台主机所有目录可写性的完备证明。扩大测试或发布前仍需加固 Windows runner 的 token/组权限并建立支持目录矩阵。
-- M3 不递归开放用户 profile 下的工具链目录。系统级 PowerShell、`cmd.exe` 和机器级工具可用；只安装在用户目录中的 Node/npm/Python 可能因最小权限策略无法启动，待后续按工具链白名单补齐。
-
-##### 回退门槛
-
-通过产品 kill switch 禁止配置选择 `lobster-srt`；已安装的 SRT 系统状态可以保留，不影响实机模式。
-
-### M4：多 workspace 测试版
-
-里程碑结果：权限集合稳定后，不同 task workspace 可以并发执行；测试设置入口、共享权限并集说明和基础审计形成内部可用闭环。
-
-#### M4.1：多 workspace 并发与权限并集
-
-##### 交付内容
-
-- 实现 workspace 规范化、lease、引用计数、集合变更锁和活动执行计数。
-- 按 M3 已冻结的 quiesce/rebuild 模式实现权限集合变更；权限集合稳定后仍支持不同 session 并发运行。
-- 实现并集扩展、待回收状态、无活动任务清理或 Gateway 重启协调。
-- 增加崩溃恢复和 SRT 持久状态核对。
-- 将“命令进程可访问权限并集、文件工具仍按 session 限制”展示在内部状态与审计中。
-
-##### 验收
-
-- A、B 权限集合准备完成后，不同 workspace 的命令可真正并发，不因全局执行锁覆盖整个命令运行期而串行。
-- 新增 workspace 时的行为与已冻结模式一致：在线扩容必须证明不影响活动命令；quiesce/rebuild 必须暂停新任务、等待活动任务归零后重建，并向等待中的会话提供明确状态。
-- 当 A、B 同时授权时，受限命令可以访问 A、B，并明确证明这是预期的权限并集。
-- 同一命令访问未授权的 C 目录仍被拒绝。
-- A、B 的文件工具仍分别受各自 task workspace 根限制。
-- 结束 A 不会错误撤销仍被 B 使用的相同或嵌套目录权限。
-- 删除 lease 时不在活动进程运行期间撤销权限；pending 状态可在维护窗口或重启后收敛。
-- 大小写不同的相同路径、嵌套根和重复会话不会产生错误引用计数。
-- Gateway 异常退出并重启后能核对并处理遗留状态，未完成核对前不执行新沙箱命令。
-- 并发压力测试无死锁、重复 UAC、ACL 竞态或跨并集之外的访问。
-
-##### 回退门槛
-
-可临时将沙箱并发限制为单 workspace，而不改变单 workspace backend；若状态协调异常则 fail-closed，不回退实机。
-
-#### M4.2：测试入口补全与审计闭环
-
-##### 交付内容
-
-- extension 产生执行、文件工具与 workspace lease 审计事件；Main 产生生命周期、配置和 Gateway 协调事件，并统一负责脱敏、持久化、保留与查询。
-- shared 定义事件 schema 和错误码；Renderer 通过只读 IPC 展示摘要，不直接写审计记录。
-- 补全设置页 `Sandbox（测试）` Tab 的能力说明、安装/修复状态、最近错误和限制提示，不新增会话级入口。
-- 在测试 Tab 明确展示“多 workspace 并发时共享权限并集”。
-- 完成配置持久化、Gateway restart 提示、模式切换和错误恢复。
-- 完成结构化审计事件、脱敏和保留周期；测试版只提供非敏感诊断摘要，不建设完整审计导出 UI。
-- 对未支持平台显示明确能力状态，不提供误导性的开关。
-- 保留默认关闭的本地发布开关，支持快速停止新沙箱任务。
-
-##### 验收
-
-- 测试人员可通过一个简单 Tab 完成安装、启用、关闭、诊断和修复。
-- 测试人员在启用前能看到 UAC、共享账号、权限并集和失败关闭说明。
-- 模式变化按预期重启 Gateway，已有实机会话和沙箱会话不会混淆 backend。
-- 每次命令/文件决策可通过 request ID 关联到 session、策略和结果；敏感参数与内容默认不入日志。
-- 未安装、取消、损坏、不支持和策略拒绝均有不同提示，不统一显示为“执行失败”。
-- 默认发布配置仍可保持沙箱关闭；关闭时完整实机回归通过。
-
-##### 回退门槛
-
-关闭发布开关后测试 Tab 不再允许启用；已选择用户获得明确状态，不静默切换执行模式。
-
-### M5：发布加固
-
-里程碑结果：网络、安装、升级、卸载和 Windows 支持矩阵完成安全验证，具备扩大测试范围或面向普通用户开放的决策依据。
-
-#### M5.1：网络、发布矩阵与生命周期加固
-
-##### 交付内容
-
-- 完成产品级网络 allowlist、代理、DNS 和直接 IP 绕过测试。
-- 完成 Windows 安装包首次安装、覆盖升级、版本迁移、修复和正式卸载验证。
-- 验证 helper Authenticode、资源完整性、SRT 状态兼容和清理失败恢复。
-- 建立支持的 Windows 版本、文件系统、shell、Node 工具链和安装架构矩阵。
-- 先内部灰度，再小范围 opt-in，最后根据质量数据决定是否扩大开放。
-- 形成 macOS backend 的后续输入清单，但不在本阶段夹带 macOS 实现。
-
-##### 验收
-
-- 未在 allowlist 的域名、直接 IP、替代 DNS/代理路径均无法出站。
-- 明确开放的网络请求可用，且不影响 Gateway 自身模型连接。
-- 首次安装只在用户确认后提权；覆盖升级不拆除健康状态；正式卸载在资源删除前尝试清理。
-- 支持矩阵中的组合均通过单 workspace、多 workspace 并发、越界、进程回收和实机回归。
-- 连续灰度周期内无高危越界、静默降级、系统规则遗留或大规模启动失败。
-
-##### 回退门槛
-
-任一安全门槛失败即停止扩大灰度，并通过 kill switch 拒绝新沙箱执行；实机模式仍保持可用。
-
-## 建议的实施拆分
-
-为减少单次改动风险，建议至少按以下变更单元提交，且每个单元单独评审：
-
-1. 共享契约与基线测试；
-2. SRT 精确依赖、extension 骨架和预编译校验；
-3. Windows helper 打包、签名和许可证；
-4. 主进程生命周期服务与 IPC；
-5. Main、Renderer、Shared 与构建脚本的沙箱领域目录收口；
-6. 固定版本 OpenClaw task cwd 补丁；
-7. Windows 路径策略与 `SandboxFsBridge`；
-8. 单 workspace backend 与领域专用启停事务；
-9. 多 workspace lease 与并发协调；
-10. UI、i18n、审计和灰度开关；
-11. 网络与安装/升级/卸载加固。
-
-任一变更单元不应同时做无关的大文件拆分或历史代码清理。M1.4 只收口本功能新增代码，不借机重构 `main.ts`、`Settings.tsx` 或 i18n 文件中的其他历史职责。
-
-## 涉及文件
-
-以下为预计落点，实施时以当前源码和固定依赖版本的实际 API 为准。
-
-### 新增候选
-
-- `src/shared/nativeSandbox/`：模式、状态、错误、能力、跨进程 API 和审计 schema；避免与仓库忽略的运行时 `sandbox/` 目录同名。
-- `src/main/nativeSandbox/`：领域模块入口、IPC 注册、平台 adapter、SRT loader、环境解析、状态、安装、启停事务和协调服务。
-- `openclaw-extensions/lobster-srt-sandbox/src/`：backend、Windows 文件桥、workspace lease、配置映射与执行侧审计事件生产。
-- `src/renderer/components/settings/nativeSandbox/`：测试版页面、controller、view model、状态卡片和诊断摘要。
-- `scripts/native-sandbox/verify-package.cjs`：依赖、helper、许可证、扩展产物和 packaged resources 校验。
-- 对应的 `.test.ts`：路径策略、状态机、配置映射、并发协调和审计脱敏。
-
-### 修改候选
-
-- `package.json` / lockfile：精确 SRT 依赖与相关脚本。
-- `electron-builder.json`：Windows helper 与许可证资源。
-- `scripts/electron-builder-hooks.cjs`：只调用 `scripts/native-sandbox/` 中的领域校验器，不内嵌校验逻辑。
-- `scripts/win-sign.cjs`：确认独立 helper 进入现有签名链；若现有链已覆盖则仅加验证。
-- `scripts/nsis-installer.nsh`：正式卸载前的清理时序。
-- `scripts/precompile-openclaw-extensions.cjs`：必要时增加 SRT bundle 产物校验。
-- `src/main/libs/openclawLocalExtensions.ts`：本地扩展发现或必需清单。
-- `src/main/libs/openclawConfigSync.ts`：产品模式到 backend、scope、workspaceAccess 的映射。
-- `src/main/libs/openclawConfigImpact.ts`：需要 Gateway restart 的配置判定。
-- `src/main/libs/openclawEngineManager.ts`：启动前能力校验和 fail-closed 错误传播。
-- `src/main/coworkStore.ts`：在 `cowork_config` 中持久化默认关闭的 `nativeSandboxEnabled`，不改写现有 `executionMode` 语义。
-- `src/main/preload.ts`：只暴露一组 native sandbox 安全桥，不包含生命周期编排。
-- `src/main/main.ts`：只调用一次 `registerNativeSandboxModule(...)`，不持有 service 或 IPC handler 实现。
-- `src/renderer/components/Settings.tsx`：只注册 `sandbox` Tab、侧栏项和内容 case，不持有请求与展示状态。
-- `src/renderer/services/i18n.ts`：聚合 native sandbox 领域中英文文案，不承载领域展示逻辑。
-- `src/renderer/types/cowork.ts`、`src/renderer/types/electron.d.ts`、`src/renderer/store/slices/coworkSlice.ts`、`src/renderer/services/cowork.ts`：全局开关和状态调用链。
-- `scripts/patches/<openclaw.version>/`：task cwd、compaction 和 backend-neutral prompt 的最小补丁。
-- `scripts/electron-builder-hooks.cjs` 中 packaged runtime 的必需本地扩展清单。
-
-## 测试与验收矩阵
-
-### 自动化测试
-
-- 模式与能力状态机；
-- 配置同步和 restart 影响；
-- Windows 路径规范化及逃逸用例；
-- `SandboxFsBridge` 行为兼容；
-- workspace lease、引用计数和并发集合变更；
-- 审计字段关联与敏感信息脱敏；
-- OpenClaw patch 普通 turn、compaction、task cwd 和系统提示词；
-- extension 预编译及无 unresolved import。
-
-### 集成测试
-
-- SRT 安装状态与 WFP 行为验证；
-- PowerShell、cmd、Node 及子进程继承；
-- workspace 内读写和 workspace 外拒绝；
-- 单 workspace 超时、取消和进程回收；
-- 多 workspace 并发与权限并集；
-- Gateway 崩溃后的状态协调；
-- 明确启用后的各种 fail-closed 路径。
-
-### Windows 安装包手工验收
-
-- helper 架构、固定路径、签名和许可证；
-- 首次启用与 UAC 取消；
-- 安装、重复安装、状态损坏和修复；
-- 覆盖升级保留系统状态；
-- 正式卸载清理；
-- 清理失败后的提示与手工恢复；
-- 关闭沙箱后的实机完整回归。
-
-### 每阶段共同回归
-
-每个里程碑及其内部检查点至少验证：
-
-- `npm test`；
-- 变更 TypeScript 文件的零 warning lint；
-- `npm run compile:electron`；
-- 涉及 Renderer 时执行 `npm run build`；
-- 涉及 OpenClaw 时验证 runtime 构建、配置同步、Gateway 启动和相关日志；
-- 涉及打包/系统状态时验证对应 Windows 安装包路径。
-
-如果某一阶段尚未启用真实沙箱，其主要验收就是证明原实机行为和构建/启动链路无异常，而不是为了形式上验收而提前运行不完整的沙箱。
-
-## 风险与缓解
+核心数据结构不得出现 Windows SID、ACL 或 macOS profile 等平台字段：
+
+```ts
+interface SandboxPolicySnapshot {
+  policyVersion: number;
+  taskId: string;
+  agentId: string;
+  cwd: string;
+  writableRoots: string[];
+  readableRoots: string[];
+  protectedPaths: string[];
+  scratchDir: string;
+  networkMode: 'disabled' | 'managed-proxy' | 'allowlist';
+  limits: SandboxResourceLimits;
+}
+```
+
+平台实现：
+
+```text
+NativeSandboxRuntime
+  ├─ WindowsSandboxRuntime
+  └─ MacSandboxRuntime         # 后续
+```
+
+Windows 专有类型应停留在：
+
+```text
+native/sandbox-windows/
+src/main/nativeSandbox/platforms/windows/
+scripts/native-sandbox/windows/
+```
+
+不得进入 renderer、共享配置或 OpenClaw backend 的公共协议。
+
+## 11. macOS 预留方案
+
+macOS 不复用 Windows `.exe`，只复用产品层和策略层。
+
+后续 `MacSandboxRuntime` 预计负责：
+
+- 将 `SandboxPolicySnapshot` 编译为动态 Seatbelt profile；
+- 使用系统原生 sandbox 执行入口启动进程；
+- 限制文件读写和网络；
+- 管理临时目录和子进程；
+- 对 runtime 资源进行签名、打包和版本检查；
+- 提供与 Windows 一致的健康检查、错误码和审计事件。
+
+预计可复用：
+
+- 设置 UI；
+- IPC；
+- 配置存储；
+- OpenClaw backend；
+- tool call 路由；
+- workspace 语义；
+- 路径策略的大部分平台中性规则；
+- 文件桥接；
+- 审计模型；
+- 启停事务；
+- 失败关闭；
+- 主要测试场景定义。
+
+预计必须单独实现：
+
+- 原生执行后端；
+- profile 生成；
+- macOS 路径解析细节；
+- 网络限制；
+- 签名、公证和安装；
+- 平台逃逸测试。
+
+Windows 首发阶段不实现 macOS runtime，但每个公共接口的评审都必须确认没有绑定 Windows 特有概念。
+
+## 12. OpenClaw 集成方式
+
+### 12.1 自定义 backend
+
+OpenClaw 继续通过自定义 backend `lobster-native` 调用 LobsterAI sandbox extension。
+
+职责边界：
+
+- OpenClaw：
+  - 产生 tool call；
+  - 管理 agent/session；
+  - 把 exec 和文件工具路由到 backend；
+- Lobster backend：
+  - 解析 task/agent/workspace 上下文；
+  - 创建策略快照；
+  - 调用 runtime 或文件桥接；
+  - 返回标准工具结果；
+- 原生 runtime：
+  - 执行操作系统级限制；
+  - 不理解 LLM、对话或业务审批。
+
+### 12.2 命令 tool call
+
+示例：
+
+```text
+LLM 返回 exec tool call
+  -> OpenClaw 校验工具参数
+  -> lobster-native backend 取得 taskWorkspaceDir/cwd
+  -> Lobster Policy Builder 生成 SandboxPolicySnapshot
+  -> WindowsSandboxRuntime.spawn()
+  -> command-runner 创建受限 token 和 Job Object
+  -> 执行 npm test
+  -> stdout/stderr/exit code 返回 OpenClaw
+  -> UI 展示结果，Audit Store 记录摘要
+```
+
+命令参数不需要“翻译成某个第三方 runtime 的参数”。它只转换为 Lobster 自有的 `SpawnRequest`。
+
+### 12.3 结构化文件 tool call
+
+示例：
+
+```text
+LLM 返回 write_file tool call
+  -> OpenClaw 路由到 lobster-native backend
+  -> SandboxFsBridge
+  -> 规范化路径并检查 writableRoots/protectedPaths
+  -> NativeSandboxFsIo
+  -> 成功或返回稳定拒绝错误码
+  -> Audit Store 记录文件路径摘要和结果
+```
+
+文件操作不能只依赖 OpenClaw 的提示词或前置判断。最终写入必须由受控文件 adapter 完成。
+
+### 12.4 OpenClaw patch 原则
+
+优先把产品策略、runtime 调用、UI 和审计放在 LobsterAI 侧。
+
+只有下列必要行为位于 OpenClaw 内部且没有稳定扩展点时，才保留最小的版本化 patch：
+
+- 为 custom backend 传递 task workspace；
+- 让 exec 和结构化文件工具进入同一 backend；
+- 保持 agent workspace 与 task workspace 的独立语义；
+- 返回稳定的 sandbox 错误信息。
+
+patch 必须：
+
+- 放在当前固定 OpenClaw 版本目录；
+- 有自动应用和失败检测；
+- 有最小回归测试；
+- 不直接包含 Windows 原生安全逻辑；
+- OpenClaw 升级时单独复核。
+
+## 13. 配置、状态与用户界面
+
+### 13.1 配置模型
+
+首发 UI 仍只展示一个简单开关，但内部配置应可扩展：
+
+```json
+{
+  "enabled": false,
+  "mode": "workspace-write",
+  "networkMode": "disabled",
+  "runtime": "native",
+  "policyVersion": 1
+}
+```
+
+产品测试期不向用户暴露所有高级字段。
+
+### 13.2 状态模型
+
+设置页至少展示：
+
+- 平台是否支持；
+- runtime 是否安装；
+- runtime 版本；
+- protocol 是否兼容；
+- 安装目录是否健康；
+- 系统规则是否健康；
+- OpenClaw backend 是否启用；
+- 当前产品模式；
+- 最近检测时间；
+- 最近错误；
+- 安装、修复或刷新按钮；
+- Sandbox 开关。
+
+### 13.3 开启事务
+
+开启 Sandbox 必须按顺序：
+
+1. 校验平台；
+2. 校验 binary 签名、hash 和协议；
+3. 安装或修复系统组件；
+4. 运行 runtime 自检；
+5. 对当前 workspace 生成并验证策略；
+6. 运行边界探测；
+7. 写入产品配置；
+8. 同步 OpenClaw 配置；
+9. 重启或热更新 gateway；
+10. 验证 backend 生效；
+11. 标记开关已启用。
+
+任一步失败：
+
+- 保持或恢复 `enabled = false`；
+- 回滚 OpenClaw 配置；
+- 不切换为实机执行；
+- 在 UI 展示用户可理解的错误；
+- 在日志和审计中保留开发诊断码。
+
+### 13.4 关闭事务
+
+关闭 Sandbox：
+
+1. 阻止新 sandbox task 创建；
+2. 明确处理正在运行的任务；
+3. 写入关闭配置；
+4. 同步 OpenClaw；
+5. 验证恢复原实机 backend；
+6. 清理临时授权和 scratch；
+7. 保留 runtime 安装，避免下次重复 UAC；
+8. 记录审计。
+
+## 14. 审计设计
+
+### 14.1 事件模型
+
+建议统一事件：
+
+```ts
+interface SandboxAuditEvent {
+  eventVersion: number;
+  eventId: string;
+  timestamp: string;
+  eventType: SandboxAuditEventType;
+  actor: 'user' | 'system' | 'agent';
+  sessionId?: string;
+  taskId?: string;
+  agentId?: string;
+  workspaceId?: string;
+  policyHash?: string;
+  operation?: string;
+  targetHash?: string;
+  result: 'allowed' | 'denied' | 'failed' | 'completed';
+  errorCode?: string;
+  durationMs?: number;
+  runtimeVersion?: string;
+}
+```
+
+事件类型至少包括：
+
+- `sandbox.config.changed`
+- `sandbox.runtime.install.started`
+- `sandbox.runtime.install.completed`
+- `sandbox.runtime.verify.failed`
+- `sandbox.enabled`
+- `sandbox.disabled`
+- `sandbox.command.started`
+- `sandbox.command.completed`
+- `sandbox.command.denied`
+- `sandbox.file.allowed`
+- `sandbox.file.denied`
+- `sandbox.network.denied`
+- `sandbox.policy.generated`
+- `sandbox.backend.rollback`
+
+### 14.2 隐私与保留
+
+默认不记录：
+
+- 完整文件内容；
+- 完整环境变量；
+- 凭据；
+- token；
+- 完整命令输出；
+- 用户目录中可能含个人信息的绝对路径明文。
+
+可记录：
+
+- 命令类型和脱敏摘要；
+- 规范化目标的 hash；
+- workspace 内相对路径；
+- 退出码；
+- 错误码；
+- 策略 hash；
+- runtime 版本；
+- 时间和操作者。
+
+审计存储应支持保留期限、导出和清理，不能无限增长。
+
+## 15. 稳定错误码
+
+UI 文案与底层错误分离。底层使用稳定错误码，示例：
+
+```text
+runtime-not-installed
+runtime-version-incompatible
+runtime-signature-invalid
+runtime-initialization-failed
+setup-uac-cancelled
+setup-partial-failure
+workspace-policy-invalid
+workspace-acl-prepare-failed
+path-outside-workspace
+protected-path-denied
+network-denied
+process-limit-exceeded
+process-timeout
+backend-verification-failed
+gateway-restart-failed
+rollback-failed
+```
+
+用户看到的是本地化说明和可行动建议，日志中保留错误码、阶段和原始异常。
+
+## 16. 新 Milestone 总览
+
+本次重新编号为 M0-M6。M0-M5 构成 Windows 首发路径，M6 是后续 macOS 扩展。
+
+工作量均为当前信息下的剩余工程量估算，误差约为 ±40%，不包含安全团队正式渗透测试排期。
+
+| Milestone | 目标 | 可交付状态 | 当前状态 | 粗估人日 | 是否阻塞 Windows 首发 |
+| --- | --- | --- | --- | ---: | --- |
+| M0 | 架构转向与中性边界 | 沙箱关闭时完全回归，旧后端不再扩展 | 待实施，已有较多可复用基线 | 3-5 | 是 |
+| M1 | Windows runner 技术原型 | CLI 可证明进程树和 workspace 写边界 | 未开始 | 10-18 | 是 |
+| M2 | 单 workspace 产品内测版 | 用户可在已有工程中开关并执行真实任务 | 未开始，可复用现有 UI/接入层 | 7-12 | 是 |
+| M3 | 安装态与系统安全加固 | setup、网络、签名、修复和失败关闭完整 | 未开始 | 12-22 | 是 |
+| M4 | 多 workspace、审计与企业能力 | 并发任务权限不形成并集，审计可追溯 | 未开始 | 8-15 | 是 |
+| M5 | 打包、升级、回滚与发布门禁 | 可随 Windows 安装包发布的 Beta | 未开始 | 10-18 | 是 |
+| M6 | macOS 原生后端 | 与 Windows 使用同一产品接口 | 后续规划 | 15-30 | 否 |
+
+Windows 剩余总量粗估：
+
+- 50-90 人日；
+- 新增或重写生产代码约 9k-18k 行；
+- 新增安全及集成测试约 4k-8k 行；
+- 单人串行约 10-18 周；
+- 2-3 人按“原生 runtime / Lobster 集成 / 测试发布”拆分，可缩短日历时间，但 M1 安全原型和 M3 系统加固不宜强行并行。
+
+行数只用于量级评估，不作为交付目标。
+
+## 17. M0：架构转向与中性边界
+
+### 17.1 目标
+
+把当前已完成的产品层从旧 runtime 语义中解耦，为 Windows 自有 runtime 建立稳定边界，同时确保默认关闭时不影响原有功能。
+
+### 17.2 主要工作
+
+1. 引入平台中性类型：
+   - `NativeSandboxRuntime`
+   - `SandboxPolicySnapshot`
+   - `RuntimeCapabilities`
+   - `SpawnRequest`
+   - `InstallStatus`
+2. 把现有 control service 依赖改为接口注入。
+3. 将 backend 标识迁移为 `lobster-native`。
+4. 统一状态、错误码和审计常量。
+5. 标记旧 runtime adapter 为待移除，不再增加功能。
+6. 建立 Windows/macOS 平台目录。
+7. 保留 feature flag 和 kill switch。
+8. 保证 Sandbox 关闭时仍走原有 OpenClaw 实机路径。
+9. 补充 mock runtime，支持不启动原生 helper 的单元测试。
+10. 更新设计文档、威胁模型和迁移清单。
+
+### 17.3 不包含
+
+- 真正的 Windows restricted token；
+- setup.exe；
+- 系统级网络隔离；
+- 对用户开放可用 Sandbox。
+
+### 17.4 验收
+
+- `npm test` 相关覆盖通过；
+- `npm run compile:electron` 通过；
+- 变更 TypeScript 文件 lint 通过；
+- Sandbox 关闭时：
+  - 会话创建正常；
+  - 文件编辑正常；
+  - shell 命令正常；
+  - OpenClaw gateway 启动、修复、重启正常；
+  - IM、定时任务等不相关路径无变化；
+- mock runtime 可以验证启用事务的成功、失败和回滚；
+- 代码中新增的公共配置和 UI 不含 Windows SID/ACL 概念；
+- 旧 runtime 未被删除，便于 M1/M2 期间对照和回滚，但不再作为目标架构。
+
+### 17.5 完成门禁
+
+M0 可以独立提交。此时设置页开关可以保持不可用或仅限开发开关，不宣传 Sandbox 已可用。
+
+## 18. M1：Windows runner 技术原型
+
+### 18.1 目标
+
+在脱离 Lobster UI 的 CLI 测试环境中，证明 Windows 自有 runtime 能对已有工程目录实施可靠的进程树写限制。
+
+### 18.2 主要工作
+
+1. 创建 `native/sandbox-windows` Rust workspace。
+2. 实现版本化 protocol crate。
+3. 实现 `lobster-command-runner.exe` 原型。
+4. 创建 restricted token：
+   - 移除高权限 SID；
+   - 禁用 privileges；
+   - 使用 `WRITE_RESTRICTED`；
+   - 绑定 workspace Capability SID。
+5. 实现 workspace Capability 的生成和 ACL 准备。
+6. 实现 Job Object、取消、超时和子进程回收。
+7. 实现 stdio 流和退出码。
+8. 实现 scratch 目录与环境清理。
+9. 实现路径规范化和初版 reparse point 规则。
+10. 建立 PowerShell、cmd、Node.js、Python、npm 测试矩阵。
+11. 建立独立 CLI harness 和安全边界测试。
+
+### 18.3 不包含
+
+- 产品设置页正式开关；
+- 完整 setup.exe；
+- 发布签名；
+- 多任务并发授权生命周期；
+- macOS；
+- 企业审计 UI。
+
+### 18.4 验收
+
+在一个普通、已存在的 Git 工程上：
+
+- 无需新建特殊目录；
+- 可以创建、修改和删除 workspace 内测试文件；
+- 可以运行 `npm test`；
+- 子进程可以写 workspace；
+- 当前用户本人仍可正常使用原工程；
+- 不能写另一个工程；
+- 不能写 Desktop、Documents、应用安装目录和系统目录；
+- PowerShell -> Python -> 子进程链仍不能越界；
+- 使用绝对路径、`..`、junction、symbolic link 的越界写入被拒绝；
+- 超时或取消能终止完整进程树；
+- runner 崩溃后不留下无限制子进程；
+- 原工程已有宽 ACL 时仍能建立本次写限制；
+- ACL 准备不会删除用户原有权限，也不改变所有者；
+- CLI 测试输出稳定错误码。
+
+### 18.5 完成门禁
+
+M1 只证明核心技术可行，不接入用户开关。若 M1 不能稳定阻止子进程和宽 ACL 场景的越界写入，不进入 M2。
+
+## 19. M2：单 workspace 产品内测版
+
+### 19.1 目标
+
+把 M1 runner 接入当前 LobsterAI 与 OpenClaw，让内测用户可以在已有工程中开启 Sandbox 并完成常见任务。
+
+### 19.2 主要工作
+
+1. 实现 `WindowsSandboxRuntime`。
+2. 将 runner protocol 接入 Electron main。
+3. 将 OpenClaw backend 切换为 `lobster-native`。
+4. 接通 exec tool call。
+5. 接通 `SandboxFsBridge` 和原生 FsIo。
+6. 为每个 task 生成：
+   - `agentWorkspaceDir`
+   - `taskWorkspaceDir`
+   - `cwd`
+   - `protectedPaths`
+   - `scratchDir`
+   - `networkMode`
+7. 完成开关启用、关闭、gateway 同步和回滚。
+8. 增加启动前边界探测：
+   - workspace 内写入成功；
+   - workspace 外写入失败；
+   - 子进程继承；
+   - 网络不可用。
+9. 设置页展示 runtime、backend、健康状态和最近错误。
+10. 增加开发包内 runner 打包。
+11. 将旧 runtime 路径从正常产品选择中移除。
+
+### 19.3 首版限制
+
+- 同一 task 只支持一个用户工程 workspace；
+- 网络固定关闭；
+- 强制写边界，不宣传完整读取隔离；
+- 仅 Windows x64 开发/内测环境；
+- 安装、修复和升级仍可使用开发流程，尚未达到正式发布质量。
+
+### 19.4 用户验收
+
+用户从设置页：
+
+1. 选择一个已有工程；
+2. 点击启用 Sandbox；
+3. 创建新会话；
+4. 让 Agent 修改一个源文件；
+5. 让 Agent 新建文件；
+6. 让 Agent 运行 `npm test`；
+7. 让 Agent 尝试写 workspace 外文件；
+8. 让 Agent 尝试联网；
+9. 关闭 Sandbox；
+10. 再创建会话确认恢复原实机行为。
+
+预期：
+
+- 前 6 步正常；
+- 越界写和联网被明确拒绝；
+- UI 展示可理解的失败原因；
+- 日志有开发错误码；
+- 不出现静默降级；
+- 关闭后原有行为正常；
+- 不要求用户迁移工程或创建子目录。
+
+### 19.5 技术验收
+
+- OpenClaw runtime 启动和 config sync 正常；
+- task workspace 传递正确；
+- exec/file tool 使用同一策略；
+- renderer/main/preload IPC 类型一致；
+- feature flag 关闭时不加载 runner；
+- runtime 初始化失败时 gateway 不进入“已启用”状态；
+- relevant Vitest、Electron compile 和变更文件 lint 通过。
+
+## 20. M3：安装态与系统安全加固
+
+### 20.1 目标
+
+把开发可用的 runner 变成可安全安装、修复和升级的 Windows runtime，并完成网络和供应链加固。
+
+### 20.2 主要工作
+
+1. 实现 `lobster-sandbox-setup.exe`。
+2. 定义固定的 setup 操作：
+   - install
+   - verify
+   - repair
+   - upgrade
+   - rollback
+   - uninstall
+3. 安装 runtime 到受保护目录。
+4. 设置 binary 和配置 ACL。
+5. 创建和管理所需本地安全主体。
+6. 安装默认拒绝的网络规则。
+7. runner 使用安装态安全主体执行。
+8. 加固 Job Object、private desktop 或等效桌面隔离。
+9. 加固 DLL 搜索路径、PATH、HOME、TEMP 和代理环境。
+10. 增加 runtime manifest、hash 和签名检查。
+11. 增加系统重启后的健康恢复。
+12. 增加 UAC 取消、部分失败和回滚。
+13. 增加 tamper 检测和 fail-closed。
+14. 完成系统级日志和产品审计衔接。
+
+### 20.3 验收
+
+- 首次启用只在需要安装系统组件时请求 UAC；
+- 应用普通启动不自动弹 UAC；
+- 用户取消 UAC 后配置保持未启用；
+- 安装中途失败可回滚；
+- runtime 文件被篡改后拒绝执行；
+- 普通用户和 sandbox 进程不能修改 runtime；
+- 网络测试覆盖域名、IP、DNS、loopback、局域网、子进程；
+- 清空代理变量或自行启动网络客户端不能绕过；
+- 受限进程不能使用管理员 token；
+- 进程不能明显 break away；
+- 应用升级后可以 verify/repair；
+- setup 不接受任意命令参数；
+- 所有失败均有稳定错误码和用户提示。
+
+### 20.4 安全评审门禁
+
+M3 完成前进行专项代码评审，至少覆盖：
+
+- token/SID；
+- ACL；
+- reparse point；
+- TOCTOU；
+- Job Object；
+- 网络规则；
+- setup 提权入口；
+- binary 加载与签名；
+- 卸载恢复；
+- 敏感日志。
+
+未完成安全评审，不进入企业内测。
+
+## 21. M4：多 workspace、审计与企业能力
+
+### 21.1 目标
+
+支持不同 agent/task 并发操作不同工程，且每个任务只持有自己的写能力；同时形成可供用户和管理员追溯的审计闭环。
+
+### 21.2 主要工作
+
+1. 为 workspace 建立稳定 identity 和 Capability 生命周期。
+2. 每次 command 只组合本次所需根目录。
+3. 支持：
+   - 一个 agent 的不同 task 使用不同 workspace；
+   - 多个 agent 并发；
+   - task 内少量显式多根目录；
+   - agent workspace 与 task workspace 分开授权。
+4. 增加 Capability 引用计数、缓存和回收。
+5. 处理崩溃恢复、孤儿授权和目录移动。
+6. 完成结构化审计存储。
+7. 增加审计查询、导出和保留期。
+8. 增加配置变更和审批事件。
+9. 增加策略 hash 和 runtime 版本关联。
+10. 增加跨 task、跨 agent 隔离测试。
+
+### 21.3 验收
+
+给定：
+
+```text
+Agent A / Task A -> Workspace A
+Agent B / Task B -> Workspace B
+```
+
+并发执行时：
+
+- A 可写 A；
+- A 不可写 B；
+- B 可写 B；
+- B 不可写 A；
+- A 的子进程不可写 B；
+- B 新增 workspace 不会扩展 A 的 token；
+- task 结束后授权生命周期可追踪；
+- agent workspace 权限不会把历史 task workspace 合并进来；
+- 每次命令、文件写入、拒绝和配置变化有可关联审计记录；
+- 审计默认不记录文件内容、凭据或完整环境；
+- 审计清理不影响 runtime 正常工作。
+
+### 21.4 企业内测门禁
+
+完成并发隔离回归、审计隐私评审和长时间稳定性测试后，才向企业内测用户开放。
+
+## 22. M5：打包、升级、回滚与 Windows 发布
+
+### 22.1 目标
+
+把原生 runtime 纳入 LobsterAI 正式 Windows 构建、安装、升级和发布流程。
+
+### 22.2 主要工作
+
+1. CI 构建 Rust runtime。
+2. 固定 toolchain 和依赖。
+3. 生成 SBOM、manifest 和第三方声明。
+4. Authenticode 签名。
+5. Electron 打包只包含目标架构产物。
+6. 实现 side-by-side runtime 版本。
+7. 实现应用/runtime 兼容矩阵。
+8. 实现自动 verify、repair、upgrade 和 rollback。
+9. 删除旧外部 runtime 的依赖和发布资源。
+10. 增加干净安装、覆盖升级、降级、卸载测试。
+11. 增加 Windows 版本、文件系统和安全软件兼容矩阵。
+12. 完成 Beta 发布说明、限制说明和故障诊断文档。
+
+### 22.3 首发架构
+
+Windows x64 是首发阻塞项。
+
+Windows arm64 可采用：
+
+- 同 milestone 后半段交付；或
+- 明确标记为后续增量，不阻塞 x64 Beta。
+
+不得在 arm64 上静默使用 x64 不兼容 runtime。
+
+### 22.4 验收
+
+- 干净机器无需 Docker 或额外开发环境；
+- 安装包携带匹配 runtime；
+- 首次启用安装成功；
+- 从上一 LobsterAI 版本升级成功；
+- runtime 升级失败自动回滚；
+- 应用降级时给出兼容提示；
+- 卸载不破坏用户工程 ACL；
+- 卸载可选择保留或删除审计数据；
+- 离线安装和运行可用；
+- 杀毒软件常见环境完成兼容性验证；
+- 安装包签名和 binary 签名可验证；
+- 旧 runtime 不再进入生产路径；
+- Sandbox 关闭时全量原功能回归通过。
+
+### 22.5 Windows Beta 发布门禁
+
+必须全部满足：
+
+- M0-M4 验收完成；
+- 安全专项评审完成；
+- 无已知 workspace 写逃逸；
+- 无已知网络绕过；
+- 无已知静默降级；
+- 安装、修复、升级、回滚可恢复；
+- 用户文案准确描述能力边界；
+- 支持一键收集脱敏诊断。
+
+## 23. M6：macOS 原生后端
+
+### 23.1 目标
+
+在不修改 Lobster UI、OpenClaw backend 和公共策略协议的前提下，新增 macOS 原生执行后端。
+
+### 23.2 主要工作
+
+1. 实现 `MacSandboxRuntime`。
+2. 将平台中性策略编译为 macOS profile。
+3. 实现文件读写、进程树和网络限制。
+4. 实现 macOS scratch 和环境策略。
+5. 实现健康检查和边界探测。
+6. 接入签名、公证和 app bundle。
+7. 建立 macOS 版本与架构测试矩阵。
+8. 复用 Windows 定义的用户冒烟场景和审计事件。
+9. 验证 Windows 特有配置没有泄漏到共享层。
+
+### 23.3 验收
+
+- 同一 `SandboxPolicySnapshot` 可由 macOS 后端解释；
+- workspace 内写入正常；
+- workspace 外写入被拒绝；
+- 子进程继承；
+- 网络默认关闭；
+- 设置页、错误码和审计体验与 Windows 基本一致；
+- Intel/Apple Silicon 支持范围有明确说明；
+- 签名、公证和升级流程通过；
+- 无需修改 OpenClaw tool call 协议。
+
+### 23.4 成本说明
+
+预计可复用 65%-75% 的产品和集成代码，但原生安全执行层需要独立开发和安全测试。M6 不应仅按“增加一个平台判断”估算。
+
+## 24. 测试矩阵
+
+### 24.1 原有行为回归
+
+Sandbox 关闭时验证：
+
+- 新建和恢复会话；
+- 文件读写；
+- shell 命令；
+- npm/Python/PowerShell；
+- artifact；
+- 浏览器；
+- MCP；
+- IM；
+- 定时任务；
+- OpenClaw gateway 启动、修复和重启；
+- 应用退出、重启和升级。
+
+### 24.2 workspace 内正常行为
+
+- 修改现有文件；
+- 新建、删除、重命名；
+- 大文件；
+- 深层目录；
+- Unicode、空格、长路径；
+- Git 操作；
+- npm install/test/build；
+- Python venv/test；
+- 编译器和子进程；
+- 并发读写；
+- 取消和超时。
+
+### 24.3 越界写入
+
+- 绝对路径；
+- 相对路径 `..`；
+- 其他盘符；
+- UNC；
+- Desktop/Documents；
+- 另一个工程；
+- LobsterAI data/install/runtime；
+- Windows 系统目录；
+- junction；
+- symlink；
+- hard link；
+- reparse point；
+- 父目录替换；
+- PowerShell/Node/Python 多层子进程；
+- 后台进程；
+- 脱离终端的进程。
+
+### 24.4 网络
+
+- DNS；
+- 域名；
+- 直接 IP；
+- HTTP/HTTPS；
+- TCP/UDP；
+- IPv4/IPv6；
+- loopback；
+- 局域网；
+- 私有地址；
+- 代理；
+- 清除代理变量；
+- PowerShell、curl、Node、Python；
+- 子进程；
+- 长连接。
+
+### 24.5 安装与升级
+
+- 干净安装；
+- 非管理员启动；
+- UAC 同意/拒绝；
+- 安装中断；
+- 修复；
+- runtime 文件丢失；
+- hash 篡改；
+- 签名异常；
+- 应用升级；
+- runtime 升级；
+- 回滚；
+- 系统重启；
+- 卸载；
+- 用户工程 ACL 保持。
+
+### 24.6 多 workspace
+
+- 同 agent 串行不同 workspace；
+- 同 agent 并发不同 workspace；
+- 多 agent 并发；
+- workspace 嵌套；
+- workspace 移动/删除；
+- 多盘符；
+- task 结束能力回收；
+- 应用崩溃后恢复；
+- A 对 B 的写入攻击；
+- agent workspace 与 task workspace 不互相扩权。
+
+## 25. 代码与目录规划
+
+### 25.1 新增
+
+```text
+native/sandbox-windows/
+src/main/nativeSandbox/platforms/windows/
+src/main/nativeSandbox/platforms/macos/        # M6
+src/shared/nativeSandbox/
+scripts/native-sandbox/
+openclaw-extensions/lobster-native-sandbox/
+tests/native-sandbox/
+```
+
+### 25.2 重点修改
+
+```text
+src/main/nativeSandbox/
+src/main/libs/openclawConfigSync.ts
+src/main/libs/openclawEngineManager.ts
+src/main/preload.ts
+src/renderer/components/settings/nativeSandbox/
+src/renderer/services/i18n.ts
+package.json
+electron-builder 配置
+OpenClaw 版本化 patch 与应用脚本
+CI workflow
+```
+
+### 25.3 模块边界
+
+建议保持：
+
+```text
+src/main/nativeSandbox/
+  application/       # control、启停事务、状态
+  domain/            # policy、错误码、审计模型
+  integration/       # OpenClaw、config sync、FsBridge
+  platforms/
+    windows/         # Windows runtime adapter
+    macos/           # M6
+```
+
+现有目录如已采用不同但清晰的二级划分，不为追求目录一致性做无关重构。
+
+## 26. 迁移策略
+
+迁移不一次性删除旧路径：
+
+1. M0 引入中性接口和 mock，旧路径保持默认不可选；
+2. M1 独立开发 runner，不影响产品；
+3. M2 开发开关选择 `lobster-native`；
+4. 内测期间保留明确的 kill switch；
+5. M3/M4 完成后停止旧 runtime 打包；
+6. M5 发布前删除旧依赖和资源；
+7. 保留一版应用级配置迁移：
+   - 旧 `enabled` 不自动映射为新 runtime 已启用；
+   - 升级后先 verify/install；
+   - 成功后由用户明确开启；
+8. 旧日志和审计数据仅做只读兼容，不参与新策略判断。
+
+任何阶段都不允许在新 runtime 失败时自动调用旧 runtime 或实机 backend。
+
+## 27. 主要风险与缓解
 
 | 风险 | 影响 | 缓解 |
 | --- | --- | --- |
-| Windows SRT API 或行为仍不稳定 | 安装、ACL 或网络规则在版本间变化 | 精确锁定 `0.0.65`，构建和运行时双重校验，升级单独验证 |
-| 共享账号带来 workspace 权限并集 | 一个会话命令可访问另一已授权 workspace | 产品文案和审计明确语义，文件工具保持 session 根限制，拒绝过宽根目录 |
-| workspace 原有宽泛组 ACL 被沙箱账号继承 | 受限进程可能通过 `Authenticated Users`、`Users` 等组访问未显式授权的相邻目录 | M3 启用前执行真实写边界探针并失败关闭；扩大测试前加固 runner token/组权限，建立允许的目录与 ACL 支持矩阵 |
-| Gateway 文件工具绕过 SRT | 直接文件调用可能越界 | 强制使用自定义 `SandboxFsBridge`，路径策略作为发布阻断项 |
-| task cwd 补丁随 OpenClaw 升级漂移 | sandbox 与项目目录再次不兼容 | 固定版本补丁、patch 漂移测试、升级前强制回归普通 turn 与 compaction |
-| 链接、大小写和竞态造成路径逃逸 | 访问 workspace 外文件 | 最终路径/句柄校验、专门安全用例、不确定类型首期拒绝 |
-| helper 未签名或资源路径错误 | UAC 信任下降或运行失败 | 独立 `extraResources`、构建前校验、安装包签名验证 |
-| 安装/修复并发 | 重复 UAC、状态损坏 | 主进程 single-flight 和明确状态机 |
-| Windows 安装 API 为同步 helper 调用 | 用户停留在 UAC 或 helper 超时期间，Electron 主进程可能短暂无响应 | M1 仅在用户显式操作后调用并限制为测试入口；扩大测试前评估迁移到独立子进程/utility process |
-| 崩溃遗留 ACL 或引用计数 | 权限集合无法收敛 | 不复制真值、启动协调、pending cleanup、必要时显式修复 |
-| 工具链位于用户级目录 | workspace 内命令无法启动依赖 | 只开放经过识别的最小只读工具 roots，不放开整个 profile |
-| 网络 allowlist 不完整 | 包管理器或测试误失败 | 网络单独分阶段、明确离线验收、按产品需求增加规则 |
-| 审计包含秘密 | 本地日志泄露命令参数或内容 | 默认只记元数据，脱敏、保留周期和导出控制 |
+| Windows ACL/token 细节错误 | workspace 逃逸或用户工程受损 | M1 CLI 原型先行、专门安全测试、ACL 只增量不夺权 |
+| 子进程 breakaway | 绕过限制 | Job Object、创建标志限制、进程树测试 |
+| 网络规则可绕过 | 数据外传或内网访问 | 系统级默认拒绝、多客户端/协议测试 |
+| helper 提权面过大 | 本地提权风险 | setup 固定命令、严格 schema、受保护目录、签名 |
+| 现有工程兼容性差 | 用户无法启用 | Capability SID 模型、宽 ACL 测试、不要求迁移目录 |
+| OpenClaw 升级破坏 backend | 任务无法执行 | 最小版本 patch、自动应用测试、固定版本 |
+| 安全文案过度承诺 | 用户错误理解 | 明确 workspace-write 与读取边界 |
+| runtime 与应用版本错配 | 初始化失败 | 协议版本、manifest、兼容矩阵、side-by-side |
+| 安全软件误报 helper | 安装失败 | 签名、稳定路径、Beta 兼容矩阵、诊断工具 |
+| macOS 预留流于形式 | 后续重写产品层 | 公共接口评审、平台中性测试、禁止 Windows 字段泄漏 |
 
-## 发布准入条件
+## 28. 待决策项
 
-面向普通用户开放前必须同时满足：
+以下问题不阻塞 M0/M1，但必须在对应 milestone 前确定：
 
-1. 固定 Windows 支持矩阵内的安装、修复、升级和卸载通过；
-2. 单 workspace 的命令进程树和文件工具越界测试通过；
-3. 多 workspace 并发权限并集行为与文档一致，并集外访问被拒绝；
-4. PowerShell、cmd、脚本解释器和子进程没有已知逃逸；
-5. 已启用沙箱的任何健康失败均 fail-closed；
-6. 默认关闭或 kill switch 状态下实机执行完整回归通过；
-7. 审计能够关联关键决策且默认不记录敏感内容；
-8. UI 明确说明共享账号、权限并集、UAC 和当前平台限制；
-9. 没有把 macOS 预留入口误报为可用实现。
+1. Windows runtime 首发是否只支持 x64。
+2. 网络隔离采用专用本地身份 + 防火墙，还是更底层的过滤驱动/平台能力。
+3. M3 是否引入 private desktop，还是先以 token + Job Object 为首发。
+4. 首发 `protectedPaths` 的默认清单。
+5. workspace Capability ACL 的缓存和卸载恢复策略。
+6. 审计数据保留期、导出格式和企业配置入口。
+7. task 内显式多根目录的最大数量。
+8. 是否在 M5 Beta 中开放受控网络，当前建议不开放。
+9. 强读取隔离是否作为独立模式，而不是扩大 `workspace-write` 的承诺。
 
-## 后续决策点
+## 29. 推荐实施顺序
 
-以下问题不阻塞 M1～M2，但必须在对应里程碑开始前确定：
+当前下一步不是继续修补旧 runtime，而是：
 
-1. 首个正式 Windows 发布是否只支持 x64，还是同时验证 ARM64。
-2. quiesce/rebuild 下 workspace lease 的等待、待回收和 Gateway 重启恢复策略如何向用户展示，并采用何种超时上限。
-3. 首期允许联网的具体域名、代理方式和用户自定义范围。
-4. 本地审计的存储位置、默认保留周期和导出格式。
-5. 正式卸载清理失败时的提示方式及手工修复工具入口。
-6. macOS backend 后续采用的运行时实现及其与 Windows 权限并集语义的差异。
+1. 完成 M0：
+   - 中性接口；
+   - backend 命名；
+   - mock；
+   - 原行为回归；
+2. 独立完成 M1 Windows runner 技术验证；
+3. 只有 M1 的“宽 ACL + 子进程 + 已有工程”三项同时通过，才接入 M2；
+4. M2 先做内部可用，不急于正式打包；
+5. M3 完成系统安全和安装态后，再进行安全团队评审；
+6. M4 解决企业用户真正关心的并发隔离与审计；
+7. M5 才移除旧依赖并进入 Windows Beta；
+8. Windows 接口稳定后启动 M6。
+
+该顺序保证每一步都有独立价值：
+
+- M0 证明不破坏现有产品；
+- M1 证明安全核心可行；
+- M2 证明用户工作流可用；
+- M3 证明安装态和系统级防护可靠；
+- M4 证明企业多任务与审计成立；
+- M5 证明可发布、可升级、可恢复；
+- M6 证明平台抽象可扩展。
+
+## 30. 最终验收定义
+
+Windows Beta 被视为完成，必须同时满足：
+
+1. 用户可直接选择已有工程并开启 Sandbox。
+2. workspace 内编辑、测试和构建正常。
+3. shell 及全部子进程不能越界写入。
+4. 结构化文件工具不能绕过相同边界。
+5. 多任务并发不形成 workspace 权限并集。
+6. 网络默认关闭且通过绕过测试。
+7. runtime 安装、签名、修复、升级和回滚可用。
+8. helper 由仓库源码和 CI 统一维护，不存在手工 binary。
+9. 开启失败不会静默退回实机。
+10. 关闭 Sandbox 后原有行为无异常。
+11. 用户和管理员可以追溯关键安全事件。
+12. 产品文案准确说明“写入隔离”与“读取隔离”的差异。
+13. OpenClaw 变更保持最小、版本化且可自动验证。
+14. macOS 平台接入不需要重写 UI、IPC、配置、backend 和审计模型。

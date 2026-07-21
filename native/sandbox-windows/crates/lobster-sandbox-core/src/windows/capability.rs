@@ -9,6 +9,8 @@ use crate::{SandboxError, SandboxResult};
 use super::path_policy::path_key;
 use super::wide::to_wide;
 
+// Keep root identities stable across protocol upgrades so a newer runtime can
+// replace or revoke ACEs left by an older compatible policy revision.
 const CAPABILITY_NAMESPACE: &[u8] = b"lobster-native-sandbox/workspace-write-v1\0";
 
 #[link(name = "advapi32")]

@@ -43,12 +43,33 @@ export type NativeSandboxShell = string | {
   args: readonly string[];
 };
 
+export type NativeSandboxPolicyRoot = {
+  id: string;
+  path: string;
+};
+
+/**
+ * Product-owned roots that accompany one task workspace. The executor keeps
+ * the task workspace implicit so callers cannot accidentally replace it.
+ */
+export interface NativeSandboxPolicyContext {
+  agentWorkspaceDir: string;
+  sandboxHomeDir: string;
+  writableRoots: readonly NativeSandboxPolicyRoot[];
+  readableRoots: readonly NativeSandboxPolicyRoot[];
+  protectedPaths: readonly string[];
+}
+
 export interface NativeSandboxExecutor {
   getStatus(): NativeSandboxExecutorStatus;
-  prepareWorkspace(workspaceDir: string): Promise<void>;
+  prepareWorkspace(
+    workspaceDir: string,
+    policyContext?: NativeSandboxPolicyContext,
+  ): Promise<void>;
   wrapCommand(params: {
     command: string;
     workspaceDir: string;
+    policyContext?: NativeSandboxPolicyContext;
     cwd?: string;
     env?: Record<string, string>;
     signal?: AbortSignal;
@@ -68,6 +89,7 @@ export interface NativeSandboxExecutor {
   runIsolatedCommand(params: {
     command: string;
     workspaceDir: string;
+    policyContext?: NativeSandboxPolicyContext;
     cwd?: string;
     env?: Record<string, string>;
     stdin?: Buffer | string;
@@ -79,6 +101,7 @@ export interface NativeSandboxExecutor {
   createFsIo(params: {
     workspaceDir: string;
     sessionKey: string;
+    policyContext?: NativeSandboxPolicyContext;
   }): SandboxFsIo;
   reset(): Promise<void>;
 }

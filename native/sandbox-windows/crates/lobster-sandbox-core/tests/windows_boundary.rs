@@ -17,6 +17,8 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 struct Fixture {
     workspace: TempDir,
+    sandbox_home: TempDir,
+    skills: TempDir,
     outside: TempDir,
     request: RunRequest,
 }
@@ -24,8 +26,12 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let workspace = must(tempfile::tempdir(), "workspace tempdir");
+        let sandbox_home = must(tempfile::tempdir(), "sandbox home tempdir");
+        let skills = must(tempfile::tempdir(), "skills tempdir");
         let outside = must(tempfile::tempdir(), "outside tempdir");
         grant_broad_non_world_access(workspace.path());
+        grant_broad_non_world_access(sandbox_home.path());
+        grant_broad_non_world_access(skills.path());
         grant_broad_non_world_access(outside.path());
         let scratch = workspace.path().join(".lobster-scratch");
         let request = RunRequest {
@@ -35,13 +41,14 @@ impl Fixture {
                 task_id: "m1-boundary-test".to_string(),
                 agent_id: "main".to_string(),
                 cwd: display(workspace.path()),
-                writable_roots: vec![display(workspace.path())],
-                readable_roots: Vec::new(),
+                writable_roots: vec![display(workspace.path()), display(sandbox_home.path())],
+                readable_roots: vec![display(skills.path())],
                 protected_paths: Vec::new(),
+                sandbox_home_dir: display(sandbox_home.path()),
                 scratch_dir: display(&scratch),
                 network_mode: NetworkMode::Disabled,
                 limits: SandboxResourceLimits {
-                    timeout_ms: 10_000,
+                    timeout_ms: 60_000,
                     max_processes: 16,
                     max_output_bytes: 1024 * 1024,
                 },
@@ -58,6 +65,8 @@ impl Fixture {
         };
         Self {
             workspace,
+            sandbox_home,
+            skills,
             outside,
             request,
         }
@@ -67,6 +76,96 @@ impl Fixture {
         self.request.command.argv = argv;
         must(execute(&self.request), "sandbox command should start")
     }
+}
+
+#[test]
+fn declared_skills_root_is_readable_but_not_writable() {
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut fixture = Fixture::new();
+    let skill_file = fixture.skills.path().join("SKILL.md");
+    must(
+        std::fs::write(&skill_file, "skill-content"),
+        "write skill fixture",
+    );
+
+    let read = fixture.run(vec![
+        powershell_exe(),
+        "-NoLogo".to_string(),
+        "-NoProfile".to_string(),
+        "-NonInteractive".to_string(),
+        "-Command".to_string(),
+        format!(
+            "Get-Content -LiteralPath '{}' | Set-Content -LiteralPath 'skill-copy.txt'",
+            powershell_literal(&skill_file),
+        ),
+    ]);
+    assert_eq!(read.outcome, ExecutionOutcome::Completed);
+    assert_eq!(read.exit_code, Some(0));
+    assert_eq!(
+        must(
+            std::fs::read_to_string(fixture.workspace.path().join("skill-copy.txt")),
+            "read copied skill",
+        )
+        .trim(),
+        "skill-content",
+    );
+
+    let denied_path = fixture.skills.path().join("generated.txt");
+    let write = fixture.run(vec![
+        powershell_exe(),
+        "-NoLogo".to_string(),
+        "-NoProfile".to_string(),
+        "-NonInteractive".to_string(),
+        "-Command".to_string(),
+        format!(
+            "$ErrorActionPreference='Stop'; Set-Content -LiteralPath '{}' -Value 'denied'",
+            powershell_literal(&denied_path),
+        ),
+    ]);
+    assert_eq!(write.outcome, ExecutionOutcome::Completed);
+    assert_ne!(write.exit_code, Some(0));
+    assert!(!denied_path.exists());
+}
+
+#[test]
+fn profile_environment_uses_the_persistent_sandbox_home() {
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut fixture = Fixture::new();
+    let profile_file = fixture.sandbox_home.path().join("profile-value.txt");
+    let first = fixture.run(vec![
+        powershell_exe(),
+        "-NoLogo".to_string(),
+        "-NoProfile".to_string(),
+        "-NonInteractive".to_string(),
+        "-Command".to_string(),
+        "Set-Content -LiteralPath (Join-Path $env:USERPROFILE 'profile-value.txt') -Value 'persisted'".to_string(),
+    ]);
+    assert_eq!(first.outcome, ExecutionOutcome::Completed);
+    assert_eq!(first.exit_code, Some(0));
+    assert!(profile_file.exists());
+
+    let second = fixture.run(vec![
+        powershell_exe(),
+        "-NoLogo".to_string(),
+        "-NoProfile".to_string(),
+        "-NonInteractive".to_string(),
+        "-Command".to_string(),
+        "$value = Get-Content -LiteralPath (Join-Path $env:HOME 'profile-value.txt'); Set-Content -LiteralPath 'profile-copy.txt' -Value $value".to_string(),
+    ]);
+    assert_eq!(second.outcome, ExecutionOutcome::Completed);
+    assert_eq!(second.exit_code, Some(0));
+    assert_eq!(
+        must(
+            std::fs::read_to_string(fixture.workspace.path().join("profile-copy.txt")),
+            "read persistent profile copy",
+        )
+        .trim(),
+        "persisted",
+    );
 }
 
 impl Drop for Fixture {
@@ -315,6 +414,20 @@ fn invalid_cwd_policy_fails_before_creating_scratch() {
     };
     assert_eq!(error.code, "cwd-outside-writable-roots");
     assert!(!scratch.exists(), "invalid policy must not create scratch");
+}
+
+#[test]
+fn read_only_roots_must_not_overlap_writable_roots() {
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut fixture = Fixture::new();
+    fixture.request.policy.readable_roots = vec![display(fixture.workspace.path())];
+    let error = match verify(&fixture.request) {
+        Ok(_) => panic!("overlapping root policy should fail"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code, "readable-root-overlaps-writable-root");
 }
 
 fn powershell_exe() -> String {

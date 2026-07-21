@@ -29,6 +29,7 @@ const SUB_CONTAINERS_AND_OBJECTS_INHERIT: u32 = 0x3;
 
 const WORKSPACE_ACCESS_MASK: u32 =
     FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE | DELETE;
+const READ_ROOT_ACCESS_MASK: u32 = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE;
 const PROTECTED_WRITE_MASK: u32 = FILE_WRITE_DATA
     | FILE_APPEND_DATA
     | FILE_WRITE_EA
@@ -40,9 +41,12 @@ const PROTECTED_WRITE_MASK: u32 = FILE_WRITE_DATA
 
 pub fn apply_policy_acl(
     policy: &PreparedPolicy,
-    capabilities: &[CapabilitySid],
+    writable_capabilities: &[CapabilitySid],
+    readable_capabilities: &[CapabilitySid],
 ) -> SandboxResult<()> {
-    if policy.writable_roots.len() != capabilities.len() {
+    if policy.writable_roots.len() != writable_capabilities.len()
+        || policy.readable_roots.len() != readable_capabilities.len()
+    {
         return Err(SandboxError::new(
             "acl-prepare-failed",
             "prepare-acl",
@@ -50,7 +54,7 @@ pub fn apply_policy_acl(
         ));
     }
 
-    for (root, capability) in policy.writable_roots.iter().zip(capabilities) {
+    for (root, capability) in policy.writable_roots.iter().zip(writable_capabilities) {
         mutate_acl(
             root,
             capability,
@@ -59,8 +63,17 @@ pub fn apply_policy_acl(
             SUB_CONTAINERS_AND_OBJECTS_INHERIT,
         )?;
     }
+    for (root, capability) in policy.readable_roots.iter().zip(readable_capabilities) {
+        mutate_acl(
+            root,
+            capability,
+            SET_ACCESS,
+            READ_ROOT_ACCESS_MASK,
+            SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+        )?;
+    }
     for protected_path in &policy.protected_paths {
-        for capability in capabilities {
+        for capability in writable_capabilities.iter().chain(readable_capabilities) {
             // DENY_ACCESS appends by design. Revoke a prior explicit Lobster ACE first so repeated
             // command preparation stays idempotent while inherited root grants remain intact.
             mutate_acl(protected_path, capability, REVOKE_ACCESS, 0, 0)?;
@@ -78,14 +91,18 @@ pub fn apply_policy_acl(
 
 pub fn revoke_policy_acl(
     policy: &PreparedPolicy,
-    capabilities: &[CapabilitySid],
+    writable_capabilities: &[CapabilitySid],
+    readable_capabilities: &[CapabilitySid],
 ) -> SandboxResult<()> {
     for protected_path in &policy.protected_paths {
-        for capability in capabilities {
+        for capability in writable_capabilities.iter().chain(readable_capabilities) {
             mutate_acl(protected_path, capability, REVOKE_ACCESS, 0, 0)?;
         }
     }
-    for (root, capability) in policy.writable_roots.iter().zip(capabilities) {
+    for (root, capability) in policy.readable_roots.iter().zip(readable_capabilities) {
+        mutate_acl(root, capability, REVOKE_ACCESS, 0, 0)?;
+    }
+    for (root, capability) in policy.writable_roots.iter().zip(writable_capabilities) {
         mutate_acl(root, capability, REVOKE_ACCESS, 0, 0)?;
     }
     Ok(())

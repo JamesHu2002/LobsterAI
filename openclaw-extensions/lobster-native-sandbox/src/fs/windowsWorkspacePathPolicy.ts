@@ -38,10 +38,13 @@ export const SandboxRootAccess = {
 } as const;
 export type SandboxRootAccess = (typeof SandboxRootAccess)[keyof typeof SandboxRootAccess];
 
-export type SandboxReadRoot = {
+export type SandboxFileRoot = {
   id: string;
   path: string;
 };
+
+export type SandboxReadRoot = SandboxFileRoot;
+export type SandboxWriteRoot = SandboxFileRoot;
 
 type ConfiguredRoot = {
   id: string;
@@ -78,6 +81,7 @@ export type PreparedSandboxPath = ResolvedSandboxPath & {
 export type WindowsWorkspacePathPolicyOptions = {
   taskWorkspaceDir: string;
   taskWorkspaceAccess?: SandboxRootAccess;
+  writeRoots?: readonly SandboxWriteRoot[];
   readRoots?: readonly SandboxReadRoot[];
   inspector?: WindowsPathInspector;
   protectedUserProfile?: string;
@@ -105,7 +109,7 @@ function validateRootId(rootId: string): void {
   if (!/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(rootId)) {
     throw new SandboxFsError(
       SandboxFsErrorCode.InvalidPath,
-      'Sandbox read-root id must be a short alphanumeric identifier.',
+      'Sandbox file-root id must be a short alphanumeric identifier.',
     );
   }
 }
@@ -179,28 +183,70 @@ export class WindowsWorkspacePathPolicy {
       },
     ];
     const rootIds = new Set(roots.map((root) => root.id));
+    for (const writeRoot of options.writeRoots ?? []) {
+      this.addConfiguredRoot({
+        root: writeRoot,
+        access: SandboxRootAccess.ReadWrite,
+        roots,
+        rootIds,
+      });
+    }
     for (const readRoot of options.readRoots ?? []) {
-      validateRootId(readRoot.id);
-      if (rootIds.has(readRoot.id)) {
-        throw new SandboxFsError(
-          SandboxFsErrorCode.InvalidPath,
-          'Sandbox file-root ids must be unique.',
-        );
-      }
-      rootIds.add(readRoot.id);
-      const readRootPath = normalizeWindowsAbsolutePath(readRoot.path);
-      this.assertRootScope(readRootPath);
-      if (roots.some((root) => windowsPathEquals(root.path, readRootPath))) {
-        continue;
-      }
-      roots.push({
-        id: readRoot.id,
-        path: readRootPath,
+      this.addConfiguredRoot({
+        root: readRoot,
         access: SandboxRootAccess.ReadOnly,
-        isTaskWorkspace: false,
+        roots,
+        rootIds,
       });
     }
     this.configuredRoots = roots;
+  }
+
+  private addConfiguredRoot(params: {
+    root: SandboxFileRoot;
+    access: SandboxRootAccess;
+    roots: ConfiguredRoot[];
+    rootIds: Set<string>;
+  }): void {
+    validateRootId(params.root.id);
+    if (params.rootIds.has(params.root.id)) {
+      throw new SandboxFsError(
+        SandboxFsErrorCode.InvalidPath,
+        'Sandbox file-root ids must be unique.',
+      );
+    }
+    params.rootIds.add(params.root.id);
+    const rootPath = normalizeWindowsAbsolutePath(params.root.path);
+    this.assertRootScope(rootPath);
+    const sameRoot = params.roots.find((root) => windowsPathEquals(root.path, rootPath));
+    if (sameRoot) {
+      if (sameRoot.access !== params.access) {
+        throw new SandboxFsError(
+          SandboxFsErrorCode.InvalidPath,
+          'A sandbox file root cannot be both read-only and writable.',
+        );
+      }
+      return;
+    }
+    const accessOverlap = params.roots.find((root) => (
+      root.access !== params.access
+      && (
+        isWindowsPathInside(root.path, rootPath)
+        || isWindowsPathInside(rootPath, root.path)
+      )
+    ));
+    if (accessOverlap) {
+      throw new SandboxFsError(
+        SandboxFsErrorCode.InvalidPath,
+        'Read-only and writable sandbox roots must not overlap.',
+      );
+    }
+    params.roots.push({
+      id: params.root.id,
+      path: rootPath,
+      access: params.access,
+      isTaskWorkspace: false,
+    });
   }
 
   resolveLexical(params: {
@@ -353,7 +399,7 @@ export class WindowsWorkspacePathPolicy {
     if (!selectedRoot) {
       throw new SandboxFsError(
         SandboxFsErrorCode.OutsideWorkspace,
-        'Sandbox file path is outside the task workspace and explicit read roots.',
+        'Sandbox file path is outside the configured file roots.',
       );
     }
 

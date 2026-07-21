@@ -14,7 +14,9 @@ use super::wide::to_wide;
 pub struct PreparedPolicy {
     pub cwd: PathBuf,
     pub writable_roots: Vec<PathBuf>,
+    pub readable_roots: Vec<PathBuf>,
     pub protected_paths: Vec<PathBuf>,
+    pub sandbox_home_dir: PathBuf,
     pub scratch_dir: PathBuf,
     pub limits: SandboxResourceLimits,
 }
@@ -50,6 +52,52 @@ pub fn prepare_policy(snapshot: &SandboxPolicySnapshot) -> SandboxResult<Prepare
         ));
     }
 
+    let mut readable_roots = Vec::new();
+    let mut seen_readable = HashSet::new();
+    for raw_root in snapshot.readable_roots.iter().map(PathBuf::from) {
+        let root = canonical_existing(&raw_root, "readable root")?;
+        if is_drive_root(&root) {
+            return Err(SandboxError::new(
+                "path-invalid",
+                "prepare-paths",
+                format!("a drive root cannot be readable: {}", root.display()),
+            ));
+        }
+        if writable_roots
+            .iter()
+            .any(|writable| is_within(&root, writable) || is_within(writable, &root))
+        {
+            return Err(SandboxError::new(
+                "readable-root-overlaps-writable-root",
+                "prepare-paths",
+                format!(
+                    "readable root {} overlaps a declared writable root",
+                    root.display()
+                ),
+            ));
+        }
+        if seen_readable.insert(path_key(&root)) {
+            readable_roots.push(root);
+        }
+    }
+
+    let sandbox_home_dir =
+        canonical_existing(&PathBuf::from(&snapshot.sandbox_home_dir), "sandboxHomeDir")?;
+    if is_drive_root(&sandbox_home_dir)
+        || !writable_roots
+            .iter()
+            .any(|root| is_within(&sandbox_home_dir, root))
+    {
+        return Err(SandboxError::new(
+            "sandbox-home-outside-writable-roots",
+            "prepare-paths",
+            format!(
+                "sandboxHomeDir {} is not inside a declared writable root",
+                sandbox_home_dir.display()
+            ),
+        ));
+    }
+
     let mut protected_paths = Vec::new();
     let mut seen_protected = HashSet::new();
     for raw_path in &snapshot.protected_paths {
@@ -69,8 +117,21 @@ pub fn prepare_policy(snapshot: &SandboxPolicySnapshot) -> SandboxResult<Prepare
         }
     }
 
-    // Delay the only filesystem creation until all existing user-controlled policy paths have
-    // passed validation. This keeps malformed requests from creating arbitrary directories.
+    for relative in [r"AppData\Local", r"AppData\Roaming"] {
+        std::fs::create_dir_all(sandbox_home_dir.join(relative)).map_err(|error| {
+            SandboxError::new(
+                "sandbox-home-prepare-failed",
+                "prepare-paths",
+                format!(
+                    "could not create profile directory under {}: {error}",
+                    sandbox_home_dir.display()
+                ),
+            )
+        })?;
+    }
+
+    // Delay scratch creation until all existing user-controlled policy paths have passed
+    // validation. This keeps malformed requests from creating arbitrary directories.
     let scratch_input = PathBuf::from(&snapshot.scratch_dir);
     validate_local_absolute_path(&scratch_input, "scratchDir")?;
     reject_reparse_components(&scratch_input, true)?;
@@ -127,7 +188,9 @@ pub fn prepare_policy(snapshot: &SandboxPolicySnapshot) -> SandboxResult<Prepare
     Ok(PreparedPolicy {
         cwd,
         writable_roots,
+        readable_roots,
         protected_paths,
+        sandbox_home_dir,
         scratch_dir,
         limits: snapshot.limits.clone(),
     })

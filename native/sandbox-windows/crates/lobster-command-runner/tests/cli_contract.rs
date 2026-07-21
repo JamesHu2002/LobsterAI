@@ -39,6 +39,11 @@ fn malformed_request_returns_a_machine_readable_error() {
 #[test]
 fn json_cli_verifies_runs_and_cleans_up_a_workspace() {
     let workspace = must(tempfile::tempdir(), "create workspace");
+    let sandbox_home = workspace.path().join(".sandbox-home");
+    must(
+        std::fs::create_dir_all(&sandbox_home),
+        "create sandbox home",
+    );
     let request_path = workspace.path().join("request.json");
     let request = RunRequest {
         protocol_version: NATIVE_SANDBOX_PROTOCOL_VERSION,
@@ -50,6 +55,7 @@ fn json_cli_verifies_runs_and_cleans_up_a_workspace() {
             writable_roots: vec![workspace.path().display().to_string()],
             readable_roots: Vec::new(),
             protected_paths: Vec::new(),
+            sandbox_home_dir: sandbox_home.display().to_string(),
             scratch_dir: workspace.path().join(".scratch").display().to_string(),
             network_mode: NetworkMode::Disabled,
             limits: SandboxResourceLimits::default(),
@@ -107,6 +113,11 @@ fn json_cli_verifies_runs_and_cleans_up_a_workspace() {
 #[test]
 fn run_can_write_the_machine_report_to_a_sidecar_without_polluting_stderr() {
     let workspace = must(tempfile::tempdir(), "create workspace");
+    let sandbox_home = workspace.path().join(".sandbox-home");
+    must(
+        std::fs::create_dir_all(&sandbox_home),
+        "create sandbox home",
+    );
     let request_path = workspace.path().join("request.json");
     let report_path = workspace.path().join("report.json");
     let request = RunRequest {
@@ -119,6 +130,7 @@ fn run_can_write_the_machine_report_to_a_sidecar_without_polluting_stderr() {
             writable_roots: vec![workspace.path().display().to_string()],
             readable_roots: Vec::new(),
             protected_paths: Vec::new(),
+            sandbox_home_dir: sandbox_home.display().to_string(),
             scratch_dir: workspace.path().join(".scratch").display().to_string(),
             network_mode: NetworkMode::Disabled,
             limits: SandboxResourceLimits::default(),

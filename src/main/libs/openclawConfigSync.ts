@@ -1888,6 +1888,8 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
     const hasNativeSandboxPlugin = isBundledPluginAvailable(
       NATIVE_SANDBOX_OPENCLAW_PLUGIN_ID,
     );
+    const skillsExtraDirs = this.resolveSkillsExtraDirs();
+    const nativeSandboxDataRoot = path.join(app.getPath('userData'), 'sandbox-data');
     // Runtime-bundled xai extension (dist/extensions/xai): provides the Grok
     // model compat hooks (e.g. only grok-4.3 accepts reasoningEffort) plus the
     // OAuth refresh hook for credentials in the auth-profiles store. Declare
@@ -2052,7 +2054,7 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
           ...MANAGED_SKILL_ENTRY_OVERRIDES,
         },
         load: {
-          extraDirs: this.resolveSkillsExtraDirs(),
+          extraDirs: skillsExtraDirs,
           watch: true,
         },
       },
@@ -2136,6 +2138,8 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
                     runtimeVersion: nativeSandboxRuntime.runtimeVersion,
                     protocolVersion: nativeSandboxRuntime.protocolVersion,
                     runtimeEnabled: nativeSandboxRuntimeEnabled,
+                    sandboxDataRoot: nativeSandboxDataRoot,
+                    skillsRoot: skillsExtraDirs[0] ?? '',
                   },
                 },
               }

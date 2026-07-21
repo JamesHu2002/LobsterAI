@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const NATIVE_SANDBOX_PROTOCOL_VERSION: u32 = 1;
-pub const NATIVE_SANDBOX_POLICY_VERSION: &str = "workspace-write-v1";
+pub const NATIVE_SANDBOX_PROTOCOL_VERSION: u32 = 2;
+pub const NATIVE_SANDBOX_POLICY_VERSION: &str = "workspace-write-v2";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,6 +26,7 @@ pub struct SandboxPolicySnapshot {
     pub readable_roots: Vec<String>,
     #[serde(default)]
     pub protected_paths: Vec<String>,
+    pub sandbox_home_dir: String,
     pub scratch_dir: String,
     pub network_mode: NetworkMode,
     #[serde(default)]
@@ -109,7 +110,9 @@ pub struct VerificationReport {
     pub policy_version: String,
     pub capability_sids: Vec<String>,
     pub writable_roots: Vec<String>,
+    pub readable_roots: Vec<String>,
     pub protected_paths: Vec<String>,
+    pub sandbox_home_dir: String,
     pub restricted_token: bool,
     pub write_restricted: bool,
     pub owner_preserved: bool,
@@ -146,6 +149,8 @@ pub enum ProtocolValidationError {
     EmptyWritableRoots,
     #[error("scratchDir must not be empty")]
     EmptyScratchDir,
+    #[error("sandboxHomeDir must not be empty")]
+    EmptySandboxHomeDir,
     #[error("path field is empty or contains a NUL byte: {0}")]
     InvalidPath(String),
     #[error("command argv must not be empty")]
@@ -194,7 +199,11 @@ impl RunRequest {
         if self.policy.scratch_dir.trim().is_empty() {
             return Err(ProtocolValidationError::EmptyScratchDir);
         }
+        if self.policy.sandbox_home_dir.trim().is_empty() {
+            return Err(ProtocolValidationError::EmptySandboxHomeDir);
+        }
         validate_path("cwd", &self.policy.cwd)?;
+        validate_path("sandboxHomeDir", &self.policy.sandbox_home_dir)?;
         validate_path("scratchDir", &self.policy.scratch_dir)?;
         for (index, path) in self.policy.writable_roots.iter().enumerate() {
             validate_path(&format!("writableRoots[{index}]"), path)?;
@@ -271,6 +280,7 @@ mod tests {
                 writable_roots: vec![r"D:\workspace".to_string()],
                 readable_roots: Vec::new(),
                 protected_paths: Vec::new(),
+                sandbox_home_dir: r"D:\sandbox-data\main\home".to_string(),
                 scratch_dir: r"D:\workspace\.scratch".to_string(),
                 network_mode: NetworkMode::Disabled,
                 limits: SandboxResourceLimits::default(),

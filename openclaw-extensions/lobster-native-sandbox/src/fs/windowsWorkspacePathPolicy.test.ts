@@ -96,10 +96,12 @@ function createPolicy(params?: {
   task?: string;
   inspector?: MemoryWindowsPathInspector;
   readRoots?: readonly { id: string; path: string }[];
+  writeRoots?: readonly { id: string; path: string }[];
 }) {
   return createWindowsWorkspacePathPolicy({
     taskWorkspaceDir: params?.task ?? 'C:\\Tasks\\A',
     readRoots: params?.readRoots,
+    writeRoots: params?.writeRoots,
     inspector: params?.inspector,
     protectedUserProfile: 'C:\\Users\\Alice',
     protectedSystemRoot: 'C:\\Windows',
@@ -178,17 +180,28 @@ describe('Native sandbox Windows workspace path policy', () => {
     ).toThrowError(expect.objectContaining({ code: SandboxFsErrorCode.ReadOnlyRoot }));
   });
 
-  test('keeps the task capability when a read root is its ancestor', () => {
+  test('permits reads and mutations in explicit product-owned write roots', () => {
     const policy = createPolicy({
-      readRoots: [{ id: 'task-parent', path: 'C:\\Tasks' }],
+      writeRoots: [
+        { id: 'agent', path: 'C:\\LobsterAI\\workspace-main' },
+        { id: 'sandbox-home', path: 'C:\\LobsterAI\\sandbox-data\\main\\home' },
+      ],
     });
 
-    expect(
-      policy.resolveLexical({
-        filePath: 'C:\\Tasks\\A\\src\\index.ts',
-        intent: SandboxPathIntent.Write,
-      }).rootId,
-    ).toBe('task');
+    expect(policy.resolveLexical({
+      filePath: 'C:\\LobsterAI\\workspace-main\\MEMORY.md',
+      intent: SandboxPathIntent.Write,
+    }).rootId).toBe('agent');
+    expect(policy.resolveLexical({
+      filePath: 'C:\\LobsterAI\\sandbox-data\\main\\home\\cache.json',
+      intent: SandboxPathIntent.Write,
+    }).rootId).toBe('sandbox-home');
+  });
+
+  test('rejects overlap between read-only and writable roots', () => {
+    expect(() => createPolicy({
+      readRoots: [{ id: 'task-parent', path: 'C:\\Tasks' }],
+    })).toThrowError(expect.objectContaining({ code: SandboxFsErrorCode.InvalidPath }));
   });
 
   test('rejects duplicate capability ids instead of resolving an ambiguous root', () => {

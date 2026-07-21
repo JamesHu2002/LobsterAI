@@ -18,6 +18,7 @@ import {
   SandboxPathIntent,
   type SandboxReadRoot,
   SandboxRootAccess,
+  type SandboxWriteRoot,
   type WindowsWorkspacePathPolicy,
 } from './windowsWorkspacePathPolicy.js';
 
@@ -27,6 +28,7 @@ export type SandboxFsBridgeContext = Parameters<
 
 export type CreateWindowsSandboxFsBridgeOptions = {
   sandbox: SandboxFsBridgeContext;
+  writeRoots?: readonly SandboxWriteRoot[];
   readRoots?: readonly SandboxReadRoot[];
   inspector?: WindowsPathInspector;
   io?: SandboxFsIo;
@@ -44,6 +46,7 @@ export function createWindowsSandboxFsBridge(
       options.sandbox.workspaceAccess === 'rw'
         ? SandboxRootAccess.ReadWrite
         : SandboxRootAccess.ReadOnly,
+    writeRoots: options.writeRoots,
     readRoots: options.readRoots,
     inspector: options.inspector,
   });

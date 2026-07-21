@@ -23,6 +23,12 @@
       },
       "runtimeEnabled": {
         "type": "boolean"
+      },
+      "sandboxDataRoot": {
+        "type": "string"
+      },
+      "skillsRoot": {
+        "type": "string"
       }
     },
     "required": [
@@ -30,7 +36,9 @@
       "runtimeKind",
       "runtimeVersion",
       "protocolVersion",
-      "runtimeEnabled"
+      "runtimeEnabled",
+      "sandboxDataRoot",
+      "skillsRoot"
     ]
   }
 }

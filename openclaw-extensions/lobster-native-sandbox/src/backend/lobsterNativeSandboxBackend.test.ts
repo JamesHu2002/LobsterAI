@@ -7,6 +7,16 @@ import { createLobsterNativeSandboxBackendFactory } from './lobsterNativeSandbox
 
 const createHarness = () => {
   const io = {} as SandboxFsIo;
+  const policyContext = {
+    agentWorkspaceDir: 'C:\\openclaw\\workspace-main',
+    sandboxHomeDir: 'C:\\LobsterAI\\sandbox-data\\agents\\main\\home',
+    writableRoots: [
+      { id: 'agent', path: 'C:\\openclaw\\workspace-main' },
+      { id: 'sandbox-home', path: 'C:\\LobsterAI\\sandbox-data\\agents\\main\\home' },
+    ],
+    readableRoots: [{ id: 'skills', path: 'C:\\LobsterAI\\SKILLs' }],
+    protectedPaths: [],
+  };
   const prepareWorkspace = vi.fn(async () => undefined);
   const wrapCommand = vi.fn(async () => ({
     argv: ['D:\\runner.exe', 'run', 'request.json'],
@@ -31,14 +41,23 @@ const createHarness = () => {
   const factory = createLobsterNativeSandboxBackendFactory({
     executor,
     audit: new SandboxAuditRecorder({
-      policyVersion: 'workspace-write-v1',
-      runtimeVersion: '0.1.0',
+      policyVersion: 'workspace-write-v2',
+      runtimeVersion: '0.2.0',
     }),
     runtimeEnabled: true,
     platform: 'win32',
     createFsBridge,
+    resolvePolicyContext: vi.fn(() => policyContext),
   });
-  return { createFsBridge, createFsIo, factory, io, prepareWorkspace, wrapCommand };
+  return {
+    createFsBridge,
+    createFsIo,
+    factory,
+    io,
+    policyContext,
+    prepareWorkspace,
+    wrapCommand,
+  };
 };
 
 describe('lobster native sandbox backend', () => {
@@ -53,7 +72,10 @@ describe('lobster native sandbox backend', () => {
       cfg: {} as never,
     });
 
-    expect(harness.prepareWorkspace).toHaveBeenCalledWith('D:\\project');
+    expect(harness.prepareWorkspace).toHaveBeenCalledWith(
+      'D:\\project',
+      harness.policyContext,
+    );
     await expect(backend.buildExecSpec({
       command: 'npm test',
       workdir: 'D:\\project\\packages\\app',
@@ -66,6 +88,7 @@ describe('lobster native sandbox backend', () => {
     expect(harness.wrapCommand).toHaveBeenCalledWith(expect.objectContaining({
       command: 'npm test',
       workspaceDir: 'D:\\project',
+      policyContext: harness.policyContext,
       cwd: 'D:\\project\\packages\\app',
       sessionKey: 'agent:main:session-1',
     }));
@@ -84,9 +107,11 @@ describe('lobster native sandbox backend', () => {
     expect(harness.createFsIo).toHaveBeenCalledWith({
       workspaceDir: 'D:\\project',
       sessionKey: 'agent:main:session-1',
+      policyContext: harness.policyContext,
     });
     expect(harness.createFsBridge).toHaveBeenCalledWith(expect.objectContaining({
       io: harness.io,
+      policyContext: harness.policyContext,
     }));
   });
 });

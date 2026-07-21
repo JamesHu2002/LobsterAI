@@ -1,7 +1,7 @@
 const en = {
   sandboxTab: 'Sandbox (Test)',
   sandboxTestBadge: 'Experimental',
-  sandboxTestDescription: 'M2 limits writes to the selected task workspace. Network access and reads outside the workspace are not isolated in this test build.',
+  sandboxTestDescription: 'M2.x allows writes to the task workspace, Agent workspace, and an isolated persistent Sandbox home. LobsterAI Skills are readable but not writable.',
   sandboxEnableTitle: 'Enable Sandbox',
   sandboxEnableDescription: 'New tasks use the Windows native runner after activation. Finish active tasks before switching mode or projects.',
   sandboxBackendConnected: 'Enabled',
@@ -49,8 +49,8 @@ const en = {
   sandboxDisabledNotice: 'Sandbox is disabled. New tasks use the existing local execution path.',
   sandboxLastErrorTitle: 'Recent error',
   sandboxNoRecentError: 'No recent errors',
-  sandboxM2BoundaryTitle: 'M2 test boundary',
-  sandboxM2BoundaryDescription: 'This build validates workspace write isolation only. It does not provide network isolation, read isolation, system installation, or production security guarantees.',
+  sandboxM2BoundaryTitle: 'M2.x test boundary',
+  sandboxM2BoundaryDescription: 'This build validates fixed write roots and a read-only Skills root. It does not isolate network access or general reads outside those roots, and is not production ready.',
   sandboxModeStatusLabel: 'Product mode',
   sandboxModeEnabled: 'Enabled',
   sandboxModeDisabled: 'Disabled',
@@ -64,7 +64,7 @@ const en = {
   sandboxCapabilityNotIsolated: 'Not isolated',
   sandboxProductionReady: 'Production ready',
   sandboxInternalTestOnly: 'Internal test only',
-  sandboxUacHint: 'M2 uses the bundled development runner and does not install or repair system components.',
+  sandboxUacHint: 'M2.x uses the bundled development runner and does not install or repair system components.',
 } as const;
 
 type NativeSandboxTranslationKey = keyof typeof en;
@@ -72,7 +72,7 @@ type NativeSandboxTranslationKey = keyof typeof en;
 const zh = {
   sandboxTab: 'Sandbox（测试）',
   sandboxTestBadge: '测试功能',
-  sandboxTestDescription: 'M2 将写入限制在当前任务 workspace 内。本测试版本尚未隔离网络，也未隔离 workspace 外的读取。',
+  sandboxTestDescription: 'M2.x 允许写入任务 workspace、Agent workspace 和独立持久化 Sandbox Home；LobsterAI Skills 可读但不可写。',
   sandboxEnableTitle: '启用 Sandbox',
   sandboxEnableDescription: '启用后，新任务将使用 Windows 原生 runner。切换模式或工程前，请先结束正在运行的任务。',
   sandboxBackendConnected: '已启用',
@@ -120,8 +120,8 @@ const zh = {
   sandboxDisabledNotice: 'Sandbox 已关闭，后续新任务恢复原有实机执行方式。',
   sandboxLastErrorTitle: '最近错误',
   sandboxNoRecentError: '最近没有错误',
-  sandboxM2BoundaryTitle: 'M2 测试边界',
-  sandboxM2BoundaryDescription: '本版本只验证 workspace 写隔离，不提供网络隔离、读取隔离、系统安装或生产级安全保证。',
+  sandboxM2BoundaryTitle: 'M2.x 测试边界',
+  sandboxM2BoundaryDescription: '本版本验证固定写入根和只读 Skills 根；尚未隔离网络或其他目录的普遍读取，也不提供生产级安全保证。',
   sandboxModeStatusLabel: '产品模式',
   sandboxModeEnabled: '已启用',
   sandboxModeDisabled: '未启用',
@@ -135,7 +135,7 @@ const zh = {
   sandboxCapabilityNotIsolated: '未隔离',
   sandboxProductionReady: '生产可用',
   sandboxInternalTestOnly: '仅限内部测试',
-  sandboxUacHint: 'M2 使用随开发版本提供的 runner，不安装或修复系统组件。',
+  sandboxUacHint: 'M2.x 使用随开发版本提供的 runner，不安装或修复系统组件。',
 } satisfies Record<NativeSandboxTranslationKey, string>;
 
 export const nativeSandboxTranslations = { en, zh };

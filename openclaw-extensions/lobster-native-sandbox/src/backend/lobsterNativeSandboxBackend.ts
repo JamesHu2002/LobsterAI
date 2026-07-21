@@ -10,7 +10,10 @@ import type {
 import type { SandboxAuditRecorder } from '../audit/sandboxAuditRecorder.js';
 import { AuditedSandboxFsBridge } from '../fs/auditedSandboxFsBridge.js';
 import type { SandboxFsIo } from '../fs/sandboxFsIo.js';
-import type { NativeSandboxExecutor } from '../runtime/nativeSandboxExecutor.js';
+import type {
+  NativeSandboxExecutor,
+  NativeSandboxPolicyContext,
+} from '../runtime/nativeSandboxExecutor.js';
 import {
   LOBSTER_NATIVE_SANDBOX_BACKEND_ID,
   LOBSTER_NATIVE_WORKSPACE_PATH_SEMANTICS,
@@ -28,6 +31,7 @@ export type LobsterNativeSandboxFsBridgeContext = Parameters<
 export type LobsterNativeSandboxFsBridgeFactory = (params: {
   sandbox: LobsterNativeSandboxFsBridgeContext;
   io: SandboxFsIo;
+  policyContext: NativeSandboxPolicyContext;
 }) => SandboxFsBridge;
 
 export type LobsterNativeSandboxBackendDependencies = {
@@ -35,6 +39,7 @@ export type LobsterNativeSandboxBackendDependencies = {
   executor: NativeSandboxExecutor;
   audit: SandboxAuditRecorder;
   runtimeEnabled: boolean;
+  resolvePolicyContext: (params: CreateSandboxBackendParams) => NativeSandboxPolicyContext;
   platform?: NodeJS.Platform;
 };
 
@@ -46,14 +51,16 @@ export function createLobsterNativeSandboxBackendFactory(
       throw createBackendDisabledError();
     }
     const workdir = resolveTaskWorkspaceDir(params);
-    await dependencies.executor.prepareWorkspace(workdir);
-    return createLobsterNativeSandboxBackend(params, dependencies);
+    const policyContext = dependencies.resolvePolicyContext(params);
+    await dependencies.executor.prepareWorkspace(workdir, policyContext);
+    return createLobsterNativeSandboxBackend(params, dependencies, policyContext);
   };
 }
 
 export function createLobsterNativeSandboxBackend(
   params: CreateSandboxBackendParams,
   dependencies: LobsterNativeSandboxBackendDependencies,
+  policyContext: NativeSandboxPolicyContext = dependencies.resolvePolicyContext(params),
 ): SandboxBackendHandle {
   const platform = dependencies.platform ?? process.platform;
   if (platform !== 'win32') {
@@ -81,6 +88,7 @@ export function createLobsterNativeSandboxBackend(
       const wrapped = await dependencies.executor.wrapCommand({
         command,
         workspaceDir: workdir,
+        policyContext,
         cwd: requestedWorkdir ?? workdir,
         env,
         sessionKey: params.sessionKey,
@@ -99,6 +107,7 @@ export function createLobsterNativeSandboxBackend(
       return dependencies.executor.runIsolatedCommand({
         command: appendCommandArguments(command.script, command.args),
         workspaceDir: workdir,
+        policyContext,
         cwd: workdir,
         stdin: command.stdin,
         allowFailure: command.allowFailure,
@@ -110,8 +119,9 @@ export function createLobsterNativeSandboxBackend(
       const io = dependencies.executor.createFsIo({
         workspaceDir: workdir,
         sessionKey: params.sessionKey,
+        policyContext,
       });
-      const delegate = dependencies.createFsBridge({ sandbox, io });
+      const delegate = dependencies.createFsBridge({ sandbox, io, policyContext });
       return new AuditedSandboxFsBridge({
         delegate,
         audit: dependencies.audit,

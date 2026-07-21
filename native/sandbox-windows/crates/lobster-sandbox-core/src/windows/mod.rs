@@ -25,6 +25,7 @@ use token::RestrictedToken;
 struct PreparedSandbox {
     policy: PreparedPolicy,
     capabilities: Vec<CapabilitySid>,
+    writable_capability_count: usize,
 }
 
 fn prepare(request: &RunRequest) -> SandboxResult<PreparedSandbox> {
@@ -32,22 +33,34 @@ fn prepare(request: &RunRequest) -> SandboxResult<PreparedSandbox> {
         SandboxError::new("protocol-invalid", "validate-request", error.to_string())
     })?;
     let policy = prepare_policy(&request.policy)?;
-    let capabilities = policy
+    let writable_capabilities = policy
         .writable_roots
         .iter()
         .map(|root| CapabilitySid::for_path(root))
         .collect::<SandboxResult<Vec<_>>>()?;
-    apply_policy_acl(&policy, &capabilities)?;
+    let readable_capabilities = policy
+        .readable_roots
+        .iter()
+        .map(|root| CapabilitySid::for_path(root))
+        .collect::<SandboxResult<Vec<_>>>()?;
+    apply_policy_acl(&policy, &writable_capabilities, &readable_capabilities)?;
+    let writable_capability_count = writable_capabilities.len();
+    let mut capabilities = writable_capabilities;
+    capabilities.extend(readable_capabilities);
     Ok(PreparedSandbox {
         policy,
         capabilities,
+        writable_capability_count,
     })
 }
 
 pub fn verify(request: &RunRequest) -> SandboxResult<VerificationReport> {
     let prepared = prepare(request)?;
-    let token = RestrictedToken::create(&prepared.capabilities)?;
-    let diagnostics = token.diagnostics(&prepared.capabilities)?;
+    let (writable_capabilities, readable_capabilities) = prepared
+        .capabilities
+        .split_at(prepared.writable_capability_count);
+    let token = RestrictedToken::create(writable_capabilities, readable_capabilities)?;
+    let diagnostics = token.diagnostics(writable_capabilities, readable_capabilities)?;
     Ok(VerificationReport {
         protocol_version: NATIVE_SANDBOX_PROTOCOL_VERSION,
         policy_version: NATIVE_SANDBOX_POLICY_VERSION.to_string(),
@@ -62,12 +75,19 @@ pub fn verify(request: &RunRequest) -> SandboxResult<VerificationReport> {
             .iter()
             .map(|path| path.display().to_string())
             .collect(),
+        readable_roots: prepared
+            .policy
+            .readable_roots
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect(),
         protected_paths: prepared
             .policy
             .protected_paths
             .iter()
             .map(|path| path.display().to_string())
             .collect(),
+        sandbox_home_dir: prepared.policy.sandbox_home_dir.display().to_string(),
         restricted_token: diagnostics.restricted_sid_count >= prepared.capabilities.len() as u32,
         write_restricted: true,
         owner_preserved: true,
@@ -80,7 +100,10 @@ pub fn verify(request: &RunRequest) -> SandboxResult<VerificationReport> {
 pub fn execute(request: &RunRequest) -> SandboxResult<ExecutionReport> {
     let started_at = Instant::now();
     let prepared = prepare(request)?;
-    let token = RestrictedToken::create(&prepared.capabilities)?;
+    let (writable_capabilities, readable_capabilities) = prepared
+        .capabilities
+        .split_at(prepared.writable_capability_count);
+    let token = RestrictedToken::create(writable_capabilities, readable_capabilities)?;
     let result = run_restricted_process(token.raw(), &prepared.policy, &request.command)?;
     Ok(ExecutionReport {
         protocol_version: NATIVE_SANDBOX_PROTOCOL_VERSION,
@@ -107,10 +130,15 @@ pub fn cleanup(request: &RunRequest) -> SandboxResult<()> {
         SandboxError::new("protocol-invalid", "validate-request", error.to_string())
     })?;
     let policy = prepare_policy(&request.policy)?;
-    let capabilities = policy
+    let writable_capabilities = policy
         .writable_roots
         .iter()
         .map(|root| CapabilitySid::for_path(root))
         .collect::<SandboxResult<Vec<_>>>()?;
-    revoke_policy_acl(&policy, &capabilities)
+    let readable_capabilities = policy
+        .readable_roots
+        .iter()
+        .map(|root| CapabilitySid::for_path(root))
+        .collect::<SandboxResult<Vec<_>>>()?;
+    revoke_policy_acl(&policy, &writable_capabilities, &readable_capabilities)
 }

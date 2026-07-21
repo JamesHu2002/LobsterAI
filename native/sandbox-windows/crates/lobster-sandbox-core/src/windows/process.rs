@@ -396,26 +396,31 @@ fn build_environment_block(command: &SandboxCommand, policy: &PreparedPolicy) ->
         }
     }
     let scratch = policy.scratch_dir.display().to_string();
+    let sandbox_home = policy.sandbox_home_dir.display().to_string();
     environment.insert(
         "APPDATA".to_string(),
         policy
-            .scratch_dir
+            .sandbox_home_dir
             .join(r"AppData\Roaming")
             .display()
             .to_string(),
     );
-    environment.insert("HOME".to_string(), scratch.clone());
+    environment.insert("HOME".to_string(), sandbox_home.clone());
+    if sandbox_home.as_bytes().get(1) == Some(&b':') {
+        environment.insert("HOMEDRIVE".to_string(), sandbox_home[..2].to_string());
+        environment.insert("HOMEPATH".to_string(), sandbox_home[2..].to_string());
+    }
     environment.insert(
         "LOCALAPPDATA".to_string(),
         policy
-            .scratch_dir
+            .sandbox_home_dir
             .join(r"AppData\Local")
             .display()
             .to_string(),
     );
     environment.insert("TEMP".to_string(), scratch.clone());
     environment.insert("TMP".to_string(), scratch.clone());
-    environment.insert("USERPROFILE".to_string(), scratch);
+    environment.insert("USERPROFILE".to_string(), sandbox_home);
     environment.insert("LOBSTER_SANDBOX".to_string(), "1".to_string());
     for (key, value) in &command.env {
         let existing = environment

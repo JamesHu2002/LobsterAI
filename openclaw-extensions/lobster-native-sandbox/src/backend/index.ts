@@ -13,9 +13,11 @@ export function registerLobsterNativeSandboxBackend(
   return registerSandboxBackend(LOBSTER_NATIVE_SANDBOX_BACKEND_ID, {
     factory: createLobsterNativeSandboxBackendFactory({
       ...dependencies,
-      createFsBridge: ({ sandbox, io }) => createWindowsSandboxFsBridge({
+      createFsBridge: ({ sandbox, io, policyContext }) => createWindowsSandboxFsBridge({
         sandbox,
         io,
+        writeRoots: policyContext.writableRoots,
+        readRoots: policyContext.readableRoots,
       }),
     }),
   });

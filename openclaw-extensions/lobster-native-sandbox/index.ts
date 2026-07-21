@@ -11,6 +11,7 @@ import {
   registerLobsterNativeSandboxBackend,
 } from './src/backend/index.js';
 import { WindowsNativeSandboxExecutor } from './src/windows/windowsNativeSandboxExecutor.js';
+import { createWindowsSandboxPolicyContext } from './src/windows/windowsSandboxPolicyContext.js';
 
 type LobsterNativePluginConfig = {
   runtimeExecutablePath: string;
@@ -18,6 +19,8 @@ type LobsterNativePluginConfig = {
   runtimeVersion: string;
   protocolVersion: number;
   runtimeEnabled: boolean;
+  sandboxDataRoot: string;
+  skillsRoot: string;
 };
 
 const readPluginConfig = (
@@ -30,6 +33,10 @@ const readPluginConfig = (
   runtimeVersion: typeof value?.runtimeVersion === 'string' ? value.runtimeVersion : '',
   protocolVersion: typeof value?.protocolVersion === 'number' ? value.protocolVersion : 0,
   runtimeEnabled: value?.runtimeEnabled === true,
+  sandboxDataRoot: typeof value?.sandboxDataRoot === 'string'
+    ? value.sandboxDataRoot.trim()
+    : '',
+  skillsRoot: typeof value?.skillsRoot === 'string' ? value.skillsRoot.trim() : '',
 });
 
 const getErrorCode = (error: unknown): string => {
@@ -64,6 +71,14 @@ export default definePluginEntry({
       executor,
       audit,
       runtimeEnabled: config.runtimeEnabled,
+      resolvePolicyContext: params => createWindowsSandboxPolicyContext({
+        sessionKey: params.sessionKey,
+        agentWorkspaceDir: (
+          params as typeof params & { agentWorkspaceDir?: string }
+        ).agentWorkspaceDir?.trim() || params.workspaceDir,
+        sandboxDataRoot: config.sandboxDataRoot,
+        skillsRoot: config.skillsRoot,
+      }),
     });
     api.registerGatewayMethod(LobsterNativeSandboxGatewayMethod.Status, async ({ params }) => {
       const request = (
@@ -76,7 +91,15 @@ export default definePluginEntry({
           const workspaceDir = typeof request.workspaceDir === 'string'
             ? request.workspaceDir
             : '';
-          await executor.prepareWorkspace(workspaceDir);
+          await executor.prepareWorkspace(
+            workspaceDir,
+            createWindowsSandboxPolicyContext({
+              sessionKey: 'agent:main:sandbox-health-check',
+              agentWorkspaceDir: workspaceDir,
+              sandboxDataRoot: config.sandboxDataRoot,
+              skillsRoot: config.skillsRoot,
+            }),
+          );
         }
         return {
           ok: true,

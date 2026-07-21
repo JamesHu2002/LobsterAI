@@ -9,16 +9,25 @@ import {
   LobsterNativeSandboxBackendErrorCode,
   LobsterNativeSandboxRuntimeState,
 } from '../backend/constants.js';
+import type { NativeSandboxPolicyContext } from '../runtime/nativeSandboxExecutor.js';
 import { WindowsNativeSandboxExecutor } from './windowsNativeSandboxExecutor.js';
 
 const temporaryRoots: string[] = [];
 
+type CapturedRunnerRequest = {
+  policy: {
+    writableRoots: string[];
+  };
+};
+
 const verificationReport = Buffer.from(JSON.stringify({
-  protocolVersion: 1,
-  policyVersion: 'workspace-write-v1',
+  protocolVersion: 2,
+  policyVersion: 'workspace-write-v2',
   capabilitySids: ['S-1-5-21-test'],
   writableRoots: [],
+  readableRoots: [],
   protectedPaths: [],
+  sandboxHomeDir: '',
   restrictedToken: true,
   writeRestricted: true,
   ownerPreserved: true,
@@ -28,7 +37,7 @@ const verificationReport = Buffer.from(JSON.stringify({
 }));
 
 const executionReport = JSON.stringify({
-  protocolVersion: 1,
+  protocolVersion: 2,
   outcome: 'completed',
   exitCode: 0,
   durationMs: 10,
@@ -41,11 +50,33 @@ const createFixture = () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lobster-native-executor-test-'));
   const workspace = path.join(root, 'workspace');
   const otherWorkspace = path.join(root, 'other');
+  const agentWorkspace = path.join(root, 'agent-workspace');
+  const sandboxHome = path.join(root, 'sandbox-data', 'main', 'home');
+  const skillsRoot = path.join(root, 'SKILLs');
   const scratch = path.join(root, 'scratch');
+  const runnerRequests: Array<{ command: string; request: CapturedRunnerRequest }> = [];
   fs.mkdirSync(workspace);
   fs.mkdirSync(otherWorkspace);
+  fs.mkdirSync(agentWorkspace);
+  fs.mkdirSync(skillsRoot);
+  const policyContext: NativeSandboxPolicyContext = {
+    agentWorkspaceDir: agentWorkspace,
+    sandboxHomeDir: sandboxHome,
+    writableRoots: [
+      { id: 'agent', path: agentWorkspace },
+      { id: 'sandbox-home', path: sandboxHome },
+    ],
+    readableRoots: [{ id: 'skills', path: skillsRoot }],
+    protectedPaths: [],
+  };
   temporaryRoots.push(root);
   const invokeRunner = vi.fn(async (args: readonly string[]) => {
+    if (args[1] && fs.existsSync(args[1])) {
+      runnerRequests.push({
+        command: args[0],
+        request: JSON.parse(fs.readFileSync(args[1], 'utf8')) as CapturedRunnerRequest,
+      });
+    }
     if (args[0] === 'verify') {
       return { exitCode: 0, stdout: verificationReport, stderr: Buffer.alloc(0) };
     }
@@ -64,8 +95,8 @@ const createFixture = () => {
     runnerPath: path.join(root, 'lobster-command-runner.exe'),
     runtimeEnabled: true,
     audit: new SandboxAuditRecorder({
-      policyVersion: 'workspace-write-v1',
-      runtimeVersion: '0.1.0',
+      policyVersion: 'workspace-write-v2',
+      runtimeVersion: '0.2.0',
     }),
     platform: 'win32',
     pathExists: () => true,
@@ -74,7 +105,19 @@ const createFixture = () => {
     verifyWriteBoundary: async () => undefined,
     now: () => 100,
   });
-  return { executor, invokeRunner, otherWorkspace, scratch, workspace };
+  return {
+    agentWorkspace,
+    executor,
+    invokeRunner,
+    otherWorkspace,
+    policyContext,
+    root,
+    runnerRequests,
+    sandboxHome,
+    scratch,
+    skillsRoot,
+    workspace,
+  };
 };
 
 afterEach(() => {
@@ -85,10 +128,10 @@ afterEach(() => {
 
 describe('WindowsNativeSandboxExecutor', () => {
   test('prepares one workspace and reports the honest M2 capability boundary', async () => {
-    const { executor, invokeRunner, workspace } = createFixture();
+    const { executor, invokeRunner, policyContext, workspace } = createFixture();
 
-    await executor.prepareWorkspace(workspace);
-    await executor.prepareWorkspace(workspace.toUpperCase());
+    await executor.prepareWorkspace(workspace, policyContext);
+    await executor.prepareWorkspace(workspace.toUpperCase(), policyContext);
 
     expect(invokeRunner).toHaveBeenCalledTimes(1);
     expect(executor.getStatus()).toMatchObject({
@@ -102,11 +145,19 @@ describe('WindowsNativeSandboxExecutor', () => {
   });
 
   test('builds a runner request sidecar and filters host-owned environment values', async () => {
-    const { executor, workspace } = createFixture();
+    const {
+      agentWorkspace,
+      executor,
+      policyContext,
+      sandboxHome,
+      skillsRoot,
+      workspace,
+    } = createFixture();
 
     const wrapped = await executor.wrapCommand({
       command: 'npm test',
       workspaceDir: workspace,
+      policyContext,
       env: {
         CI: '1',
         PATH: 'C:\\untrusted',
@@ -124,10 +175,16 @@ describe('WindowsNativeSandboxExecutor', () => {
       wrapped.token.reportPath,
     ]);
     expect(request.policy).toMatchObject({
-      policyVersion: 'workspace-write-v1',
+      policyVersion: 'workspace-write-v2',
       agentId: 'main',
       cwd: fs.realpathSync.native(workspace),
-      writableRoots: [fs.realpathSync.native(workspace)],
+      writableRoots: [
+        fs.realpathSync.native(workspace),
+        fs.realpathSync.native(agentWorkspace),
+        fs.realpathSync.native(sandboxHome),
+      ],
+      readableRoots: [fs.realpathSync.native(skillsRoot)],
+      sandboxHomeDir: fs.realpathSync.native(sandboxHome),
       networkMode: 'disabled',
     });
     expect(request.command.env).toEqual({ CI: '1' });
@@ -144,11 +201,12 @@ describe('WindowsNativeSandboxExecutor', () => {
   });
 
   test('runs captured helper commands without leaking the runner report into stderr', async () => {
-    const { executor, workspace } = createFixture();
+    const { executor, policyContext, workspace } = createFixture();
 
     const result = await executor.runIsolatedCommand({
       command: 'Write-Output ok',
       workspaceDir: workspace,
+      policyContext,
       sessionKey: 'agent:main:session-2',
     });
 
@@ -161,24 +219,59 @@ describe('WindowsNativeSandboxExecutor', () => {
   });
 
   test('rejects a second workspace until the first runtime is reset', async () => {
-    const { executor, otherWorkspace, workspace } = createFixture();
-    await executor.prepareWorkspace(workspace);
+    const { executor, otherWorkspace, policyContext, workspace } = createFixture();
+    await executor.prepareWorkspace(workspace, policyContext);
 
-    await expect(executor.prepareWorkspace(otherWorkspace)).rejects.toMatchObject({
+    await expect(executor.prepareWorkspace(otherWorkspace, policyContext)).rejects.toMatchObject({
       code: LobsterNativeSandboxBackendErrorCode.WorkspaceConflict,
     });
 
     await executor.reset();
-    await executor.prepareWorkspace(otherWorkspace);
+    await executor.prepareWorkspace(otherWorkspace, policyContext);
     expect(executor.getStatus().state).toBe(LobsterNativeSandboxRuntimeState.Ready);
   });
 
+  test('keeps the writable-root union for complete ACL cleanup', async () => {
+    const {
+      executor,
+      policyContext,
+      root,
+      runnerRequests,
+      workspace,
+    } = createFixture();
+    await executor.prepareWorkspace(workspace, policyContext);
+
+    const secondAgentWorkspace = path.join(root, 'agent-workspace-2');
+    const secondSandboxHome = path.join(root, 'sandbox-data', 'agent-2', 'home');
+    fs.mkdirSync(secondAgentWorkspace);
+    await executor.prepareWorkspace(workspace, {
+      ...policyContext,
+      agentWorkspaceDir: secondAgentWorkspace,
+      sandboxHomeDir: secondSandboxHome,
+      writableRoots: [
+        { id: 'agent', path: secondAgentWorkspace },
+        { id: 'sandbox-home', path: secondSandboxHome },
+      ],
+    });
+
+    await executor.reset();
+    const cleanup = runnerRequests.findLast(request => request.command === 'cleanup');
+    expect(cleanup?.request.policy.writableRoots).toEqual(expect.arrayContaining([
+      fs.realpathSync.native(workspace),
+      fs.realpathSync.native(policyContext.agentWorkspaceDir),
+      fs.realpathSync.native(policyContext.sandboxHomeDir),
+      fs.realpathSync.native(secondAgentWorkspace),
+      fs.realpathSync.native(secondSandboxHome),
+    ]));
+  });
+
   test('rejects non-empty stdin instead of silently running it on the host', async () => {
-    const { executor, workspace } = createFixture();
+    const { executor, policyContext, workspace } = createFixture();
 
     await expect(executor.runIsolatedCommand({
       command: 'more',
       workspaceDir: workspace,
+      policyContext,
       stdin: 'secret',
     })).rejects.toMatchObject({
       code: LobsterNativeSandboxBackendErrorCode.InteractiveInputUnsupported,

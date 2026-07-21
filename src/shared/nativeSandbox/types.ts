@@ -118,6 +118,7 @@ export interface NativeSandboxPolicySnapshot {
   writableRoots: string[];
   readableRoots: string[];
   protectedPaths: string[];
+  sandboxHomeDir: string;
   scratchDir: string;
   networkMode: NativeSandboxNetworkMode;
   limits: NativeSandboxResourceLimits;

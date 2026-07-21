@@ -30,6 +30,17 @@ const createBackendParams = () => ({
   },
 });
 
+const policyContext = {
+  agentWorkspaceDir: 'C:\\state\\workspace-main',
+  sandboxHomeDir: 'C:\\state\\sandbox-data\\agents\\main\\home',
+  writableRoots: [
+    { id: 'agent', path: 'C:\\state\\workspace-main' },
+    { id: 'sandbox-home', path: 'C:\\state\\sandbox-data\\agents\\main\\home' },
+  ],
+  readableRoots: [{ id: 'skills', path: 'C:\\state\\SKILLs' }],
+  protectedPaths: [],
+};
+
 const createDependencies = (
   overrides: Partial<LobsterNativeSandboxBackendDependencies> = {},
 ) => {
@@ -64,6 +75,7 @@ const createDependencies = (
     }),
     executor,
     createFsBridge,
+    resolvePolicyContext: () => policyContext,
     ...overrides,
   };
   return {
@@ -97,7 +109,10 @@ describe('lobster-native sandbox backend', () => {
 
     const backend = await factory(createBackendParams() as never);
 
-    expect(harness.prepareWorkspace).toHaveBeenCalledWith('C:\\work\\task');
+    expect(harness.prepareWorkspace).toHaveBeenCalledWith(
+      'C:\\work\\task',
+      policyContext,
+    );
     expect(backend.id).toBe(LOBSTER_NATIVE_SANDBOX_BACKEND_ID);
   });
 
@@ -124,6 +139,7 @@ describe('lobster-native sandbox backend', () => {
     expect(harness.createFsBridge).toHaveBeenCalledWith({
       sandbox,
       io: expect.any(Object),
+      policyContext,
     });
   });
 
@@ -146,6 +162,7 @@ describe('lobster-native sandbox backend', () => {
     expect(harness.wrapCommand).toHaveBeenCalledWith({
       command: 'npm test',
       workspaceDir: 'C:\\work\\task',
+      policyContext,
       cwd: 'C:\\work\\task',
       env: { PATH: 'C:\\host-path', CI: '1' },
       sessionKey: 'agent:main:session:one',

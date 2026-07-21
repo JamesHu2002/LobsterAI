@@ -21,22 +21,36 @@ describe.skipIf(!canRun)('WindowsNativeSandboxExecutor smoke', () => {
   test('enforces the same write boundary for shell and file bridge operations', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lobster-native-m2-smoke-'));
     const workspace = path.join(root, 'workspace');
+    const agentWorkspace = path.join(root, 'agent-workspace');
+    const sandboxHome = path.join(root, 'sandbox-data', 'main', 'home');
     const outside = path.join(root, 'outside');
     fs.mkdirSync(workspace);
+    fs.mkdirSync(agentWorkspace);
     fs.mkdirSync(outside);
+    const policyContext = {
+      agentWorkspaceDir: agentWorkspace,
+      sandboxHomeDir: sandboxHome,
+      writableRoots: [
+        { id: 'agent', path: agentWorkspace },
+        { id: 'sandbox-home', path: sandboxHome },
+      ],
+      readableRoots: [],
+      protectedPaths: [],
+    };
     const executor = new WindowsNativeSandboxExecutor({
       runnerPath,
       runtimeEnabled: true,
       audit: new SandboxAuditRecorder({
-        policyVersion: 'workspace-write-v1',
-        runtimeVersion: '0.1.0',
+        policyVersion: 'workspace-write-v2',
+        runtimeVersion: '0.2.0',
       }),
     });
     try {
-      await executor.prepareWorkspace(workspace);
+      await executor.prepareWorkspace(workspace, policyContext);
       const shellInside = await executor.runIsolatedCommand({
         command: 'Set-Content -LiteralPath shell-inside.txt -Value ok',
         workspaceDir: workspace,
+        policyContext,
         sessionKey: 'agent:main:m2-smoke',
       });
       expect(shellInside.code).toBe(0);
@@ -46,6 +60,7 @@ describe.skipIf(!canRun)('WindowsNativeSandboxExecutor smoke', () => {
       const shellOutside = await executor.runIsolatedCommand({
         command: `$ErrorActionPreference='Stop'; Set-Content -LiteralPath '${escapedPath}' -Value escape`,
         workspaceDir: workspace,
+        policyContext,
         sessionKey: 'agent:main:m2-smoke',
         allowFailure: true,
       });
@@ -55,6 +70,7 @@ describe.skipIf(!canRun)('WindowsNativeSandboxExecutor smoke', () => {
       const io = executor.createFsIo({
         workspaceDir: workspace,
         sessionKey: 'agent:main:m2-smoke',
+        policyContext,
       });
       await io.writeFileAtomic({
         filePath: path.join(workspace, 'file-tool-inside.txt'),
@@ -73,5 +89,5 @@ describe.skipIf(!canRun)('WindowsNativeSandboxExecutor smoke', () => {
       await executor.reset().catch(() => undefined);
       fs.rmSync(root, { recursive: true, force: true });
     }
-  }, 30_000);
+  }, 60_000);
 });

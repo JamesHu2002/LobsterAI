@@ -240,12 +240,17 @@ describe('OpenClawConfigSync runtime config output', () => {
     expect(config.plugins.entries['lobster-native-sandbox']).toMatchObject({
       enabled: true,
       config: {
-        protocolVersion: 1,
+        protocolVersion: 2,
         runtimeEnabled: true,
         runtimeKind: 'native-windows',
-        runtimeVersion: '0.1.0',
+        runtimeVersion: '0.2.0',
+        sandboxDataRoot: path.join(os.tmpdir(), 'sandbox-data'),
       },
     });
+    expect(config.plugins.entries['lobster-native-sandbox'].config.skillsRoot)
+      .toBe(fs.existsSync(path.join(os.tmpdir(), 'SKILLs'))
+        ? path.join(os.tmpdir(), 'SKILLs')
+        : '');
     expect(config.plugins.entries['lobster-native-sandbox'].config.runtimeExecutablePath)
       .toMatch(/[\\/]native[\\/]sandbox-windows[\\/]target[\\/]release[\\/]lobster-command-runner\.exe$/);
     expect(config.plugins.allow).toContain('lobster-native-sandbox');

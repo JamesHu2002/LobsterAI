@@ -25,10 +25,15 @@ import type {
   NativeSandboxCommandToken,
   NativeSandboxExecutor,
   NativeSandboxExecutorStatus,
+  NativeSandboxPolicyContext,
   NativeSandboxShell,
   NativeSandboxStagedInput,
   NativeSandboxWrappedCommand,
 } from '../runtime/nativeSandboxExecutor.js';
+import {
+  type PreparedNativeSandboxPolicyContext,
+  WindowsNativePolicyRegistry,
+} from './windowsNativePolicyRegistry.js';
 
 const WINDOWS_ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const DEFAULT_TIMEOUT_MS = 3_600_000;
@@ -68,6 +73,10 @@ interface WindowsNativeRunnerResult {
 interface WindowsNativeVerificationReport {
   protocolVersion: number;
   policyVersion: string;
+  writableRoots: string[];
+  readableRoots: string[];
+  protectedPaths: string[];
+  sandboxHomeDir: string;
   restrictedToken: boolean;
   writeRestricted: boolean;
   ownerPreserved: boolean;
@@ -94,6 +103,7 @@ interface WindowsNativeRunRequest {
     writableRoots: string[];
     readableRoots: string[];
     protectedPaths: string[];
+    sandboxHomeDir: string;
     scratchDir: string;
     networkMode: 'disabled';
     limits: {
@@ -209,6 +219,7 @@ export class WindowsNativeSandboxExecutor implements NativeSandboxExecutor {
   private state: LobsterNativeSandboxRuntimeStateValue;
   private workspaceDir: string | null = null;
   private scratchDir: string | null = null;
+  private readonly policyRegistry = new WindowsNativePolicyRegistry();
   private initializationFlight: Promise<void> | null = null;
   private resetFlight: Promise<void> | null = null;
   private readonly activeCommandIds = new Set<string>();
@@ -248,25 +259,44 @@ export class WindowsNativeSandboxExecutor implements NativeSandboxExecutor {
     };
   }
 
-  createFsIo(params: { workspaceDir: string; sessionKey: string }): SandboxFsIo {
+  createFsIo(params: {
+    workspaceDir: string;
+    sessionKey: string;
+    policyContext?: NativeSandboxPolicyContext;
+  }): SandboxFsIo {
     return new NativeSandboxFsIo({
       executor: this,
       workspaceDir: params.workspaceDir,
       sessionKey: params.sessionKey,
+      policyContext: params.policyContext,
     });
   }
 
-  async prepareWorkspace(rawWorkspaceDir: string): Promise<void> {
+  async prepareWorkspace(
+    rawWorkspaceDir: string,
+    rawPolicyContext?: NativeSandboxPolicyContext,
+  ): Promise<void> {
     this.assertRuntimeAvailable();
     const workspaceDir = this.validateWorkspace(rawWorkspaceDir);
+    const policyContext = rawPolicyContext
+      ? this.policyRegistry.prepare(rawPolicyContext)
+      : undefined;
     if (this.workspaceDir && this.state === LobsterNativeSandboxRuntimeState.Ready) {
       this.assertSameWorkspace(workspaceDir);
+      if (policyContext) this.policyRegistry.register(policyContext);
       return;
     }
     if (this.initializationFlight) {
       await this.initializationFlight;
       this.assertSameWorkspace(workspaceDir);
+      if (policyContext) this.policyRegistry.register(policyContext);
       return;
+    }
+    if (!policyContext) {
+      throw new LobsterNativeSandboxBackendError(
+        LobsterNativeSandboxBackendErrorCode.RuntimeInitializationFailed,
+        'Native Sandbox policy roots are required during workspace initialization.',
+      );
     }
 
     this.state = LobsterNativeSandboxRuntimeState.Initializing;
@@ -279,11 +309,13 @@ export class WindowsNativeSandboxExecutor implements NativeSandboxExecutor {
         fs.mkdirSync(scratchDir, { recursive: true });
         this.workspaceDir = workspaceDir;
         this.scratchDir = scratchDir;
+        this.policyRegistry.register(policyContext);
         const request = this.createRequest({
           commandArgv: ['cmd.exe', '/d', '/c', 'exit 0'],
           cwd: workspaceDir,
           env: {},
           sessionKey: 'm2-prepare',
+          policyContext,
         });
         verificationRequestPath = this.writeJsonArtifact('verify', request);
         const result = await this.requireInvoker()(
@@ -328,6 +360,7 @@ export class WindowsNativeSandboxExecutor implements NativeSandboxExecutor {
         if (scratchDir) fs.rmSync(scratchDir, { recursive: true, force: true });
         this.workspaceDir = null;
         this.scratchDir = null;
+        this.policyRegistry.clear();
         this.state = LobsterNativeSandboxRuntimeState.Error;
         this.lastErrorCode = getErrorCode(error);
         this.options.audit.record({
@@ -356,13 +389,14 @@ export class WindowsNativeSandboxExecutor implements NativeSandboxExecutor {
   async wrapCommand(params: {
     command: string;
     workspaceDir: string;
+    policyContext?: NativeSandboxPolicyContext;
     cwd?: string;
     env?: Record<string, string>;
     signal?: AbortSignal;
     sessionKey?: string;
     binShell?: NativeSandboxShell;
   }): Promise<NativeSandboxWrappedCommand> {
-    await this.prepareWorkspace(params.workspaceDir);
+    await this.prepareWorkspace(params.workspaceDir, params.policyContext);
     if (params.signal?.aborted) {
       throw new LobsterNativeSandboxBackendError(
         LobsterNativeSandboxBackendErrorCode.CommandExecutionFailed,
@@ -394,6 +428,7 @@ export class WindowsNativeSandboxExecutor implements NativeSandboxExecutor {
         cwd,
         env: this.filterChildEnvironment(params.env ?? {}),
         sessionKey: params.sessionKey,
+        policyContext: this.policyRegistry.require(params.policyContext),
       });
       token.requestPath = this.writeJsonArtifact('request', request);
       token.reportPath = this.reserveArtifactPath('report');
@@ -483,6 +518,7 @@ export class WindowsNativeSandboxExecutor implements NativeSandboxExecutor {
   async runIsolatedCommand(params: {
     command: string;
     workspaceDir: string;
+    policyContext?: NativeSandboxPolicyContext;
     cwd?: string;
     env?: Record<string, string>;
     stdin?: Buffer | string;
@@ -559,11 +595,13 @@ export class WindowsNativeSandboxExecutor implements NativeSandboxExecutor {
           cwd: workspaceDir,
           env: {},
           sessionKey: 'm2-cleanup',
+          policyContext: this.policyRegistry.createCleanupContext(),
         });
         cleanupRequestPath = this.writeJsonArtifact('cleanup', request);
         await this.cleanupPolicy(cleanupRequestPath, workspaceDir);
         this.workspaceDir = null;
         this.scratchDir = null;
+        this.policyRegistry.clear();
         this.activeCommandIds.clear();
         this.lastErrorCode = undefined;
         this.networkIsolated = false;
@@ -707,7 +745,12 @@ export class WindowsNativeSandboxExecutor implements NativeSandboxExecutor {
     cwd: string;
     env: Record<string, string>;
     sessionKey?: string;
+    policyContext: PreparedNativeSandboxPolicyContext;
   }): WindowsNativeRunRequest {
+    const writableRoots = this.policyRegistry.uniquePaths([
+      this.requireWorkspace(),
+      ...params.policyContext.writableRoots.map(root => root.path),
+    ]);
     return {
       protocolVersion: LOBSTER_NATIVE_PROTOCOL_VERSION,
       policy: {
@@ -715,9 +758,12 @@ export class WindowsNativeSandboxExecutor implements NativeSandboxExecutor {
         taskId: deriveTaskId(params.sessionKey),
         agentId: deriveAgentId(params.sessionKey),
         cwd: params.cwd,
-        writableRoots: [this.requireWorkspace()],
-        readableRoots: [],
-        protectedPaths: [],
+        writableRoots,
+        readableRoots: this.policyRegistry.uniquePaths(
+          params.policyContext.readableRoots.map(root => root.path),
+        ),
+        protectedPaths: this.policyRegistry.uniquePaths(params.policyContext.protectedPaths),
+        sandboxHomeDir: params.policyContext.sandboxHomeDir,
         scratchDir: this.requireScratch(),
         networkMode: 'disabled',
         limits: {
@@ -816,6 +862,10 @@ export class WindowsNativeSandboxExecutor implements NativeSandboxExecutor {
     if (
       report.protocolVersion !== LOBSTER_NATIVE_PROTOCOL_VERSION
       || report.policyVersion !== LOBSTER_NATIVE_POLICY_VERSION
+      || !Array.isArray(report.writableRoots)
+      || !Array.isArray(report.readableRoots)
+      || !Array.isArray(report.protectedPaths)
+      || typeof report.sandboxHomeDir !== 'string'
       || typeof report.networkIsolated !== 'boolean'
       || typeof report.readIsolated !== 'boolean'
       || typeof report.productionReady !== 'boolean'
@@ -901,6 +951,7 @@ export class WindowsNativeSandboxExecutor implements NativeSandboxExecutor {
       cwd: params.cwd,
       env: {},
       sessionKey: params.sessionKey,
+      policyContext: this.policyRegistry.require(),
     });
     const requestPath = this.writeJsonArtifact('probe-request', request);
     const reportPath = this.reserveArtifactPath('probe-report');

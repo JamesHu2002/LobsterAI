@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import type {
   NativeSandboxExecutor,
+  NativeSandboxPolicyContext,
   NativeSandboxShell,
 } from '../runtime/nativeSandboxExecutor.js';
 import {
@@ -251,6 +252,7 @@ export class NativeSandboxFsIo implements SandboxFsIo {
       executor: NativeSandboxExecutor;
       workspaceDir: string;
       sessionKey: string;
+      policyContext?: NativeSandboxPolicyContext;
     },
   ) {}
 
@@ -371,6 +373,7 @@ export class NativeSandboxFsIo implements SandboxFsIo {
       const result = await this.options.executor.runIsolatedCommand({
         command: buildFileHelperEncodedScript(stagedRequest.filePath),
         workspaceDir: this.options.workspaceDir,
+        policyContext: this.options.policyContext,
         cwd: this.options.workspaceDir,
         signal: params.signal,
         allowFailure: true,

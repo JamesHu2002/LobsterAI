@@ -26,6 +26,8 @@ const DISABLE_MAX_PRIVILEGE: u32 = 0x01;
 const LUA_TOKEN: u32 = 0x04;
 const WRITE_RESTRICTED: u32 = 0x08;
 const GENERIC_ALL: u32 = 0x1000_0000;
+const GENERIC_READ: u32 = 0x8000_0000;
+const GENERIC_EXECUTE: u32 = 0x2000_0000;
 const SE_PRIVILEGE_ENABLED: u32 = 0x0000_0002;
 const SE_GROUP_LOGON_ID: u32 = 0xC000_0000;
 
@@ -52,8 +54,11 @@ pub struct TokenDiagnostics {
 }
 
 impl RestrictedToken {
-    pub fn create(capabilities: &[CapabilitySid]) -> SandboxResult<Self> {
-        if capabilities.is_empty() {
+    pub fn create(
+        writable_capabilities: &[CapabilitySid],
+        readable_capabilities: &[CapabilitySid],
+    ) -> SandboxResult<Self> {
+        if writable_capabilities.is_empty() && readable_capabilities.is_empty() {
             return Err(SandboxError::new(
                 "token-create-failed",
                 "create-token",
@@ -68,8 +73,9 @@ impl RestrictedToken {
             Sid: admin_sid.as_ptr() as *mut c_void,
             Attributes: 0,
         }];
-        let mut restricting = capabilities
+        let mut restricting = writable_capabilities
             .iter()
+            .chain(readable_capabilities)
             .map(|capability| SID_AND_ATTRIBUTES {
                 Sid: capability.as_ptr(),
                 Attributes: 0,
@@ -118,7 +124,7 @@ impl RestrictedToken {
             "create-token",
             "CreateRestrictedToken returned an invalid handle",
         )?;
-        set_default_dacl(handle.raw(), capabilities)?;
+        set_default_dacl(handle.raw(), writable_capabilities, readable_capabilities)?;
         enable_traverse_privilege(handle.raw())?;
         Ok(Self { handle })
     }
@@ -127,11 +133,15 @@ impl RestrictedToken {
         self.handle.raw()
     }
 
-    pub fn diagnostics(&self, capabilities: &[CapabilitySid]) -> SandboxResult<TokenDiagnostics> {
+    pub fn diagnostics(
+        &self,
+        writable_capabilities: &[CapabilitySid],
+        readable_capabilities: &[CapabilitySid],
+    ) -> SandboxResult<TokenDiagnostics> {
         let groups = token_information(self.raw(), TokenRestrictedSids)?;
         let token_groups = unsafe { &*(groups.as_ptr() as *const TOKEN_GROUPS) };
         let count = token_groups.GroupCount;
-        for capability in capabilities {
+        for capability in writable_capabilities.iter().chain(readable_capabilities) {
             let present = (0..count as usize).any(|index| {
                 let entry = unsafe { token_groups.Groups.as_ptr().add(index).read() };
                 unsafe { EqualSid(entry.Sid, capability.as_ptr()) != 0 }
@@ -211,18 +221,32 @@ fn well_known_sid(kind: i32) -> SandboxResult<Vec<u8>> {
     Ok(sid)
 }
 
-fn set_default_dacl(token: HANDLE, capabilities: &[CapabilitySid]) -> SandboxResult<()> {
+fn set_default_dacl(
+    token: HANDLE,
+    writable_capabilities: &[CapabilitySid],
+    readable_capabilities: &[CapabilitySid],
+) -> SandboxResult<()> {
     let user_buffer = token_information(token, TokenUser)?;
     let token_user = unsafe { &*(user_buffer.as_ptr() as *const TOKEN_USER) };
     let mut logon_sid = get_logon_sid(token)?;
-    let mut trustees = Vec::with_capacity(capabilities.len() + 2);
-    trustees.push(token_user.User.Sid);
-    trustees.push(logon_sid.as_mut_ptr() as *mut c_void);
-    trustees.extend(capabilities.iter().map(CapabilitySid::as_ptr));
+    let mut trustees =
+        Vec::with_capacity(writable_capabilities.len() + readable_capabilities.len() + 2);
+    trustees.push((token_user.User.Sid, GENERIC_ALL));
+    trustees.push((logon_sid.as_mut_ptr() as *mut c_void, GENERIC_ALL));
+    trustees.extend(
+        writable_capabilities
+            .iter()
+            .map(|capability| (capability.as_ptr(), GENERIC_ALL)),
+    );
+    trustees.extend(
+        readable_capabilities
+            .iter()
+            .map(|capability| (capability.as_ptr(), GENERIC_READ | GENERIC_EXECUTE)),
+    );
     let mut entries = trustees
         .into_iter()
-        .map(|sid| EXPLICIT_ACCESS_W {
-            grfAccessPermissions: GENERIC_ALL,
+        .map(|(sid, access)| EXPLICIT_ACCESS_W {
+            grfAccessPermissions: access,
             grfAccessMode: GRANT_ACCESS,
             grfInheritance: 0,
             Trustee: TRUSTEE_W {

@@ -4,9 +4,9 @@
 >
 > 全面修订：2026-07-20
 >
-> 实施更新：2026-07-21
+> 实施更新：2026-07-21（M2.x 固定权限根方案）
 >
-> 当前状态：M0、M1 已完成；M2 已实施，待端侧验收；Windows 优先，macOS 预留
+> 当前状态：M0、M1、M2 已完成；M2.x 已实施，待端侧验收；Windows 优先，macOS 预留
 >
 > 适用范围：LobsterAI、内置 OpenClaw runtime、Windows 原生执行后端
 >
@@ -24,7 +24,7 @@
 2. 用户可以直接选择已有工程目录，不要求复制工程或新建“特殊权限目录”。
 3. 沙箱关闭时，原有实机执行路径和行为保持不变。
 4. 沙箱开启后，命令及其子进程的写入范围由操作系统强制限制。
-5. OpenClaw 的结构化文件工具与 shell 命令使用同一份 workspace 策略。
+5. OpenClaw 的结构化文件工具与 shell 命令使用同一组由产品声明的固定权限根。
 6. 网络默认关闭；后续开放时必须通过显式策略，而不是由命令自行决定。
 7. 安装、配置、执行、拒绝、审批和异常均有产品级审计记录。
 8. 任一安全组件异常时失败关闭，不自动退回无沙箱实机执行。
@@ -52,7 +52,7 @@
 
 M3-M5 完成后的 Windows Beta 首发版，其核心安全承诺是：
 
-> 沙箱命令及其子进程只能写入本次任务明确授权的 workspace、必要的受控临时目录及少量声明式运行目录；不能写入其他工程目录、用户目录或系统目录。
+> 沙箱命令及其子进程只能写入产品明确授权的任务 workspace、Agent workspace、持久 Sandbox Home 和受控临时目录；不能写入其他工程目录、真实用户配置目录或系统目录。
 
 同时保证：
 
@@ -64,7 +64,7 @@ M3-M5 完成后的 Windows Beta 首发版，其核心安全承诺是：
 - 沙箱启动失败、运行时损坏、版本不兼容或健康检查失败时拒绝执行；
 - 用户关闭沙箱后恢复原有实机执行行为。
 
-M2 只是内部联调版，不满足本节的网络隔离、安装态身份、签名与正式发布承诺；其实际边界以第 19 节为准。
+M2/M2.x 只是内部联调版，不满足本节的网络隔离、安装态身份、签名与正式发布承诺；其实际边界以第 19 节和第 19A 节为准。
 
 ### 2.3 第一版不承诺什么
 
@@ -84,15 +84,16 @@ M2 只是内部联调版，不满足本节的网络隔离、安装态身份、�
 
 ### 2.4 多 workspace 的目标变化
 
-旧方案倾向于让一个长期运行的 sandbox session 持有多个 workspace 的权限并集。本版不再接受这一限制。
+为降低首版实现和长期维护复杂度，后续多 workspace 采用“产品明确声明、运行期可形成权限并集”的折中方向：
 
-新方案以“每次命令、每个任务显式授予根目录能力”为目标：
+- `agentWorkspaceDir`、`taskWorkspaceDir`、Sandbox Home 和只读 Skills 仍分别建模；
+- M2.x 仍只允许一个活动的用户工程 workspace；
+- 后续允许多个用户工程并发时，可以把当前启用任务涉及的 workspace 合成可见、可审计的授权并集；
+- 并集内的任务不承诺彼此形成强隔离，但任何命令仍不得写出产品声明的并集；
+- 结构化文件桥继续按当前任务上下文做更窄的路径判断，不能把 OS 层权限并集当作默认文件工具范围；
+- 权限并集的内容、增加、移除和异常恢复必须可诊断、可审计。
 
-- 任务 A 只获得 workspace A 的写能力；
-- 任务 B 只获得 workspace B 的写能力；
-- 两者可以并发；
-- A 不能因为 B 正在运行而获得 workspace B 的写权限；
-- agent 内部 workspace 与用户工程 workspace 分别建模，不混为一个全局根目录。
+这是明确的安全性与可维护性取舍：首版优先保证“不能写到 Lobster 未授权的目录”，不把“两个同时运行的已授权工程彼此隔离”作为阻塞目标。
 
 ## 3. 用户诉求与典型场景
 
@@ -139,7 +140,7 @@ D:\projects\demo-app
 同一任务应拒绝：
 
 - `Set-Content C:\Users\<user>\Desktop\secret.txt ...`；
-- 修改另一个工程 `D:\projects\finance-app`；
+- 修改未出现在当前产品授权集合中的另一个工程 `D:\projects\finance-app`；
 - 通过 `..\..\`、junction 或符号链接逃逸；
 - 先启动 PowerShell，再由 PowerShell 启动 Python 改写 workspace 外文件；
 - 修改 LobsterAI 的安装目录或 sandbox runtime；
@@ -156,10 +157,11 @@ D:\projects\demo-app
 
 预期：
 
-- A 可以写 `frontend`，不能写 `backend`；
-- B 可以写 `backend`，不能写 `frontend`；
+- 产品明确展示活动授权并集包含 `frontend` 和 `backend`；
+- A/B 均可正常写各自工程；若 shell 获得并集能力，则不承诺 A 与 B 彼此强隔离；
+- A/B 均不能写未授权的第三个工程；
 - 两个任务都可以读取其运行所需的系统程序和依赖；
-- 一个任务结束后，其 Capability 授权被回收或进入可审计的缓存生命周期；
+- 一个任务结束后，其 Capability 引用被回收或进入可审计的缓存生命周期；
 - 两个任务的审计记录可分别归属到对应 session、agent 和 workspace。
 
 ## 4. 术语与目录语义
@@ -213,9 +215,30 @@ D:\projects\demo-app
 - 临时文件；
 - shell 重定向；
 - 编译或工具链中间文件；
-- HOME/TEMP 等环境变量的受控映射。
+- TEMP/TMP 等临时环境变量的受控映射。
 
 任务结束后按策略清理；异常退出时由恢复流程回收。
+
+### 4.6 `sandboxHomeDir`
+
+`sandboxHomeDir` 是由 LobsterAI 创建并持久化的每 Agent 沙箱用户目录，用于工具缓存、用户级配置以及需要跨任务保留的轻量状态。
+
+Windows M2.x 将以下环境变量映射到该目录，而不暴露真实用户目录：
+
+- `HOME`、`USERPROFILE`、`HOMEDRIVE`、`HOMEPATH` -> `sandboxHomeDir` 对应语义
+- `APPDATA` -> `sandboxHomeDir/AppData/Roaming`
+- `LOCALAPPDATA` -> `sandboxHomeDir/AppData/Local`
+
+`TEMP`、`TMP` 仍指向可丢弃的 `scratchDir`。Sandbox Home 是明确的可写根，但不加入命令搜索路径，也不等同于 LobsterAI 的真实 `userData`。
+
+### 4.7 LobsterAI 全局 Skills 根
+
+真实 LobsterAI `userData/SKILLs` 在 M2.x 中作为显式只读根：
+
+- OpenClaw 和结构化文件工具可以读取已安装 Skill；
+- runner 为该根生成只读 Capability，子进程不能在其中创建、修改或删除文件；
+- 通过市场、GitHub 或 ZIP 的宿主侧安装流程仍由 Electron main/`SkillManager` 完成，不经过沙箱命令；
+- “通过对话直接创建或改写全局 Skill”暂不支持，这是当前阶段接受的功能损失。
 
 ## 5. 已有实现基线与迁移判断
 
@@ -246,7 +269,7 @@ D:\projects\demo-app
 - runtime 专有的文件 I/O adapter；
 - backend 和 extension 中带有旧 runtime 含义的命名；
 - 旧 runtime 依赖、资源、版本常量和修复脚本；
-- 以长期 session 权限并集为前提的 workspace 授权逻辑。
+- 不可见、不可回收且无法审计的长期 session workspace 权限并集逻辑。
 
 典型迁移命名：
 
@@ -446,7 +469,7 @@ workspace canonical path
 
 - 依赖“目录权限必须足够小”；
 - 因目录原本授予 `Users` 或 `Authenticated Users` 而初始化失败；
-- 多任务共享一个长期 session 后形成 workspace 权限并集。
+- 多任务共享一个长期 session 后形成不可见、不可回收的权限并集。
 
 ACL 变更必须：
 
@@ -510,6 +533,7 @@ Windows `workspace-write` 首发版主要强制写边界。
 需要明确：
 
 - 结构化文件工具仍由 Lobster 路径策略限制读取范围；
+- M2.x 对声明的 Skills 根建立“可读、不可写”Capability，但这不等同于完整读取隔离；
 - shell 命令的系统级读取隔离弱于写入隔离；
 - runner 可以通过受限身份、环境清理和已知敏感路径拒绝降低读取面；
 - 只有完成额外的强读取隔离设计和测试后，产品才能提供 `workspace-readwrite` 强隐私模式。
@@ -710,7 +734,10 @@ interface NativeSandboxProvisioner {
 // OpenClaw extension：只负责受限命令和受控文件 I/O，不执行系统安装。
 interface NativeSandboxExecutor {
   getStatus(): NativeSandboxExecutorStatus;
-  prepareWorkspace(workspaceDir: string): Promise<void>;
+  prepareWorkspace(
+    workspaceDir: string,
+    policyContext: NativeSandboxPolicyContext,
+  ): Promise<void>;
   wrapCommand(request: SandboxCommandRequest): Promise<SandboxWrappedCommand>;
   runIsolatedCommand(request: SandboxCommandRequest): Promise<SandboxCommandResult>;
   createFsIo(request: SandboxFsIoRequest): SandboxFsIo;
@@ -724,16 +751,25 @@ interface NativeSandboxExecutor {
 
 ```ts
 interface SandboxPolicySnapshot {
-  policyVersion: number;
+  policyVersion: string;
   taskId: string;
   agentId: string;
   cwd: string;
   writableRoots: string[];
   readableRoots: string[];
   protectedPaths: string[];
+  sandboxHomeDir: string;
   scratchDir: string;
   networkMode: 'disabled' | 'managed-proxy' | 'allowlist';
   limits: SandboxResourceLimits;
+}
+
+interface NativeSandboxPolicyContext {
+  agentWorkspaceDir: string;
+  sandboxHomeDir: string;
+  writableRoots: Array<{ id: string; path: string }>;
+  readableRoots: Array<{ id: string; path: string }>;
+  protectedPaths: string[];
 }
 ```
 
@@ -1043,13 +1079,14 @@ rollback-failed
 | --- | --- | --- | --- | ---: | --- |
 | M0 | 架构转向与中性边界 | 沙箱关闭时完全回归，旧后端不再扩展 | 已完成 | 3-5 | 是 |
 | M1 | Windows runner 技术原型 | CLI 可证明进程树和 workspace 写边界 | 已完成；生产级安全加固归 M3 | 10-18 | 是 |
-| M2 | 单 workspace 内部联调版 | 内部测试用户可在已有工程中验证真实任务的写边界 | 已实施，待端侧验收 | 7-12 | 是 |
+| M2 | 单 workspace 内部联调版 | 内部测试用户可在已有工程中验证真实任务的写边界 | 已完成 | 7-12 | 是 |
+| M2.x | 固定产品权限根兼容层 | Agent 记忆、缓存和已安装 Skills 可在沙箱任务中按声明权限工作 | 已实施，待端侧验收 | 5-9 | 是 |
 | M3 | 安装态与系统安全加固 | setup、网络、签名、修复和失败关闭完整 | 未开始 | 12-22 | 是 |
-| M4 | 多 workspace、审计与企业能力 | 并发任务权限不形成并集，审计可追溯 | 未开始 | 8-15 | 是 |
+| M4 | 多 workspace 权限并集、审计与企业能力 | 并发工程可用，授权并集和关键事件可追溯 | 未开始 | 5-10 | 是 |
 | M5 | 打包、升级、回滚与发布门禁 | 可随 Windows 安装包发布的 Beta | 未开始 | 10-18 | 是 |
 | M6 | macOS 原生后端 | 与 Windows 使用同一产品接口 | 后续规划 | 15-30 | 否 |
 
-M2 端侧验收通过后，Windows M3-M5 剩余总量粗估：
+M2.x 端侧验收通过后，Windows M3-M5 剩余总量粗估：
 
 - 30-55 人日；
 - 新增或重写生产代码约 6k-13k 行；
@@ -1209,7 +1246,10 @@ M1 只证明核心技术可行，不接入用户开关。若 M1 不能稳定阻�
    - `agentWorkspaceDir`
    - `taskWorkspaceDir`
    - `cwd`
+   - `writableRoots`
+   - `readableRoots`
    - `protectedPaths`
+   - `sandboxHomeDir`
    - `scratchDir`
    - `networkMode`
    M2 的 `protectedPaths` 和 `networkMode` 仅保留协议字段：前者暂为空，后者即使声明 `disabled` 也不代表已建立系统级网络边界。
@@ -1281,10 +1321,102 @@ M1 只证明核心技术可行，不接入用户开关。若 M1 不能稳定阻�
 - `lobster-native-sandbox` 正常路径已从 legacy executor 切换到 `WindowsNativeSandboxExecutor`，shell exec 和结构化文件工具均通过同一个 runner 策略执行；
 - runner 新增独立机器报告文件，避免协议 JSON 混入用户可见 stdout/stderr；请求、报告和文件工具输入使用每次初始化独立的 scratch 目录，并在完成或重置时清理；
 - 初始化会真实验证 workspace 内可写、workspace 外不可写；单进程仅持有一个活动 task workspace，切换工程需关闭 Sandbox 或重启 gateway 后重新初始化；
-- 打包配置已包含 Windows runner，版本核验固定为 `lobster-command-runner 0.1.0`；旧 SRT 代码和资源仅为回滚/对照保留，不参与 M2 正常执行路径；
-- 自动验证已通过：M2 相关 Vitest 182 项、Rust workspace 17 项、Rust Clippy、Electron TypeScript 编译、Renderer/主进程生产构建、扩展预编译和打包资源核验；真实 runner smoke 已验证 shell 与文件工具均可在 workspace 内写入且不能写到外部目录。
+- 打包配置已包含 Windows runner；M2.x 将协议升级为 v2，版本核验固定为 `lobster-command-runner 0.2.0`；旧 runtime 代码和资源仅为回滚/对照保留，不参与正常执行路径；
+- M2 自动验证已覆盖相关 Vitest、Rust workspace、Rust Clippy、Electron TypeScript 编译、Renderer/主进程生产构建、扩展预编译和打包资源核验；真实 runner smoke 已验证 shell 与文件工具均可在 workspace 内写入且不能写到外部目录。M2.x 的最终验证结果以本次变更交付记录为准。
 
 M2 仍沿用 M1 从当前登录用户派生的 restricted token，因此显式向 `Everyone` 授予写权限的目标对象仍是已知生产级缺口；网络、读取、安装态专用身份、签名和防篡改均未实现。这些限制不会在 UI 中被描述为已具备能力，正式安全承诺仍以 M3-M5 为门禁。
+
+## 19A. M2.x：固定产品权限根兼容层
+
+### 19A.1 背景与目标
+
+M2 只授予 `taskWorkspaceDir` 后，真实 LobsterAI 工作流会在读取 Agent 记忆、Skill 和用户级工具配置时失败。直接放开整个 LobsterAI `userData` 虽然兼容性最好，但会使模型命令能够修改应用配置、插件、凭据相关状态和其他 Agent 数据，失去清晰的写边界。
+
+M2.x 采用固定根折中方案：不映射整个真实 AppData，也不为每项功能建立复杂的动态审批；由 LobsterAI 在创建 backend 时声明少量稳定根，并让 shell 与结构化文件工具消费同一策略上下文。
+
+### 19A.2 当前根目录矩阵
+
+| 根目录 | 权限 | 生命周期 | 主要用途 |
+| --- | --- | --- | --- |
+| `taskWorkspaceDir` | 读写 | 当前活动工程 | 源码、项目依赖、测试和构建产物 |
+| `agentWorkspaceDir` | 读写 | Agent 持久 | `AGENTS.md`、`MEMORY.md`、`SOUL.md`、日记忆等 OpenClaw 内部状态 |
+| `sandboxHomeDir` | 读写 | 每 Agent 持久 | HOME/AppData 映射、工具缓存和用户级轻量配置 |
+| `scratchDir` | 读写 | runtime 临时 | 请求、报告、stdin 暂存和临时文件 |
+| LobsterAI `SKILLs` | 只读 | 产品持久 | 读取已安装 Skill |
+| 其他真实 LobsterAI `userData` | 不声明写权限 | 产品持久 | 继续由宿主侧功能管理，不向模型命令开放 |
+
+同一访问级别的重复路径会按规范化路径去重；只读根与可写根若相同、互为父子或发生覆盖，则初始化失败，避免只读声明被更宽的写 Capability 抵消。结构化文件桥使用根 ID 和读写属性做词法、canonical path、reparse point、hardlink 与竞态检查；runner 使用对应的读写 Capability SID 和 ACL，使 PowerShell、Node.js、Python、npm 及其子进程不能绕过同一写入范围。
+
+### 19A.3 环境映射与持久化
+
+每个 Agent 的 Home 位于 LobsterAI 管理的数据根下，目录名由 Agent ID 的安全 slug 与 hash 生成；session key 不直接进入路径。因此：
+
+- 同一 Agent 的多个 session 复用同一个 Sandbox Home；
+- 不同 Agent 默认使用不同 Home；
+- `HOME`、`USERPROFILE`、`APPDATA`、`LOCALAPPDATA` 由 runner 强制设置，tool call 传入的同名环境变量会被过滤；
+- `TEMP`、`TMP` 继续映射到 scratch，任务重置后可删除；
+- 真实 `%APPDATA%/LobsterAI` 不因环境继承而成为命令的默认用户目录。
+
+### 19A.4 功能兼容性取舍
+
+当前预期：
+
+- Agent 指令、身份、记忆和日记忆可以正常读写，因为 `agentWorkspaceDir` 明确可写；
+- 已安装 Skill 可以正常发现和读取；市场、GitHub、ZIP 等宿主侧安装继续可用；
+- 通过对话让模型直接写入真实全局 `SKILLs` 会被拒绝，暂不提供 shadow copy 或回写同步；
+- AI Skin、插件、MCP、模型配置等若通过现有 Electron IPC/主进程管理流程落盘，仍使用宿主侧权限；若模型命令试图直接写真实 LobsterAI AppData，则不在允许范围内；
+- npm、Python 等工具写入用户级缓存时会落到 Sandbox Home，而不是污染真实用户 Home；某些硬编码真实绝对路径的第三方工具仍可能不兼容；
+- 一般性的 workspace 外读取尚未由 M2.x 全面隔离，`readIsolated` 继续如实报告为 `false`。
+
+允许整个 `agentWorkspaceDir` 写入会让任务修改 Agent 记忆和指令，这是为维持现有产品行为接受的风险；后续是否拆成更细的可写子路径列入 TBD。
+
+### 19A.5 OpenClaw 与 LobsterAI 接线
+
+不修改 OpenClaw 核心。LobsterAI 配置同步向 `lobster-native-sandbox` extension 传入：
+
+- runner 路径与版本；
+- `sandboxDataRoot`；
+- 真实 `skillsRoot`。
+
+extension 从 `CreateSandboxBackendParams` 取得 `agentWorkspaceDir`、`taskWorkspaceDir` 和 session key，构造 `NativeSandboxPolicyContext`，再同时传给 executor 和文件桥。runner 协议 v2 新增 `sandboxHomeDir`，并把 `readableRoots` 从“仅声明”升级为真正的只读 Capability。
+
+当前 executor 仍只允许一个活动 `taskWorkspaceDir`。它会登记运行期见过的可写根并在 reset 时按并集撤销 Capability ACE，避免新增 Agent/Home 根后留下授权残留；普通命令仍使用当前 backend 上下文生成 token。
+
+### 19A.6 验收
+
+除 M2 原验收外，M2.x 需要满足：
+
+1. 同一 Agent 的两个 session 获得相同 Sandbox Home，不同 Agent 获得不同 Home。
+2. `HOME`/`USERPROFILE` 中写入可跨命令保留，`TEMP`/`TMP` 仍为临时目录。
+3. Agent workspace 中的记忆文件可由 shell 和结构化文件工具读取、修改。
+4. 已安装 Skill 可读取；shell 和结构化文件工具均不能修改 `SKILLs`。
+5. 真实 LobsterAI `userData` 中未声明的目录不能通过写 root 获得权限。
+6. 新增根后 reset 请求包含完整可写根并集，ACL 清理不遗漏。
+7. UI 明确描述固定根、Skills 只读、网络未隔离和一般读取未隔离。
+8. Sandbox 关闭时，Skill、Skin、Agent 记忆和原本实机任务行为无回归。
+
+### 19A.7 明确不包含
+
+- 多个用户工程同时活动；
+- 对话创建全局 Skill；
+- 真实 LobsterAI AppData 的通配读写授权；
+- 按 tool call 动态弹窗扩权；
+- 网络隔离、完整读取隔离和生产级身份；
+- Sandbox Home 配额、清理 UI、迁移和导出；
+- macOS 后端实现。
+
+### 19A.8 本次实施结果
+
+截至 2026-07-21，M2.x 已完成代码接线并等待端侧验收：
+
+- OpenClaw 配置同步新增 `sandboxDataRoot` 和 `skillsRoot`，未修改 OpenClaw 核心；
+- extension 新增稳定的每 Agent policy context，并将其同时传递给 exec、shell 和结构化文件工具；
+- Windows runner 协议升级到 v2 / `workspace-write-v2`，runtime 版本升级到 `0.2.0`；
+- runner 已实现多个读写 Capability、只读 Capability、完整 ACL cleanup，以及 Sandbox Home 与临时目录的分离环境映射；
+- 根 Capability identity 跨兼容协议版本保持稳定，避免升级时制造无法由新 runtime 回收的旧 ACE；
+- 只读根与可写根重叠时失败关闭；同一 runtime 周期登记过的根会进入 reset 清理并集；
+- 设置页测试文案已更新，不再声称“仅 task workspace 可写”，并继续如实展示网络和一般读取未隔离；
+- 自动测试覆盖固定根接线、稳定 Agent Home、结构化路径访问级别、Skills 原生只读、PowerShell/Node/Python/npm 子进程边界、持久 Home、ACL 清理并集和真实 runner smoke。
 
 ## 20. M3：安装态与系统安全加固
 
@@ -1348,28 +1480,28 @@ M3 完成前进行专项代码评审，至少覆盖：
 
 未完成安全评审，不进入企业内测。
 
-## 21. M4：多 workspace、审计与企业能力
+## 21. M4：多 workspace 权限并集、审计与企业能力
 
 ### 21.1 目标
 
-支持不同 agent/task 并发操作不同工程，且每个任务只持有自己的写能力；同时形成可供用户和管理员追溯的审计闭环。
+支持不同 agent/task 并发操作不同工程；允许 Windows runtime 在活动任务之间共享产品明确声明的 workspace 权限并集，以换取更简单、稳定的生命周期管理，同时形成可供用户和管理员追溯的审计闭环。
 
 ### 21.2 主要工作
 
 1. 为 workspace 建立稳定 identity 和 Capability 生命周期。
-2. 每次 command 只组合本次所需根目录。
+2. 建立活动 workspace 授权并集，并在 UI、状态和审计中明确展示。
 3. 支持：
    - 一个 agent 的不同 task 使用不同 workspace；
    - 多个 agent 并发；
    - task 内少量显式多根目录；
    - agent workspace 与 task workspace 分开授权。
-4. 增加 Capability 引用计数、缓存和回收。
+4. 增加 Capability 引用计数、并集缓存和回收。
 5. 处理崩溃恢复、孤儿授权和目录移动。
 6. 完成结构化审计存储。
 7. 增加审计查询、导出和保留期。
 8. 增加配置变更和审批事件。
 9. 增加策略 hash 和 runtime 版本关联。
-10. 增加跨 task、跨 agent 隔离测试。
+10. 增加跨 task、跨 agent 的并集边界和越界测试。
 
 ### 21.3 验收
 
@@ -1383,20 +1515,20 @@ Agent B / Task B -> Workspace B
 并发执行时：
 
 - A 可写 A；
-- A 不可写 B；
 - B 可写 B；
-- B 不可写 A；
-- A 的子进程不可写 B；
-- B 新增 workspace 不会扩展 A 的 token；
+- 产品明确显示当前授权并集为 `{Workspace A, Workspace B}`；
+- A/B 的命令可能获得并集内的写能力，此行为不宣传为任务间强隔离；
+- A/B 及其子进程均不能写入并集外的 Workspace C；
+- B 新增 workspace 会形成可追踪的配置/授权变化；
 - task 结束后授权生命周期可追踪；
-- agent workspace 权限不会把历史 task workspace 合并进来；
+- 已无引用的 workspace 能从并集中移除，崩溃后可恢复或清理；
 - 每次命令、文件写入、拒绝和配置变化有可关联审计记录；
 - 审计默认不记录文件内容、凭据或完整环境；
 - 审计清理不影响 runtime 正常工作。
 
 ### 21.4 企业内测门禁
 
-完成并发隔离回归、审计隐私评审和长时间稳定性测试后，才向企业内测用户开放。
+完成并集边界回归、授权生命周期恢复、审计隐私评审和长时间稳定性测试后，才向企业内测用户开放。若企业策略要求任务间强隔离，应禁用并发或等待后续独立 runtime/identity 模式，不在 M4 中隐式承诺。
 
 ## 22. M5：打包、升级、回滚与 Windows 发布
 
@@ -1588,8 +1720,10 @@ Sandbox 关闭时验证：
 - 多盘符；
 - task 结束能力回收；
 - 应用崩溃后恢复；
-- A 对 B 的写入攻击；
-- agent workspace 与 task workspace 不互相扩权。
+- 当前授权并集的展示、增加、移除和审计；
+- shell/子进程只能写入 A/B 并集，不能写入未授权的 C；
+- 结构化文件桥仍按当前 task 的显式根拒绝无关路径；
+- Agent workspace、task workspace、Sandbox Home 和 Skills 根保持不同语义与访问级别。
 
 ## 25. 代码与目录规划
 
@@ -1682,6 +1816,13 @@ src/main/nativeSandbox/
 7. task 内显式多根目录的最大数量。
 8. 是否在 M5 Beta 中开放受控网络，当前建议不开放。
 9. 强读取隔离是否作为独立模式，而不是扩大 `workspace-write` 的承诺。
+10. 是否将 `agentWorkspaceDir` 从整体可写收窄为记忆、身份等明确子目录，以及由谁维护兼容清单。
+11. 对话创建 Skill 后续采用宿主侧受控 API、shadow copy + 审批回写，还是继续不支持。
+12. Sandbox Home 的配额、清理周期、迁移、备份、导出和“重置 Agent 环境”入口。
+13. 多 workspace 权限并集的最大数量、UI 展示方式和 task 结束后的回收宽限期。
+14. AI Skin、插件、MCP 等宿主侧写入是否需要统一成可审计的受控产品 API。
+15. macOS 后端如何表达同一组固定根和 Sandbox Home 映射，不把 Windows ACL 语义泄漏进公共协议。
+16. 是否需要把只读 Skills 拆成每 Skill 根，以减少已安装 Skill 之间的可见性。
 
 ## 29. 推荐实施顺序
 
@@ -1696,7 +1837,7 @@ src/main/nativeSandbox/
 3. 只有 M1 的“宽 ACL + 子进程 + 已有工程”三项同时通过，才接入 M2；
 4. M2 先做内部可用，不急于正式打包；
 5. M3 完成系统安全和安装态后，再进行安全团队评审；
-6. M4 解决企业用户真正关心的并发隔离与审计；
+6. M4 解决多工程并发权限并集、生命周期与审计；
 7. M5 才移除旧依赖并进入 Windows Beta；
 8. Windows 接口稳定后启动 M6。
 
@@ -1706,7 +1847,7 @@ src/main/nativeSandbox/
 - M1 证明安全核心可行；
 - M2 证明用户工作流可用；
 - M3 证明安装态和系统级防护可靠；
-- M4 证明企业多任务与审计成立；
+- M4 证明企业多任务权限并集、越界保护与审计成立；
 - M5 证明可发布、可升级、可恢复；
 - M6 证明平台抽象可扩展。
 
@@ -1718,7 +1859,7 @@ Windows Beta 被视为完成，必须同时满足：
 2. workspace 内编辑、测试和构建正常。
 3. shell 及全部子进程不能越界写入。
 4. 结构化文件工具不能绕过相同边界。
-5. 多任务并发不形成 workspace 权限并集。
+5. 多任务并发只形成产品明确声明、用户可见且可审计的 workspace 权限并集，所有子进程不能写出该并集。
 6. 网络默认关闭且通过绕过测试。
 7. runtime 安装、签名、修复、升级和回滚可用。
 8. helper 由仓库源码和 CI 统一维护，不存在手工 binary。

@@ -77,7 +77,7 @@ export function createLobsterNativeSandboxBackend(
     },
     configLabel: LOBSTER_NATIVE_SANDBOX_BACKEND_ID,
     configLabelKind: 'Backend',
-    async buildExecSpec({ command, workdir: requestedWorkdir, env, usePty }) {
+    async buildExecSpec({ command, workdir: requestedWorkdir, env }) {
       const wrapped = await dependencies.executor.wrapCommand({
         command,
         workspaceDir: workdir,
@@ -88,7 +88,7 @@ export function createLobsterNativeSandboxBackend(
       return {
         argv: wrapped.argv,
         env: wrapped.env,
-        stdinMode: usePty ? 'pipe-open' : 'pipe-closed',
+        stdinMode: 'pipe-closed',
         finalizeToken: wrapped.token,
       };
     },

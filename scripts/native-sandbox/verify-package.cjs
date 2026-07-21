@@ -2,11 +2,14 @@
 
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 
 const SRT_PACKAGE_NAME = '@anthropic-ai/sandbox-runtime';
 const EXPECTED_SRT_VERSION = '0.0.65';
+const EXPECTED_NATIVE_RUNNER_VERSION = '0.1.0';
 const WINDOWS_X64_MACHINE = 0x8664;
 const EXTENSION_ID = 'lobster-native-sandbox';
+const NATIVE_RUNNER_FILENAME = 'lobster-command-runner.exe';
 
 function readJson(filePath) {
   try {
@@ -48,6 +51,26 @@ function assertWindowsX64Helper(filePath) {
       `Windows sandbox helper has PE machine 0x${machine.toString(16)}, expected x64 ` +
         `(0x${WINDOWS_X64_MACHINE.toString(16)}): ${filePath}`,
     );
+  }
+}
+
+function assertNativeRunnerVersion(filePath) {
+  const expected = `lobster-command-runner ${EXPECTED_NATIVE_RUNNER_VERSION}`;
+  let reported;
+  try {
+    reported = execFileSync(filePath, ['--version'], {
+      encoding: 'utf8',
+      windowsHide: true,
+    }).trim();
+  } catch (error) {
+    throw new Error(
+      `Unable to execute Windows native sandbox runner ${filePath}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  if (reported !== expected) {
+    throw new Error(`Windows native sandbox runner reported ${reported}; expected ${expected}.`);
   }
 }
 
@@ -117,16 +140,22 @@ function verifyConfiguredExtraResources(rootDir) {
   const resources = Array.isArray(config.win?.extraResources) ? config.win.extraResources : [];
   const helperFrom = `node_modules/${SRT_PACKAGE_NAME}/vendor/srt-win/x64/srt-win.exe`;
   const licenseFrom = `node_modules/${SRT_PACKAGE_NAME}/LICENSE`;
+  const nativeRunnerFrom = `native/sandbox-windows/target/release/${NATIVE_RUNNER_FILENAME}`;
   const hasHelper = resources.some(
     resource => resource?.from === helperFrom && resource?.to === 'sandbox-runtime/srt-win.exe',
   );
   const hasLicense = resources.some(
     resource => resource?.from === licenseFrom && resource?.to === 'sandbox-runtime/LICENSE.txt',
   );
-  if (!hasHelper || !hasLicense) {
+  const hasNativeRunner = resources.some(
+    resource => resource?.from === nativeRunnerFrom
+      && resource?.to === `sandbox-runtime/${NATIVE_RUNNER_FILENAME}`,
+  );
+  if (!hasHelper || !hasLicense || !hasNativeRunner) {
     throw new Error(
-      'electron-builder Windows extraResources must package the x64 helper and license under ' +
-        `sandbox-runtime/ (helper=${hasHelper}, license=${hasLicense}).`,
+      'electron-builder Windows extraResources must package both x64 runners and the legacy ' +
+        `license under sandbox-runtime/ (legacy=${hasHelper}, native=${hasNativeRunner}, ` +
+        `license=${hasLicense}).`,
     );
   }
 }
@@ -179,7 +208,17 @@ function verifySandboxRuntimeBuildInputs(options = {}) {
   const packageRoot = path.dirname(installedPackagePath);
   const helperPath = path.join(packageRoot, 'vendor', 'srt-win', 'x64', 'srt-win.exe');
   const licensePath = path.join(packageRoot, 'LICENSE');
+  const nativeRunnerPath = path.join(
+    rootDir,
+    'native',
+    'sandbox-windows',
+    'target',
+    'release',
+    NATIVE_RUNNER_FILENAME,
+  );
   assertWindowsX64Helper(helperPath);
+  assertWindowsX64Helper(nativeRunnerPath);
+  assertNativeRunnerVersion(nativeRunnerPath);
   assertFile(licensePath, 'Sandbox Runtime license');
   if (!fs.readFileSync(licensePath, 'utf8').includes('Apache License')) {
     throw new Error(
@@ -195,6 +234,7 @@ function verifySandboxRuntimeBuildInputs(options = {}) {
     version: EXPECTED_SRT_VERSION,
     helperPath,
     licensePath,
+    nativeRunnerPath,
     runtimeRoot,
   };
 }
@@ -202,10 +242,13 @@ function verifySandboxRuntimeBuildInputs(options = {}) {
 function verifyPackagedSandboxRuntime(appOutDir) {
   const resourceDir = path.join(path.resolve(appOutDir), 'resources', 'sandbox-runtime');
   const helperPath = path.join(resourceDir, 'srt-win.exe');
+  const nativeRunnerPath = path.join(resourceDir, NATIVE_RUNNER_FILENAME);
   const licensePath = path.join(resourceDir, 'LICENSE.txt');
   assertWindowsX64Helper(helperPath);
+  assertWindowsX64Helper(nativeRunnerPath);
+  assertNativeRunnerVersion(nativeRunnerPath);
   assertFile(licensePath, 'Packaged Sandbox Runtime license');
-  return { helperPath, licensePath };
+  return { helperPath, licensePath, nativeRunnerPath };
 }
 
 function main() {
@@ -218,7 +261,8 @@ function main() {
   const helperSizeMb = (fs.statSync(result.helperPath).size / (1024 * 1024)).toFixed(1);
   console.log(
     `[sandbox-runtime-verify] Verified ${SRT_PACKAGE_NAME}@${result.version}, ` +
-      `Windows x64 helper (${helperSizeMb} MB), license, extraResources, and compiled extension.`,
+      `legacy Windows x64 helper (${helperSizeMb} MB), native runner ` +
+      `${EXPECTED_NATIVE_RUNNER_VERSION}, license, extraResources, and compiled extension.`,
   );
 }
 
@@ -235,6 +279,7 @@ if (require.main === module) {
 
 module.exports = {
   EXPECTED_SRT_VERSION,
+  EXPECTED_NATIVE_RUNNER_VERSION,
   EXTENSION_ID,
   findUnresolvedSrtImport,
   readPeMachine,

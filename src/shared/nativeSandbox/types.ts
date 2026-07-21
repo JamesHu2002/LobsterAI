@@ -55,6 +55,9 @@ export interface NativeSandboxStatus {
   enabled: boolean;
   backendConnected: boolean;
   backendState?: NativeSandboxBackendState;
+  networkIsolated?: boolean;
+  readIsolated?: boolean;
+  productionReady?: boolean;
   managedByEnterprise?: boolean;
   busy: boolean;
   operation?: NativeSandboxOperation;
@@ -90,6 +93,9 @@ export interface NativeSandboxBackendProbeResult {
   runtimeVersion?: string;
   protocolVersion?: number;
   policyVersion?: string;
+  networkIsolated?: boolean;
+  readIsolated?: boolean;
+  productionReady?: boolean;
   errorCode?: string;
 }
 

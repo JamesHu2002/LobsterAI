@@ -4,7 +4,9 @@
 >
 > 全面修订：2026-07-20
 >
-> 当前状态：M0 已实施，待端侧验收；Windows 优先，macOS 预留
+> 实施更新：2026-07-21
+>
+> 当前状态：M0、M1 已完成；M2 已实施，待端侧验收；Windows 优先，macOS 预留
 >
 > 适用范围：LobsterAI、内置 OpenClaw runtime、Windows 原生执行后端
 >
@@ -46,9 +48,9 @@
 - UI 继续使用设置页中的临时 “Sandbox（测试）” tab；
 - macOS 后续通过独立原生后端接入同一平台接口。
 
-### 2.2 第一版明确保证什么
+### 2.2 Windows Beta 首发版明确保证什么
 
-Windows 第一版的核心安全承诺是：
+M3-M5 完成后的 Windows Beta 首发版，其核心安全承诺是：
 
 > 沙箱命令及其子进程只能写入本次任务明确授权的 workspace、必要的受控临时目录及少量声明式运行目录；不能写入其他工程目录、用户目录或系统目录。
 
@@ -61,6 +63,8 @@ Windows 第一版的核心安全承诺是：
 - 路径规范化、符号链接、junction、reparse point 等不能将写入逃逸到 workspace 外；
 - 沙箱启动失败、运行时损坏、版本不兼容或健康检查失败时拒绝执行；
 - 用户关闭沙箱后恢复原有实机执行行为。
+
+M2 只是内部联调版，不满足本节的网络隔离、安装态身份、签名与正式发布承诺；其实际边界以第 19 节为准。
 
 ### 2.3 第一版不承诺什么
 
@@ -1033,24 +1037,24 @@ rollback-failed
 
 本次重新编号为 M0-M6。M0-M5 构成 Windows 首发路径，M6 是后续 macOS 扩展。
 
-工作量均为当前信息下的剩余工程量估算，误差约为 ±40%，不包含安全团队正式渗透测试排期。
+工作量是 2026-07-20 制订里程碑时的初始估算，误差约为 ±40%，不包含安全团队正式渗透测试排期；已完成阶段的数字不是剩余工作量。
 
 | Milestone | 目标 | 可交付状态 | 当前状态 | 粗估人日 | 是否阻塞 Windows 首发 |
 | --- | --- | --- | --- | ---: | --- |
 | M0 | 架构转向与中性边界 | 沙箱关闭时完全回归，旧后端不再扩展 | 已完成 | 3-5 | 是 |
-| M1 | Windows runner 技术原型 | CLI 可证明进程树和 workspace 写边界 | 已实施，待端侧验收与安全复核 | 10-18 | 是 |
-| M2 | 单 workspace 产品内测版 | 用户可在已有工程中开关并执行真实任务 | 未开始，可复用现有 UI/接入层 | 7-12 | 是 |
+| M1 | Windows runner 技术原型 | CLI 可证明进程树和 workspace 写边界 | 已完成；生产级安全加固归 M3 | 10-18 | 是 |
+| M2 | 单 workspace 内部联调版 | 内部测试用户可在已有工程中验证真实任务的写边界 | 已实施，待端侧验收 | 7-12 | 是 |
 | M3 | 安装态与系统安全加固 | setup、网络、签名、修复和失败关闭完整 | 未开始 | 12-22 | 是 |
 | M4 | 多 workspace、审计与企业能力 | 并发任务权限不形成并集，审计可追溯 | 未开始 | 8-15 | 是 |
 | M5 | 打包、升级、回滚与发布门禁 | 可随 Windows 安装包发布的 Beta | 未开始 | 10-18 | 是 |
 | M6 | macOS 原生后端 | 与 Windows 使用同一产品接口 | 后续规划 | 15-30 | 否 |
 
-Windows 剩余总量粗估：
+M2 端侧验收通过后，Windows M3-M5 剩余总量粗估：
 
-- 50-90 人日；
-- 新增或重写生产代码约 9k-18k 行；
-- 新增安全及集成测试约 4k-8k 行；
-- 单人串行约 10-18 周；
+- 30-55 人日；
+- 新增或重写生产代码约 6k-13k 行；
+- 新增安全及集成测试约 3k-6k 行；
+- 单人串行约 6-11 周；
 - 2-3 人按“原生 runtime / Lobster 集成 / 测试发布”拆分，可缩短日历时间，但 M1 安全原型和 M3 系统加固不宜强行并行。
 
 行数只用于量级评估，不作为交付目标。
@@ -1188,19 +1192,19 @@ M1 只证明核心技术可行，不接入用户开关。若 M1 不能稳定阻�
 
 当前原型仍从登录用户 token 派生。为兼容 Windows PowerShell CLR 初始化，token 需要携带 logon SID 和 `Everyone` 兼容 SID；因此对“目标对象自身显式授予 `Everyone` 写权限”的极端 ACL 不能作为生产级强边界。M2 可以继续验证产品接入，但在对外宣称严格 workspace-only 之前，必须由安装态提供专用低权限 sandbox identity，使“原身份检查 + Capability 检查”同时成立；完整安装、修复、升级和网络规则仍归 M3。
 
-## 19. M2：单 workspace 产品内测版
+## 19. M2：单 workspace 内部联调版
 
 ### 19.1 目标
 
-把 M1 runner 接入当前 LobsterAI 与 OpenClaw，让内测用户可以在已有工程中开启 Sandbox 并完成常见任务。
+把 M1 runner 接入当前 LobsterAI 与 OpenClaw，让内部测试用户可以在已有工程中开启 Sandbox，验证常见任务的 workspace 写边界和产品工作流。M2 不宣称读取隔离、网络隔离或生产就绪。
 
 ### 19.2 主要工作
 
-1. 实现 `WindowsSandboxRuntime`。
-2. 将 runner protocol 接入 Electron main。
-3. 将 OpenClaw backend 切换为 `lobster-native`。
-4. 接通 exec tool call。
-5. 接通 `SandboxFsBridge` 和原生 FsIo。
+1. 实现 `WindowsSandboxRuntime` 的状态探测和开发态路径解析。
+2. Electron main 仅负责 runtime 状态、启停编排和 OpenClaw 配置同步；模型命令不经过 Electron main 执行。
+3. 将 OpenClaw backend 的正常执行路径从 legacy adapter 切换为 `lobster-native` 原生 executor。
+4. 接通 exec tool call，并处理命令输出、runner 报告、超时、取消和临时请求文件。
+5. 接通 `SandboxFsBridge` 和经原生 executor 执行的 FsIo；产品路径不得以 OpenClaw 宿主身份直接完成最终文件写入。
 6. 为每个 task 生成：
    - `agentWorkspaceDir`
    - `taskWorkspaceDir`
@@ -1208,23 +1212,26 @@ M1 只证明核心技术可行，不接入用户开关。若 M1 不能稳定阻�
    - `protectedPaths`
    - `scratchDir`
    - `networkMode`
+   M2 的 `protectedPaths` 和 `networkMode` 仅保留协议字段：前者暂为空，后者即使声明 `disabled` 也不代表已建立系统级网络边界。
 7. 完成开关启用、关闭、gateway 同步和回滚。
-8. 增加启动前边界探测：
+8. 增加启用前边界探测：
    - workspace 内写入成功；
    - workspace 外写入失败；
-   - 子进程继承；
-   - 网络不可用。
+   - runtime 明确报告网络和读取未隔离。
+   子进程继承、junction 和常见开发工具的边界继续由 M1 Rust 自动化回归覆盖，不在每次启用时重复执行。
 9. 设置页展示 runtime、backend、健康状态和最近错误。
 10. 增加开发包内 runner 打包。
 11. 将旧 runtime 路径从正常产品选择中移除。
 
 ### 19.3 首版限制
 
-- 同一 task 只支持一个用户工程 workspace；
-- 网络固定关闭；
-- 强制写边界，不宣传完整读取隔离；
+- 同一时刻只支持一个用户工程 workspace；切换工程前需要结束任务并重新初始化；
+- 网络不隔离，沿用宿主机可用网络；
+- 只验证写边界，不宣传完整读取隔离；
 - 仅 Windows x64 开发/内测环境；
-- 安装、修复和升级仍可使用开发流程，尚未达到正式发布质量。
+- 仅通过 Sandbox（测试）入口开放，并明确展示上述限制；
+- UI 不提供安装或修复；开发构建直接使用随源码编译的 runner，尚未达到正式发布质量；
+- M2 不支持向沙箱命令转发非空 stdin，依赖交互输入的命令会明确失败。
 
 ### 19.4 用户验收
 
@@ -1236,15 +1243,16 @@ M1 只证明核心技术可行，不接入用户开关。若 M1 不能稳定阻�
 4. 让 Agent 修改一个源文件；
 5. 让 Agent 新建文件；
 6. 让 Agent 运行 `npm test`；
-7. 让 Agent 尝试写 workspace 外文件；
-8. 让 Agent 尝试联网；
+7. 分别通过文件工具、PowerShell 和子进程让 Agent 尝试写 workspace 外文件；
+8. 确认设置页明确提示网络和读取尚未隔离；
 9. 关闭 Sandbox；
 10. 再创建会话确认恢复原实机行为。
 
 预期：
 
 - 前 6 步正常；
-- 越界写和联网被明确拒绝；
+- 文件工具、shell 和子进程的越界写被明确拒绝；
+- 联网不作为 M2 的拒绝项，UI 不得暗示网络已隔离；
 - UI 展示可理解的失败原因；
 - 日志有开发错误码；
 - 不出现静默降级；
@@ -1256,10 +1264,27 @@ M1 只证明核心技术可行，不接入用户开关。若 M1 不能稳定阻�
 - OpenClaw runtime 启动和 config sync 正常；
 - task workspace 传递正确；
 - exec/file tool 使用同一策略；
+- runner 机器报告不混入用户可见 stdout/stderr；
+- runtime 报告 `networkIsolated=false`、`readIsolated=false` 和 `productionReady=false` 时，产品仍只以内部测试能力展示；
 - renderer/main/preload IPC 类型一致；
-- feature flag 关闭时不加载 runner；
+- feature flag 关闭时 OpenClaw 保持实机模式且不调用 runner；
 - runtime 初始化失败时 gateway 不进入“已启用”状态；
 - relevant Vitest、Electron compile 和变更文件 lint 通过。
+
+### 19.6 本次实施结果
+
+截至 2026-07-21，M2 代码已实施，等待端侧验收：
+
+- Electron main 已切换到 Windows 原生 runtime descriptor 和只读状态探测，开发态解析 `native/sandbox-windows/target/release/lobster-command-runner.exe`，打包态解析 `Resources/sandbox-runtime/lobster-command-runner.exe`；
+- 设置页开关已接通既有启停事务，并展示“网络未隔离、读取未隔离、尚未达到发布标准”；安装与修复入口在本阶段保持隐藏；
+- OpenClaw 配置在用户开启测试开关且平台为 Windows x64 时选择 `lobster-native`；不支持的平台、关闭状态或初始化失败均保持失败关闭，不自动回退到无沙箱执行；
+- `lobster-native-sandbox` 正常路径已从 legacy executor 切换到 `WindowsNativeSandboxExecutor`，shell exec 和结构化文件工具均通过同一个 runner 策略执行；
+- runner 新增独立机器报告文件，避免协议 JSON 混入用户可见 stdout/stderr；请求、报告和文件工具输入使用每次初始化独立的 scratch 目录，并在完成或重置时清理；
+- 初始化会真实验证 workspace 内可写、workspace 外不可写；单进程仅持有一个活动 task workspace，切换工程需关闭 Sandbox 或重启 gateway 后重新初始化；
+- 打包配置已包含 Windows runner，版本核验固定为 `lobster-command-runner 0.1.0`；旧 SRT 代码和资源仅为回滚/对照保留，不参与 M2 正常执行路径；
+- 自动验证已通过：M2 相关 Vitest 182 项、Rust workspace 17 项、Rust Clippy、Electron TypeScript 编译、Renderer/主进程生产构建、扩展预编译和打包资源核验；真实 runner smoke 已验证 shell 与文件工具均可在 workspace 内写入且不能写到外部目录。
+
+M2 仍沿用 M1 从当前登录用户派生的 restricted token，因此显式向 `Everyone` 授予写权限的目标对象仍是已知生产级缺口；网络、读取、安装态专用身份、签名和防篡改均未实现。这些限制不会在 UI 中被描述为已具备能力，正式安全承诺仍以 M3-M5 为门禁。
 
 ## 20. M3：安装态与系统安全加固
 

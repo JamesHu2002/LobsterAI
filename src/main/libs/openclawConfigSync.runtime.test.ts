@@ -211,7 +211,7 @@ describe('OpenClawConfigSync runtime config output', () => {
     });
   });
 
-  test('keeps the M0 backend fail-closed when a stale enabled flag is persisted', async () => {
+  test('selects the M2 native backend when the internal test flag is enabled', async () => {
     const sync = await createSync({
       getCoworkConfig: () => ({
         workingDirectory: tmpDir,
@@ -231,18 +231,23 @@ describe('OpenClawConfigSync runtime config output', () => {
     expect(sync.sync('native-sandbox-test').ok).toBe(true);
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 
-    expect(config.agents.defaults.sandbox).toEqual({ mode: 'off' });
+    expect(config.agents.defaults.sandbox).toEqual({
+      mode: 'all',
+      backend: 'lobster-native',
+      workspaceAccess: 'rw',
+      scope: 'session',
+    });
     expect(config.plugins.entries['lobster-native-sandbox']).toMatchObject({
       enabled: true,
       config: {
         protocolVersion: 1,
-        runtimeEnabled: false,
-        runtimeKind: 'legacy-windows-adapter',
-        runtimeVersion: '0.0.65',
+        runtimeEnabled: true,
+        runtimeKind: 'native-windows',
+        runtimeVersion: '0.1.0',
       },
     });
     expect(config.plugins.entries['lobster-native-sandbox'].config.runtimeExecutablePath)
-      .toMatch(/[\\/]srt-win[\\/]x64[\\/]srt-win\.exe$/);
+      .toMatch(/[\\/]native[\\/]sandbox-windows[\\/]target[\\/]release[\\/]lobster-command-runner\.exe$/);
     expect(config.plugins.allow).toContain('lobster-native-sandbox');
   });
 

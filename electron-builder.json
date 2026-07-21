@@ -177,6 +177,10 @@
       {
         "from": "node_modules/@anthropic-ai/sandbox-runtime/LICENSE",
         "to": "sandbox-runtime/LICENSE.txt"
+      },
+      {
+        "from": "native/sandbox-windows/target/release/lobster-command-runner.exe",
+        "to": "sandbox-runtime/lobster-command-runner.exe"
       }
     ]
   },

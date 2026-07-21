@@ -394,6 +394,9 @@ export class NativeSandboxControlService implements NativeSandboxControlServiceA
       enabled,
       backendConnected,
       backendState: probe?.state,
+      networkIsolated: probe?.networkIsolated ?? result.status.networkIsolated,
+      readIsolated: probe?.readIsolated ?? result.status.readIsolated,
+      productionReady: probe?.productionReady ?? result.status.productionReady,
       state: enabled && result.status.healthy && !backendConnected
         ? NativeSandboxState.Degraded
         : result.status.state,

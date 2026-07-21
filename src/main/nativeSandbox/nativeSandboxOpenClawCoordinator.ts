@@ -88,6 +88,15 @@ export const parseNativeSandboxBackendProbe = (
   policyVersion: typeof raw.policyVersion === 'string'
     ? raw.policyVersion
     : undefined,
+  networkIsolated: typeof raw.networkIsolated === 'boolean'
+    ? raw.networkIsolated
+    : undefined,
+  readIsolated: typeof raw.readIsolated === 'boolean'
+    ? raw.readIsolated
+    : undefined,
+  productionReady: typeof raw.productionReady === 'boolean'
+    ? raw.productionReady
+    : undefined,
   errorCode: typeof raw.errorCode === 'string' ? raw.errorCode : undefined,
 });
 

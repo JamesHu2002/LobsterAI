@@ -6,6 +6,9 @@ export interface NativeSandboxExecutorStatus {
   workspaceDigest?: string;
   activeCommands: number;
   lastErrorCode?: string;
+  networkIsolated?: boolean;
+  readIsolated?: boolean;
+  productionReady?: boolean;
 }
 
 export interface NativeSandboxCommandToken {
@@ -14,6 +17,8 @@ export interface NativeSandboxCommandToken {
   sessionKey?: string;
   startedAt: number;
   workspaceDir: string;
+  requestPath?: string;
+  reportPath?: string;
 }
 
 export interface NativeSandboxWrappedCommand {

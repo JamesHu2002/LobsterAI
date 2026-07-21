@@ -1,13 +1,12 @@
 import { app, ipcMain } from 'electron';
 
-import { LegacySrtWindowsProvisioner } from './legacy/legacySrtWindowsProvisioner';
 import {
   type NativeSandboxControlDependencies,
   NativeSandboxControlService,
 } from './nativeSandboxControlService';
 import { createNativeSandboxEnvironment } from './nativeSandboxEnvironment';
 import { registerNativeSandboxIpcHandlers } from './nativeSandboxIpcHandlers';
-import { migrateNativeSandboxM0Configuration } from './nativeSandboxM0Migration';
+import { WindowsNativeSandboxProvisioner } from './windows/windowsNativeSandboxProvisioner';
 
 export type RegisterNativeSandboxModuleOptions = Omit<
   NativeSandboxControlDependencies,
@@ -18,13 +17,11 @@ export type RegisterNativeSandboxModuleOptions = Omit<
 export const registerNativeSandboxModule = (
   options: RegisterNativeSandboxModuleOptions,
 ): void => {
-  void migrateNativeSandboxM0Configuration(options);
-
   registerNativeSandboxIpcHandlers({
     ipcMain,
     createService: () => new NativeSandboxControlService({
       ...options,
-      provisioner: new LegacySrtWindowsProvisioner(createNativeSandboxEnvironment(app, {
+      provisioner: new WindowsNativeSandboxProvisioner(createNativeSandboxEnvironment(app, {
         resourcesPath: process.resourcesPath,
         platform: process.platform,
         arch: process.arch,

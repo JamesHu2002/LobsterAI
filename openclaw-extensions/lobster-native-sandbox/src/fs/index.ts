@@ -1,4 +1,5 @@
 // Native backend filesystem boundary exports.
+export * from './nativeSandboxFsIo.js';
 export * from './sandboxFsError.js';
 export * from './sandboxFsIo.js';
 export * from './windowsPathInspector.js';

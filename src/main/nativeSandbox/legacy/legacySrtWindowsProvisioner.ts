@@ -1,7 +1,6 @@
 import fs from 'fs';
 
 import {
-  NATIVE_SANDBOX_ACTIVATION_AVAILABLE,
   NATIVE_SANDBOX_PROTOCOL_VERSION,
   NativeSandboxErrorCode,
   NativeSandboxOperation,
@@ -130,7 +129,7 @@ export class LegacySrtWindowsProvisioner implements NativeSandboxProvisioner {
       runtimeVersion: this.runtimeVersion,
       protocolVersion: NATIVE_SANDBOX_PROTOCOL_VERSION,
       runtimeAvailable: false,
-      activationAvailable: NATIVE_SANDBOX_ACTIVATION_AVAILABLE,
+      activationAvailable: false,
       lifecycleAvailable: false,
       installed: false,
       healthy: false,

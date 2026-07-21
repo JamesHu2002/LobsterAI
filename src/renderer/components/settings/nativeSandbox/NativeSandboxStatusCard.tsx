@@ -146,6 +146,39 @@ const NativeSandboxStatusCard: React.FC<NativeSandboxStatusCardProps> = ({
             : 'text-secondary'}
         />
         <StatusRow
+          label={i18nService.t('sandboxNetworkIsolationLabel')}
+          value={status
+            ? status.networkIsolated
+              ? i18nService.t('sandboxCapabilityIsolated')
+              : i18nService.t('sandboxCapabilityNotIsolated')
+            : pendingValue}
+          valueClassName={status?.networkIsolated
+            ? 'text-emerald-600 dark:text-emerald-400'
+            : 'text-amber-700 dark:text-amber-400'}
+        />
+        <StatusRow
+          label={i18nService.t('sandboxReadIsolationLabel')}
+          value={status
+            ? status.readIsolated
+              ? i18nService.t('sandboxCapabilityIsolated')
+              : i18nService.t('sandboxCapabilityNotIsolated')
+            : pendingValue}
+          valueClassName={status?.readIsolated
+            ? 'text-emerald-600 dark:text-emerald-400'
+            : 'text-amber-700 dark:text-amber-400'}
+        />
+        <StatusRow
+          label={i18nService.t('sandboxReleaseReadinessLabel')}
+          value={status
+            ? status.productionReady
+              ? i18nService.t('sandboxProductionReady')
+              : i18nService.t('sandboxInternalTestOnly')
+            : pendingValue}
+          valueClassName={status?.productionReady
+            ? 'text-emerald-600 dark:text-emerald-400'
+            : 'text-amber-700 dark:text-amber-400'}
+        />
+        <StatusRow
           label={i18nService.t('sandboxLastCheckedLabel')}
           value={formatCheckedAt(status?.checkedAt)}
         />
@@ -156,19 +189,21 @@ const NativeSandboxStatusCard: React.FC<NativeSandboxStatusCardProps> = ({
           <p className="max-w-[540px] text-xs leading-5 text-secondary">
             {i18nService.t('sandboxUacHint')}
           </p>
-          <button
-            type="button"
-            onClick={() => { void onRunOperation(viewModel.actionOperation); }}
-            disabled={!viewModel.canOperate}
-            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-primary px-3 text-sm font-medium text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:bg-gray-400"
-          >
-            {viewModel.isOperating ? (
-              <ArrowPathIcon className="h-4 w-4 animate-spin" />
-            ) : (
-              <WrenchScrewdriverIcon className="h-4 w-4" />
-            )}
-            {i18nService.t(viewModel.actionLabelKey)}
-          </button>
+          {status?.lifecycleAvailable ? (
+            <button
+              type="button"
+              onClick={() => { void onRunOperation(viewModel.actionOperation); }}
+              disabled={!viewModel.canOperate}
+              className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-primary px-3 text-sm font-medium text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:bg-gray-400"
+            >
+              {viewModel.isOperating ? (
+                <ArrowPathIcon className="h-4 w-4 animate-spin" />
+              ) : (
+                <WrenchScrewdriverIcon className="h-4 w-4" />
+              )}
+              {i18nService.t(viewModel.actionLabelKey)}
+            </button>
+          ) : null}
         </div>
       </div>
     </section>

@@ -93,7 +93,7 @@ const SandboxSettingsSection: React.FC = () => {
               isEnabled ? 'bg-primary' : 'bg-border'
             } ${switchDisabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
           >
-            <span className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
+            <span className={`absolute left-0 top-1 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
               isEnabled ? 'translate-x-6' : 'translate-x-1'
             }`} />
           </button>
@@ -140,10 +140,10 @@ const SandboxSettingsSection: React.FC = () => {
           <ExclamationTriangleIcon className="mt-0.5 h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
           <div className="min-w-0">
             <h4 className="text-sm font-medium text-foreground">
-                {i18nService.t('sandboxM0BoundaryTitle')}
+                {i18nService.t('sandboxM2BoundaryTitle')}
             </h4>
             <p className="mt-1 text-sm leading-6 text-secondary">
-              {i18nService.t('sandboxM0BoundaryDescription')}
+              {i18nService.t('sandboxM2BoundaryDescription')}
             </p>
           </div>
         </div>

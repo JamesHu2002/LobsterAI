@@ -2,15 +2,15 @@ import { definePluginEntry } from 'openclaw/plugin-sdk/plugin-entry';
 
 import { SandboxAuditRecorder } from './src/audit/sandboxAuditRecorder.js';
 import {
-  LEGACY_SRT_RUNTIME_KIND,
-  LEGACY_SRT_RUNTIME_VERSION,
   LOBSTER_NATIVE_POLICY_VERSION,
   LOBSTER_NATIVE_PROTOCOL_VERSION,
   LOBSTER_NATIVE_SANDBOX_BACKEND_ID,
+  LOBSTER_NATIVE_WINDOWS_RUNTIME_KIND,
+  LOBSTER_NATIVE_WINDOWS_RUNTIME_VERSION,
   LobsterNativeSandboxGatewayMethod,
   registerLobsterNativeSandboxBackend,
 } from './src/backend/index.js';
-import { LegacySrtWindowsExecutor } from './src/legacy/legacySrtWindowsExecutor.js';
+import { WindowsNativeSandboxExecutor } from './src/windows/windowsNativeSandboxExecutor.js';
 
 type LobsterNativePluginConfig = {
   runtimeExecutablePath: string;
@@ -50,13 +50,13 @@ export default definePluginEntry({
     const config = readPluginConfig(api.pluginConfig);
     const audit = new SandboxAuditRecorder({
       policyVersion: LOBSTER_NATIVE_POLICY_VERSION,
-      runtimeVersion: config.runtimeVersion || LEGACY_SRT_RUNTIME_VERSION,
+      runtimeVersion: config.runtimeVersion || LOBSTER_NATIVE_WINDOWS_RUNTIME_VERSION,
       logger: {
         debug: message => api.logger.debug(message),
       },
     });
-    const executor = new LegacySrtWindowsExecutor({
-      helperPath: config.runtimeExecutablePath,
+    const executor = new WindowsNativeSandboxExecutor({
+      runnerPath: config.runtimeExecutablePath,
       runtimeEnabled: config.runtimeEnabled,
       audit,
     });
@@ -84,8 +84,8 @@ export default definePluginEntry({
           backendId: LOBSTER_NATIVE_SANDBOX_BACKEND_ID,
           policyVersion: LOBSTER_NATIVE_POLICY_VERSION,
           protocolVersion: LOBSTER_NATIVE_PROTOCOL_VERSION,
-          runtimeKind: config.runtimeKind || LEGACY_SRT_RUNTIME_KIND,
-          runtimeVersion: config.runtimeVersion || LEGACY_SRT_RUNTIME_VERSION,
+          runtimeKind: config.runtimeKind || LOBSTER_NATIVE_WINDOWS_RUNTIME_KIND,
+          runtimeVersion: config.runtimeVersion || LOBSTER_NATIVE_WINDOWS_RUNTIME_VERSION,
           ...executor.getStatus(),
           recentAudit: audit.recent(10),
         };
@@ -96,8 +96,8 @@ export default definePluginEntry({
           backendId: LOBSTER_NATIVE_SANDBOX_BACKEND_ID,
           policyVersion: LOBSTER_NATIVE_POLICY_VERSION,
           protocolVersion: LOBSTER_NATIVE_PROTOCOL_VERSION,
-          runtimeKind: config.runtimeKind || LEGACY_SRT_RUNTIME_KIND,
-          runtimeVersion: config.runtimeVersion || LEGACY_SRT_RUNTIME_VERSION,
+          runtimeKind: config.runtimeKind || LOBSTER_NATIVE_WINDOWS_RUNTIME_KIND,
+          runtimeVersion: config.runtimeVersion || LOBSTER_NATIVE_WINDOWS_RUNTIME_VERSION,
           ...executor.getStatus(),
           errorCode: getErrorCode(error),
           recentAudit: audit.recent(10),
@@ -113,7 +113,7 @@ export default definePluginEntry({
     });
     api.logger.info(
       '[lobster-native-sandbox] registered native sandbox backend '
-      + `(runtime=${config.runtimeKind || LEGACY_SRT_RUNTIME_KIND}, `
+      + `(runtime=${config.runtimeKind || LOBSTER_NATIVE_WINDOWS_RUNTIME_KIND}, `
       + `protocol=${config.protocolVersion || LOBSTER_NATIVE_PROTOCOL_VERSION}).`,
     );
   },

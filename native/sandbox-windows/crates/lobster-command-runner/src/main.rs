@@ -30,6 +30,9 @@ enum Command {
     Run {
         /// Request JSON file, or '-' to read stdin.
         request: PathBuf,
+        /// Optional sidecar for the final machine report. Child stderr stays unmodified.
+        #[arg(long)]
+        report_file: Option<PathBuf>,
     },
     /// Revoke the capability ACEs created for a request.
     Cleanup {
@@ -57,10 +60,13 @@ fn run(cli: Cli) -> Result<i32, SandboxError> {
             print_json(&report, false)?;
             Ok(0)
         }
-        Command::Run { request } => {
+        Command::Run {
+            request,
+            report_file,
+        } => {
             let request = read_request(&request)?;
             let report = execute(&request)?;
-            print_json(&report, true)?;
+            print_execution_report(&report, report_file.as_deref())?;
             Ok(match report.outcome {
                 ExecutionOutcome::Completed => report.exit_code.unwrap_or(1).min(255) as i32,
                 ExecutionOutcome::TimedOut => 124,
@@ -123,6 +129,30 @@ fn print_json<T: serde::Serialize>(value: &T, to_stderr: bool) -> Result<(), San
         println!("{json}");
     }
     Ok(())
+}
+
+fn print_execution_report<T: serde::Serialize>(
+    value: &T,
+    report_file: Option<&Path>,
+) -> Result<(), SandboxError> {
+    if let Some(report_file) = report_file {
+        let json = serde_json::to_vec(value).map_err(|error| {
+            SandboxError::new(
+                "response-json-failed",
+                "write-response",
+                format!("could not serialize response: {error}"),
+            )
+        })?;
+        fs::write(report_file, json).map_err(|error| {
+            SandboxError::new(
+                "response-write-failed",
+                "write-response",
+                format!("could not write {}: {error}", report_file.display()),
+            )
+        })?;
+        return Ok(());
+    }
+    print_json(value, true)
 }
 
 fn print_error(error: &SandboxError) {

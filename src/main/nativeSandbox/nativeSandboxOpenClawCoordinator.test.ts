@@ -50,6 +50,9 @@ const createHarness = (options: {
     state: NativeSandboxBackendState.Ready,
     backendId: NATIVE_SANDBOX_OPENCLAW_BACKEND_ID,
     protocolVersion: NATIVE_SANDBOX_PROTOCOL_VERSION,
+    networkIsolated: false,
+    readIsolated: false,
+    productionReady: false,
   }));
   const coordinator = createNativeSandboxOpenClawCoordinator({
     syncConfiguration,
@@ -154,6 +157,9 @@ describe('NativeSandboxOpenClawCoordinator', () => {
       registered: true,
       runtimeEnabled: true,
       state: NativeSandboxBackendState.Ready,
+      networkIsolated: false,
+      readIsolated: false,
+      productionReady: false,
       backendId: NATIVE_SANDBOX_OPENCLAW_BACKEND_ID,
       protocolVersion: NATIVE_SANDBOX_PROTOCOL_VERSION + 1,
     });

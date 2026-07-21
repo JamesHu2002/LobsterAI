@@ -1,18 +1,17 @@
 import {
   NATIVE_SANDBOX_ACTIVATION_AVAILABLE,
   NATIVE_SANDBOX_PROTOCOL_VERSION,
+  NATIVE_SANDBOX_WINDOWS_RUNTIME_VERSION,
   NativeSandboxRuntimeKind,
 } from '../../shared/nativeSandbox/constants';
 import type {
   NativeSandboxRuntimeKind as NativeSandboxRuntimeKindValue,
 } from '../../shared/nativeSandbox/types';
 import {
-  resolveLegacySrtWindowsHelperPath,
-} from './legacy/legacySrtWindowsEnvironment';
-import {
-  LEGACY_SRT_WINDOWS_RUNTIME_VERSION,
-} from './legacy/legacySrtWindowsProvisioner';
-import type { NativeSandboxEnvironment } from './nativeSandboxEnvironment';
+  isNativeSandboxEnvironmentSupported,
+  type NativeSandboxEnvironment,
+} from './nativeSandboxEnvironment';
+import { resolveWindowsNativeSandboxRunnerPath } from './windows/windowsNativeSandboxEnvironment';
 
 export interface NativeSandboxRuntimeDescriptor {
   runtimeKind: NativeSandboxRuntimeKindValue;
@@ -22,16 +21,14 @@ export interface NativeSandboxRuntimeDescriptor {
   activationAvailable: boolean;
 }
 
-/**
- * M0 exposes a vendor-neutral descriptor to config sync while the concrete
- * executable remains isolated behind the legacy Windows adapter.
- */
+/** Runtime descriptor serialized into the Lobster-owned OpenClaw plugin config. */
 export const resolveNativeSandboxRuntimeDescriptor = (
   environment: NativeSandboxEnvironment,
 ): NativeSandboxRuntimeDescriptor => ({
-  runtimeKind: NativeSandboxRuntimeKind.LegacyWindowsAdapter,
-  runtimeVersion: LEGACY_SRT_WINDOWS_RUNTIME_VERSION,
+  runtimeKind: NativeSandboxRuntimeKind.NativeWindows,
+  runtimeVersion: NATIVE_SANDBOX_WINDOWS_RUNTIME_VERSION,
   protocolVersion: NATIVE_SANDBOX_PROTOCOL_VERSION,
-  executablePath: resolveLegacySrtWindowsHelperPath(environment),
-  activationAvailable: NATIVE_SANDBOX_ACTIVATION_AVAILABLE,
+  executablePath: resolveWindowsNativeSandboxRunnerPath(environment),
+  activationAvailable: NATIVE_SANDBOX_ACTIVATION_AVAILABLE
+    && isNativeSandboxEnvironmentSupported(environment),
 });

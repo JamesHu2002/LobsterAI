@@ -16,7 +16,6 @@ import { COWORK_TEMP_DIR_NAME } from '../../shared/cowork/constants';
 import { CoworkErrorModelSource } from '../../shared/cowork/errorDetail';
 import { normalizeMcpServerUrlInput } from '../../shared/mcp/url';
 import {
-  NATIVE_SANDBOX_ACTIVATION_AVAILABLE,
   NATIVE_SANDBOX_OPENCLAW_BACKEND_ID,
   NATIVE_SANDBOX_OPENCLAW_PLUGIN_ID,
   NATIVE_SANDBOX_RETIRED_OPENCLAW_PLUGIN_IDS,
@@ -1845,14 +1844,6 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
     }
 
     const enterpriseManaged = this.isEnterprise();
-    const sandboxConfig = buildOpenClawSandboxConfig({
-      executionMode: coworkConfig.executionMode || 'local',
-      isEnterprise: enterpriseManaged,
-      nativeSandboxActivationAvailable: NATIVE_SANDBOX_ACTIVATION_AVAILABLE,
-      nativeSandboxEnabled: coworkConfig.nativeSandboxEnabled === true,
-    });
-    const nativeSandboxRuntimeEnabled =
-      sandboxConfig.backend === NATIVE_SANDBOX_OPENCLAW_BACKEND_ID;
     const nativeSandboxRuntime = resolveNativeSandboxRuntimeDescriptor(
       createNativeSandboxEnvironment(app, {
         resourcesPath: process.resourcesPath,
@@ -1860,6 +1851,14 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
         arch: process.arch,
       }),
     );
+    const sandboxConfig = buildOpenClawSandboxConfig({
+      executionMode: coworkConfig.executionMode || 'local',
+      isEnterprise: enterpriseManaged,
+      nativeSandboxActivationAvailable: nativeSandboxRuntime.activationAvailable,
+      nativeSandboxEnabled: coworkConfig.nativeSandboxEnabled === true,
+    });
+    const nativeSandboxRuntimeEnabled =
+      sandboxConfig.backend === NATIVE_SANDBOX_OPENCLAW_BACKEND_ID;
     const availableProviders = buildProviderModelCatalog(allProvidersMap);
     const agentModelDefaults = Object.keys(perModelCustomDefaults).length > 0
       ? buildCompleteAgentModelDefaults(allProvidersMap, perModelCustomDefaults)

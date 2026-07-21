@@ -63,7 +63,7 @@ export const digestSandboxAuditValue = (value: string): string => (
 );
 
 /**
- * M3 keeps a small in-memory diagnostic ring and emits metadata-only debug
+ * M2 keeps a small in-memory diagnostic ring and emits metadata-only debug
  * records. Raw commands, paths, environment values, file contents and output
  * are deliberately excluded.
  */

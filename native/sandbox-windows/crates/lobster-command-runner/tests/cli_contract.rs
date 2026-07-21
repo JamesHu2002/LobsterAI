@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::process::Command;
 
+use lobster_sandbox_core::cleanup;
 use lobster_sandbox_protocol::{
     ExecutionOutcome, ExecutionReport, NATIVE_SANDBOX_POLICY_VERSION,
     NATIVE_SANDBOX_PROTOCOL_VERSION, NetworkMode, RunRequest, RunnerErrorResponse, SandboxCommand,
@@ -101,6 +102,67 @@ fn json_cli_verifies_runs_and_cleans_up_a_workspace() {
 
     let cleanup_output = invoke("cleanup", &request_path);
     assert!(cleanup_output.status.success());
+}
+
+#[test]
+fn run_can_write_the_machine_report_to_a_sidecar_without_polluting_stderr() {
+    let workspace = must(tempfile::tempdir(), "create workspace");
+    let request_path = workspace.path().join("request.json");
+    let report_path = workspace.path().join("report.json");
+    let request = RunRequest {
+        protocol_version: NATIVE_SANDBOX_PROTOCOL_VERSION,
+        policy: SandboxPolicySnapshot {
+            policy_version: NATIVE_SANDBOX_POLICY_VERSION.to_string(),
+            task_id: "cli-sidecar".to_string(),
+            agent_id: "main".to_string(),
+            cwd: workspace.path().display().to_string(),
+            writable_roots: vec![workspace.path().display().to_string()],
+            readable_roots: Vec::new(),
+            protected_paths: Vec::new(),
+            scratch_dir: workspace.path().join(".scratch").display().to_string(),
+            network_mode: NetworkMode::Disabled,
+            limits: SandboxResourceLimits::default(),
+        },
+        command: SandboxCommand {
+            argv: vec![
+                "cmd.exe".to_string(),
+                "/d".to_string(),
+                "/c".to_string(),
+                "echo sidecar-out & echo sidecar-err 1>&2".to_string(),
+            ],
+            env: BTreeMap::new(),
+        },
+    };
+    must(
+        std::fs::write(
+            &request_path,
+            must(serde_json::to_vec(&request), "serialize request"),
+        ),
+        "write request",
+    );
+
+    let output = must(
+        Command::new(env!("CARGO_BIN_EXE_lobster-command-runner"))
+            .arg("run")
+            .arg(&request_path)
+            .arg("--report-file")
+            .arg(&report_path)
+            .output(),
+        "run command runner with sidecar",
+    );
+
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("sidecar-out"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("sidecar-err"));
+    assert!(!stderr.contains(REPORT_PREFIX));
+    let report: ExecutionReport = must(
+        serde_json::from_slice(&must(std::fs::read(&report_path), "read sidecar")),
+        "parse sidecar report",
+    );
+    assert_eq!(report.outcome, ExecutionOutcome::Completed);
+    assert_eq!(report.exit_code, Some(0));
+    must(cleanup(&request), "cleanup sidecar request");
 }
 
 fn invoke(command: &str, request: &std::path::Path) -> std::process::Output {

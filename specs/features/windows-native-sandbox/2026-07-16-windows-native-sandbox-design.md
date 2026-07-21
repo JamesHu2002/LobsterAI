@@ -1323,7 +1323,7 @@ M1 只证明核心技术可行，不接入用户开关。若 M1 不能稳定阻�
 - `lobster-native-sandbox` 正常路径已从 legacy executor 切换到 `WindowsNativeSandboxExecutor`，shell exec 和结构化文件工具均通过同一个 runner 策略执行；
 - runner 新增独立机器报告文件，避免协议 JSON 混入用户可见 stdout/stderr；请求、报告和文件工具输入使用每次初始化独立的 scratch 目录，并在完成或重置时清理；
 - 初始化会真实验证 workspace 内可写、workspace 外不可写；单进程仅持有一个活动 task workspace，切换工程需关闭 Sandbox 或重启 gateway 后重新初始化；
-- 打包配置已包含 Windows runner；最新 M2.x 将协议升级为 v3，版本核验固定为 `lobster-command-runner 0.3.0`；旧 runtime 代码和资源仅为回滚/对照保留，不参与正常执行路径；
+- 打包配置已包含 Windows runner；最新 M2.x 将协议升级为 v3，版本核验固定为 `lobster-command-runner 0.3.1`；旧 runtime 代码和资源仅为回滚/对照保留，不参与正常执行路径；
 - M2 自动验证已覆盖相关 Vitest、Rust workspace、Rust Clippy、Electron TypeScript 编译、Renderer/主进程生产构建、扩展预编译和打包资源核验；真实 runner smoke 已验证 shell 与文件工具均可在 workspace 内写入且不能写到外部目录。M2.x 的最终验证结果以本次变更交付记录为准。
 
 M2 仍沿用 M1 从当前登录用户派生的 restricted token，因此显式向 `Everyone` 授予写权限的目标对象仍是已知生产级缺口；网络、读取、安装态专用身份、签名和防篡改均未实现。这些限制不会在 UI 中被描述为已具备能力，正式安全承诺仍以 M3-M5 为门禁。
@@ -1431,7 +1431,8 @@ extension 从 `CreateSandboxBackendParams` 取得 `agentWorkspaceDir`、`taskWor
 - task workspace、Agent workspace 保持可写，Skills 保持只读；
 - OpenClaw plugin 配置通过 `filesystemCapabilities` 声明兼容能力；
 - 首批 `npm-cache-write` 仅开放 `%LOCALAPPDATA%/npm-cache`，不开放 npm 全局命令目录或整个 AppData；
-- protocol/policy/runtime 升级为 v3 / `workspace-write-v3` / `0.3.0`；
+- protocol/policy/runtime 升级为 v3 / `workspace-write-v3` / `0.3.1`；
+- Capability ACL 在 workspace/策略准备时写入、在 reset 时撤销；普通 exec 只重验路径并创建 restricted token，避免对真实 npm cache 每条命令重复传播 ACL；
 - tool call 不能覆盖宿主 Profile、系统、代理和临时目录环境变量，KEY/SECRET/TOKEN 类环境变量在进入 runner 前过滤；
 - 权限配置变化必须结束活动任务、清理旧 ACE 并以新 token 启动后生效；
 - 共享 npm cache 可被任务修改、真实用户配置仍可读取、网络和一般读取未隔离，继续作为内部测试风险明确展示。

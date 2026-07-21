@@ -229,6 +229,7 @@ export class WindowsNativeSandboxExecutor implements NativeSandboxExecutor {
   private scratchDir: string | null = null;
   private readonly policyRegistry = new WindowsNativePolicyRegistry();
   private initializationFlight: Promise<void> | null = null;
+  private policyPreparationFlight: Promise<void> | null = null;
   private resetFlight: Promise<void> | null = null;
   private readonly activeCommandIds = new Set<string>();
   private lastErrorCode: string | undefined;
@@ -289,15 +290,21 @@ export class WindowsNativeSandboxExecutor implements NativeSandboxExecutor {
     const policyContext = rawPolicyContext
       ? this.policyRegistry.prepare(rawPolicyContext)
       : undefined;
+    if (this.workspaceDir && this.state === LobsterNativeSandboxRuntimeState.Error) {
+      throw new LobsterNativeSandboxBackendError(
+        LobsterNativeSandboxBackendErrorCode.RuntimeInitializationFailed,
+        'Native Sandbox policy preparation failed. Reset Sandbox before running another task.',
+      );
+    }
     if (this.workspaceDir && this.state === LobsterNativeSandboxRuntimeState.Ready) {
       this.assertSameWorkspace(workspaceDir);
-      if (policyContext) this.policyRegistry.register(policyContext);
+      if (policyContext) await this.ensurePolicyContextPrepared(workspaceDir, policyContext);
       return;
     }
     if (this.initializationFlight) {
       await this.initializationFlight;
       this.assertSameWorkspace(workspaceDir);
-      if (policyContext) this.policyRegistry.register(policyContext);
+      if (policyContext) await this.ensurePolicyContextPrepared(workspaceDir, policyContext);
       return;
     }
     if (!policyContext) {
@@ -311,45 +318,12 @@ export class WindowsNativeSandboxExecutor implements NativeSandboxExecutor {
     this.lastErrorCode = undefined;
     const flight = (async () => {
       let scratchDir: string | null = null;
-      let verificationRequestPath: string | null = null;
       try {
         scratchDir = normalizeWindowsPath(this.createScratchDirectory());
         fs.mkdirSync(scratchDir, { recursive: true });
         this.workspaceDir = workspaceDir;
         this.scratchDir = scratchDir;
-        this.policyRegistry.register(policyContext);
-        const request = this.createRequest({
-          commandArgv: ['cmd.exe', '/d', '/c', 'exit 0'],
-          cwd: workspaceDir,
-          env: {},
-          sessionKey: 'm2-prepare',
-          policyContext,
-        });
-        verificationRequestPath = this.writeJsonArtifact('verify', request);
-        const result = await this.requireInvoker()(
-          ['verify', verificationRequestPath],
-          { cwd: workspaceDir },
-        );
-        if (result.exitCode !== 0) {
-          throw new LobsterNativeSandboxBackendError(
-            LobsterNativeSandboxBackendErrorCode.RuntimeInitializationFailed,
-            `Native runner verification failed with exit code ${String(result.exitCode)}.`,
-          );
-        }
-        const verification = this.parseVerificationReport(result.stdout);
-        this.networkIsolated = verification.networkIsolated;
-        this.readIsolated = verification.readIsolated;
-        this.productionReady = verification.productionReady;
-        if (
-          !verification.restrictedToken
-          || !verification.writeRestricted
-          || !verification.ownerPreserved
-        ) {
-          throw new LobsterNativeSandboxBackendError(
-            LobsterNativeSandboxBackendErrorCode.RuntimeProtocolInvalid,
-            'Native runner did not prove the required Windows write boundary.',
-          );
-        }
+        await this.preparePolicyContext(workspaceDir, policyContext, 'm2-prepare');
         if (this.customWriteBoundaryProbe) {
           await this.customWriteBoundaryProbe(workspaceDir);
         } else {
@@ -362,9 +336,6 @@ export class WindowsNativeSandboxExecutor implements NativeSandboxExecutor {
           workspaceDir,
         });
       } catch (error) {
-        if (verificationRequestPath) {
-          await this.cleanupPolicy(verificationRequestPath, workspaceDir).catch(() => undefined);
-        }
         if (scratchDir) fs.rmSync(scratchDir, { recursive: true, force: true });
         this.workspaceDir = null;
         this.scratchDir = null;
@@ -384,14 +355,92 @@ export class WindowsNativeSandboxExecutor implements NativeSandboxExecutor {
             error instanceof Error ? error.message : String(error)
           }`,
         );
-      } finally {
-        if (verificationRequestPath) fs.rmSync(verificationRequestPath, { force: true });
       }
     })().finally(() => {
       if (this.initializationFlight === flight) this.initializationFlight = null;
     });
     this.initializationFlight = flight;
     await flight;
+  }
+
+  private async ensurePolicyContextPrepared(
+    workspaceDir: string,
+    policyContext: PreparedNativeSandboxPolicyContext,
+  ): Promise<void> {
+    if (this.policyRegistry.contains(policyContext)) return;
+    if (this.policyPreparationFlight) {
+      await this.policyPreparationFlight;
+      return this.ensurePolicyContextPrepared(workspaceDir, policyContext);
+    }
+    const flight = this.preparePolicyContext(
+      workspaceDir,
+      policyContext,
+      'm2-policy-expand',
+    ).catch(error => {
+      this.state = LobsterNativeSandboxRuntimeState.Error;
+      this.lastErrorCode = getErrorCode(error);
+      this.options.audit.record({
+        type: SandboxAuditEventType.BackendFailedClosed,
+        result: SandboxAuditResult.Failed,
+        workspaceDir,
+        errorCode: this.lastErrorCode,
+      });
+      throw error;
+    }).finally(() => {
+      if (this.policyPreparationFlight === flight) this.policyPreparationFlight = null;
+    });
+    this.policyPreparationFlight = flight;
+    await flight;
+  }
+
+  private async preparePolicyContext(
+    workspaceDir: string,
+    policyContext: PreparedNativeSandboxPolicyContext,
+    sessionKey: string,
+  ): Promise<void> {
+    let requestPath: string | null = null;
+    try {
+      const request = this.createRequest({
+        commandArgv: ['cmd.exe', '/d', '/c', 'exit 0'],
+        cwd: workspaceDir,
+        env: {},
+        sessionKey,
+        policyContext,
+      });
+      requestPath = this.writeJsonArtifact('verify', request);
+      const result = await this.requireInvoker()(
+        ['verify', requestPath],
+        { cwd: workspaceDir },
+      );
+      if (result.exitCode !== 0) {
+        throw new LobsterNativeSandboxBackendError(
+          LobsterNativeSandboxBackendErrorCode.RuntimeInitializationFailed,
+          `Native runner verification failed with exit code ${String(result.exitCode)}.`,
+        );
+      }
+      const verification = this.parseVerificationReport(result.stdout);
+      this.networkIsolated = verification.networkIsolated;
+      this.readIsolated = verification.readIsolated;
+      this.productionReady = verification.productionReady;
+      if (
+        !verification.restrictedToken
+        || !verification.writeRestricted
+        || !verification.ownerPreserved
+      ) {
+        throw new LobsterNativeSandboxBackendError(
+          LobsterNativeSandboxBackendErrorCode.RuntimeProtocolInvalid,
+          'Native runner did not prove the required Windows write boundary.',
+        );
+      }
+      this.policyRegistry.register(policyContext);
+    } catch (error) {
+      if (requestPath) {
+        await this.cleanupPolicy(requestPath, workspaceDir).catch(() => undefined);
+      }
+      throw error;
+    } finally {
+      if (requestPath) fs.rmSync(requestPath, { force: true });
+    }
   }
 
   async wrapCommand(params: {
@@ -587,6 +636,10 @@ export class WindowsNativeSandboxExecutor implements NativeSandboxExecutor {
   async reset(): Promise<void> {
     if (this.initializationFlight) {
       await this.initializationFlight.catch(() => undefined);
+      return this.reset();
+    }
+    if (this.policyPreparationFlight) {
+      await this.policyPreparationFlight.catch(() => undefined);
       return this.reset();
     }
     if (this.resetFlight) return this.resetFlight;

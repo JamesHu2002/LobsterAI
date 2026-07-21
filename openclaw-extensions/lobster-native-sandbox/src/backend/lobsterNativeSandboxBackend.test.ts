@@ -48,7 +48,7 @@ const createHarness = () => {
     executor,
     audit: new SandboxAuditRecorder({
       policyVersion: 'workspace-write-v3',
-      runtimeVersion: '0.3.0',
+      runtimeVersion: '0.3.1',
     }),
     runtimeEnabled: true,
     platform: 'win32',

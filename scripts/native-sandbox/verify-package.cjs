@@ -6,7 +6,7 @@ const { execFileSync } = require('child_process');
 
 const SRT_PACKAGE_NAME = '@anthropic-ai/sandbox-runtime';
 const EXPECTED_SRT_VERSION = '0.0.65';
-const EXPECTED_NATIVE_RUNNER_VERSION = '0.3.0';
+const EXPECTED_NATIVE_RUNNER_VERSION = '0.3.1';
 const WINDOWS_X64_MACHINE = 0x8664;
 const EXTENSION_ID = 'lobster-native-sandbox';
 const NATIVE_RUNNER_FILENAME = 'lobster-command-runner.exe';

@@ -28,7 +28,7 @@ struct PreparedSandbox {
     writable_capability_count: usize,
 }
 
-fn prepare(request: &RunRequest) -> SandboxResult<PreparedSandbox> {
+fn resolve(request: &RunRequest) -> SandboxResult<PreparedSandbox> {
     request.validate().map_err(|error| {
         SandboxError::new("protocol-invalid", "validate-request", error.to_string())
     })?;
@@ -43,7 +43,6 @@ fn prepare(request: &RunRequest) -> SandboxResult<PreparedSandbox> {
         .iter()
         .map(|root| CapabilitySid::for_path(root))
         .collect::<SandboxResult<Vec<_>>>()?;
-    apply_policy_acl(&policy, &writable_capabilities, &readable_capabilities)?;
     let writable_capability_count = writable_capabilities.len();
     let mut capabilities = writable_capabilities;
     capabilities.extend(readable_capabilities);
@@ -55,10 +54,18 @@ fn prepare(request: &RunRequest) -> SandboxResult<PreparedSandbox> {
 }
 
 pub fn verify(request: &RunRequest) -> SandboxResult<VerificationReport> {
-    let prepared = prepare(request)?;
+    let prepared = resolve(request)?;
     let (writable_capabilities, readable_capabilities) = prepared
         .capabilities
         .split_at(prepared.writable_capability_count);
+    // ACL mutation belongs to policy preparation. The ACEs persist for the runtime cycle and
+    // are revoked by cleanup(), so command execution must not propagate the same inherited ACEs
+    // through large roots (for example npm-cache) on every exec call.
+    apply_policy_acl(
+        &prepared.policy,
+        writable_capabilities,
+        readable_capabilities,
+    )?;
     let token = RestrictedToken::create(writable_capabilities, readable_capabilities)?;
     let diagnostics = token.diagnostics(writable_capabilities, readable_capabilities)?;
     Ok(VerificationReport {
@@ -99,7 +106,10 @@ pub fn verify(request: &RunRequest) -> SandboxResult<VerificationReport> {
 
 pub fn execute(request: &RunRequest) -> SandboxResult<ExecutionReport> {
     let started_at = Instant::now();
-    let prepared = prepare(request)?;
+    // Re-resolve and validate every path for each command, but consume the ACL capabilities that
+    // verify() prepared for this runtime cycle instead of rewriting persistent directory ACLs.
+    // Missing preparation therefore fails closed at the Windows access check.
+    let prepared = resolve(request)?;
     let (writable_capabilities, readable_capabilities) = prepared
         .capabilities
         .split_at(prepared.writable_capability_count);

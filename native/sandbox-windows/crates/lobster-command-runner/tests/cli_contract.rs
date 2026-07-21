@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::process::Command;
 
-use lobster_sandbox_core::cleanup;
+use lobster_sandbox_core::{cleanup, verify};
 use lobster_sandbox_protocol::{
     ExecutionOutcome, ExecutionReport, NATIVE_SANDBOX_POLICY_VERSION,
     NATIVE_SANDBOX_PROTOCOL_VERSION, NetworkMode, RunRequest, RunnerErrorResponse, SandboxCommand,
@@ -145,6 +145,7 @@ fn run_can_write_the_machine_report_to_a_sidecar_without_polluting_stderr() {
         ),
         "write request",
     );
+    must(verify(&request), "prepare sidecar request");
 
     let output = must(
         Command::new(env!("CARGO_BIN_EXE_lobster-command-runner"))

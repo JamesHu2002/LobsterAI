@@ -70,6 +70,16 @@ export class WindowsNativePolicyRegistry {
     }
   }
 
+  contains(context: PreparedNativeSandboxPolicyContext): boolean {
+    return context.writableRoots.every(root => (
+      this.registeredWritableRoots.has(this.pathKey(root.path))
+    )) && context.readableRoots.every(root => (
+      this.registeredReadableRoots.has(this.pathKey(root.path))
+    )) && context.protectedPaths.every(protectedPath => (
+      this.registeredProtectedPaths.has(this.pathKey(protectedPath))
+    ));
+  }
+
   require(context?: NativeSandboxPolicyContext): PreparedNativeSandboxPolicyContext {
     if (context) {
       const prepared = this.prepare(context);

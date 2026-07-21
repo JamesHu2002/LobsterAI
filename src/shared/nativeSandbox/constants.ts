@@ -1,6 +1,6 @@
 export const NATIVE_SANDBOX_PROTOCOL_VERSION = 3;
 export const NATIVE_SANDBOX_POLICY_VERSION = 'workspace-write-v3';
-export const NATIVE_SANDBOX_WINDOWS_RUNTIME_VERSION = '0.3.0';
+export const NATIVE_SANDBOX_WINDOWS_RUNTIME_VERSION = '0.3.1';
 export const NATIVE_SANDBOX_OPENCLAW_BACKEND_ID = 'lobster-native';
 export const NATIVE_SANDBOX_OPENCLAW_PLUGIN_ID = 'lobster-native-sandbox';
 export const NATIVE_SANDBOX_RETIRED_OPENCLAW_PLUGIN_IDS = [

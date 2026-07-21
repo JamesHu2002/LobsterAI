@@ -50,7 +50,7 @@ describe.skipIf(!canRun)('WindowsNativeSandboxExecutor smoke', () => {
       runtimeEnabled: true,
       audit: new SandboxAuditRecorder({
         policyVersion: 'workspace-write-v3',
-        runtimeVersion: '0.3.0',
+        runtimeVersion: '0.3.1',
       }),
     });
     try {

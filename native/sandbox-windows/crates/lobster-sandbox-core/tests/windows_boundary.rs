@@ -26,6 +26,14 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::create(true)
+    }
+
+    fn new_unprepared() -> Self {
+        Self::create(false)
+    }
+
+    fn create(prepare_acl: bool) -> Self {
         let workspace = must(tempfile::tempdir(), "workspace tempdir");
         let host_profile = must(tempfile::tempdir(), "host profile tempdir");
         let skills = must(tempfile::tempdir(), "skills tempdir");
@@ -77,6 +85,9 @@ impl Fixture {
                 env: BTreeMap::new(),
             },
         };
+        if prepare_acl {
+            must(verify(&request), "prepare sandbox fixture");
+        }
         Self {
             workspace,
             host_profile,
@@ -90,6 +101,29 @@ impl Fixture {
         self.request.command.argv = argv;
         must(execute(&self.request), "sandbox command should start")
     }
+}
+
+#[test]
+fn execute_without_verify_fails_closed() {
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut fixture = Fixture::new_unprepared();
+    let output = fixture.workspace.path().join("must-not-exist.txt");
+    fixture.request.command.argv = vec![
+        "cmd.exe".to_string(),
+        "/d".to_string(),
+        "/c".to_string(),
+        "echo denied>must-not-exist.txt".to_string(),
+    ];
+
+    if let Ok(report) = execute(&fixture.request) {
+        assert_ne!(report.exit_code, Some(0));
+    }
+    assert!(
+        !output.exists(),
+        "a command must not gain workspace access before policy preparation",
+    );
 }
 
 #[test]
@@ -211,6 +245,7 @@ fn explicit_shared_cache_root_is_writable_without_opening_local_app_data() {
         .policy
         .writable_roots
         .push(display(&npm_cache));
+    must(verify(&fixture.request), "prepare shared cache root");
 
     let allowed = fixture.run(vec![
         powershell_exe(),
@@ -360,6 +395,7 @@ fn junction_escape_and_protected_path_writes_are_denied() {
         "create protected fixture",
     );
     fixture.request.policy.protected_paths = vec![display(&protected)];
+    must(verify(&fixture.request), "prepare protected path");
     let readable_report = fixture.run(vec![
         "cmd.exe".to_string(),
         "/d".to_string(),

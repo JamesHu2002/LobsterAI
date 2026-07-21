@@ -107,7 +107,7 @@ const createFixture = () => {
     runtimeEnabled: true,
     audit: new SandboxAuditRecorder({
       policyVersion: 'workspace-write-v3',
-      runtimeVersion: '0.3.0',
+      runtimeVersion: '0.3.1',
     }),
     platform: 'win32',
     pathExists: () => true,
@@ -271,6 +271,24 @@ describe('WindowsNativeSandboxExecutor', () => {
         { id: 'tool-cache', path: secondCache },
       ],
     });
+    await executor.prepareWorkspace(workspace, {
+      ...policyContext,
+      agentWorkspaceDir: secondAgentWorkspace,
+      writableRoots: [
+        { id: 'agent', path: secondAgentWorkspace },
+        { id: 'tool-cache', path: secondCache },
+      ],
+    });
+
+    const verificationRequests = runnerRequests.filter(request => request.command === 'verify');
+    expect(verificationRequests).toHaveLength(2);
+    expect(verificationRequests[1]?.request.policy.writableRoots).toEqual(
+      expect.arrayContaining([
+        fs.realpathSync.native(workspace),
+        fs.realpathSync.native(secondAgentWorkspace),
+        fs.realpathSync.native(secondCache),
+      ]),
+    );
 
     await executor.reset();
     const cleanup = runnerRequests.findLast(request => request.command === 'cleanup');

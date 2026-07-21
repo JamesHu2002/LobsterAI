@@ -243,7 +243,7 @@ describe('OpenClawConfigSync runtime config output', () => {
         protocolVersion: 3,
         runtimeEnabled: true,
         runtimeKind: 'native-windows',
-        runtimeVersion: '0.3.0',
+        runtimeVersion: '0.3.1',
         filesystemCapabilities: ['npm-cache-write'],
       },
     });

@@ -104,7 +104,7 @@ tool call 不能覆盖 `HOME`、`USERPROFILE`、`APPDATA`、`LOCALAPPDATA`、`TE
 ```text
 protocolVersion = 3
 policyVersion = workspace-write-v3
-runtimeVersion = 0.3.0
+runtimeVersion = 0.3.1
 profile.mode = inherit-host
 ```
 
@@ -224,6 +224,14 @@ OpenClaw config 只传入 `filesystemCapabilities: ['npm-cache-write']`。extens
 
 上一版的 `sandboxDataRoot` 不再传入。旧 `<userData>/sandbox-data` 不会被本版继续使用，也不在本阶段自动删除，避免升级时无提示清理用户数据。
 
+### 4.8 ACL 准备与命令执行生命周期
+
+Capability ACE 是 runtime 周期级状态，不是单条命令状态。`verify` 在首次准备 workspace 或运行期新增权限根时写入 ACL；`cleanup` 在 reset 时统一撤销。普通 `run` 仍会重新解析并校验全部路径、根据当前请求创建 restricted token，但不得重复写入相同 ACL。
+
+这一约束对共享缓存尤其重要。Windows 会把根目录上的继承 ACE 传播到已有子项；若每条命令都重新设置 `%LOCALAPPDATA%/npm-cache` ACL，真实缓存规模下会产生十几到数十秒的固定延迟，并被 OpenClaw 的命令超时误判为 `SIGKILL`。将 ACL 写入收敛到准备阶段不扩大授权范围：未完成 `verify` 的新根没有对应 ACE，restricted token 的访问检查会失败关闭。
+
+同一 runtime 周期若出现新的 Agent workspace 或语义化根，extension 必须先完成一次新策略准备并登记到 cleanup union，之后才能生成该上下文的命令请求；相同策略的重复命令直接复用已准备的 Capability ACE。
+
 ## 5. 安全边界与风险
 
 | 风险 | 当前处理 |
@@ -266,7 +274,7 @@ scripts/native-sandbox/verify-package.cjs
 
 ### 7.1 自动化
 
-1. 协议、policy 和 runner 版本一致升级至 v3 / `workspace-write-v3` / `0.3.0`。
+1. 协议、policy 和 runner 版本一致升级至 v3 / `workspace-write-v3` / `0.3.1`。
 2. request 不再包含 `sandboxHomeDir`，改为 `profile.mode=inherit-host` 及四个真实 Profile 路径。
 3. tool call 不能覆盖 Profile、TEMP/TMP、PATH、代理和敏感 KEY/SECRET/TOKEN 环境变量。
 4. 有 `npm-cache-write` 时 npm cache 进入可写根；去掉能力后只保留基础可写根。

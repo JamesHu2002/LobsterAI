@@ -1,0 +1,20 @@
+[package]
+name = "lobster-sandbox-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+dunce.workspace = true
+lobster-sandbox-protocol = { path = "../lobster-sandbox-protocol" }
+sha2.workspace = true
+thiserror.workspace = true
+windows-sys.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

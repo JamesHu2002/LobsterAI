@@ -1037,8 +1037,8 @@ rollback-failed
 
 | Milestone | 目标 | 可交付状态 | 当前状态 | 粗估人日 | 是否阻塞 Windows 首发 |
 | --- | --- | --- | --- | ---: | --- |
-| M0 | 架构转向与中性边界 | 沙箱关闭时完全回归，旧后端不再扩展 | 已实施，待端侧验收 | 3-5 | 是 |
-| M1 | Windows runner 技术原型 | CLI 可证明进程树和 workspace 写边界 | 未开始 | 10-18 | 是 |
+| M0 | 架构转向与中性边界 | 沙箱关闭时完全回归，旧后端不再扩展 | 已完成 | 3-5 | 是 |
+| M1 | Windows runner 技术原型 | CLI 可证明进程树和 workspace 写边界 | 已实施，待端侧验收与安全复核 | 10-18 | 是 |
 | M2 | 单 workspace 产品内测版 | 用户可在已有工程中开关并执行真实任务 | 未开始，可复用现有 UI/接入层 | 7-12 | 是 |
 | M3 | 安装态与系统安全加固 | setup、网络、签名、修复和失败关闭完整 | 未开始 | 12-22 | 是 |
 | M4 | 多 workspace、审计与企业能力 | 并发任务权限不形成并集，审计可追溯 | 未开始 | 8-15 | 是 |
@@ -1114,7 +1114,7 @@ M0 可以独立提交。此时设置页开关可以保持不可用或仅限开�
 - OpenClaw 生成配置在 M0 固定为 sandbox off，历史启用状态会安全回落为关闭；
 - 原有实现仅作为 `legacy` 诊断/对照适配器保留，未删除依赖和打包资源；
 - `lobster-native-sandbox` 已建立独立的 provisioner/executor、协议版本和 backend 身份边界；
-- 尚未实现 restricted token、Capability SID、ACL、Job Object、原生 runner 或网络隔离，这些从 M1 开始交付。
+- 在 M0 提交点尚未实现 restricted token、Capability SID、ACL、Job Object、原生 runner 或网络隔离；其后的 M1 实施结果见 18.6。
 
 ## 18. M1：Windows runner 技术原型
 
@@ -1171,6 +1171,22 @@ M0 可以独立提交。此时设置页开关可以保持不可用或仅限开�
 ### 18.5 完成门禁
 
 M1 只证明核心技术可行，不接入用户开关。若 M1 不能稳定阻止子进程和宽 ACL 场景的越界写入，不进入 M2。
+
+### 18.6 本次实施结果
+
+截至 2026-07-20：
+
+- 已建立 `native/sandbox-windows` Rust workspace，按 protocol、core 和 runner 三个 crate 维护；
+- 已实现版本化 JSON 请求、稳定错误码、`verify`、`run`、`cleanup` CLI；
+- 已实现规范化路径校验、策略根 reparse point 拒绝、稳定 Capability SID、增量 ACL、owner 保持校验；
+- 已实现 `DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED` restricted token，并保留 PowerShell 启动所需的最小兼容 SID；
+- 已实现 suspended spawn、Job Object 先绑定后恢复、最大进程数、超时、Ctrl+C 取消、输出上限和进程树回收；
+- 已实现独立 scratch/profile 环境与继承环境收敛；
+- 已保留非 Windows 平台入口；当前明确返回 `unsupported-platform`，后续 macOS 后端可复用同一协议而不改调用方契约；
+- 自动化边界测试已覆盖已有目录、workspace 内写入、另一个宽 `Users`/`Authenticated Users` ACL 目录拒写、PowerShell → cmd 子进程链、Node.js、Python、npm、junction、protected path 和超时回收；
+- 产品开关、Electron/OpenClaw 接入和网络隔离仍保持关闭，符合 M1 独立原型范围。
+
+当前原型仍从登录用户 token 派生。为兼容 Windows PowerShell CLR 初始化，token 需要携带 logon SID 和 `Everyone` 兼容 SID；因此对“目标对象自身显式授予 `Everyone` 写权限”的极端 ACL 不能作为生产级强边界。M2 可以继续验证产品接入，但在对外宣称严格 workspace-only 之前，必须由安装态提供专用低权限 sandbox identity，使“原身份检查 + Capability 检查”同时成立；完整安装、修复、升级和网络规则仍归 M3。
 
 ## 19. M2：单 workspace 产品内测版
 

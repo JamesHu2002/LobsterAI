@@ -47,6 +47,7 @@ nul
 .vscode/
 
 sandbox/
+native/sandbox-windows/target/
 
 # Accidentally committed git hook files outside git-hooks/
 **/**/post-commit

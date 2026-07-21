@@ -17,8 +17,8 @@ describe('resolveNativeSandboxRuntimeDescriptor', () => {
 
     expect(descriptor).toMatchObject({
       runtimeKind: NativeSandboxRuntimeKind.NativeWindows,
-      runtimeVersion: '0.2.0',
-      protocolVersion: 2,
+      runtimeVersion: '0.3.0',
+      protocolVersion: 3,
       activationAvailable: true,
     });
     expect(descriptor.executablePath).toMatch(

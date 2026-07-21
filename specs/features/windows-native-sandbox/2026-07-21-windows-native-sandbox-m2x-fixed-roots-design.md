@@ -2,9 +2,12 @@
 
 > 文档日期：2026-07-21
 >
-> 当前状态：代码已实施，待端侧验收
+> 当前状态：历史方案；持久 Sandbox Home 已由同日的“宿主 Profile 与语义化权限设计”取代
 >
 > 适用范围：Windows x64 内部测试版
+
+> 本文保留用于记录 M2.x 第一版设计。当前实现请以
+> `2026-07-21-windows-native-sandbox-host-profile-capabilities-design.md` 为准。
 
 ## 1. 概述
 

@@ -14,6 +14,7 @@ import {
   LOBSTER_NATIVE_POLICY_VERSION,
   LOBSTER_NATIVE_PROTOCOL_VERSION,
   LobsterNativeSandboxBackendErrorCode,
+  LobsterNativeSandboxProfileMode,
   LobsterNativeSandboxRuntimeState,
   type LobsterNativeSandboxRuntimeState as LobsterNativeSandboxRuntimeStateValue,
 } from '../backend/constants.js';
@@ -36,6 +37,7 @@ import {
 } from './windowsNativePolicyRegistry.js';
 
 const WINDOWS_ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const SENSITIVE_CHILD_ENV_NAME_PATTERN = /(KEY|SECRET|TOKEN)/i;
 const DEFAULT_TIMEOUT_MS = 3_600_000;
 const DEFAULT_MAX_PROCESSES = 64;
 const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
@@ -76,7 +78,7 @@ interface WindowsNativeVerificationReport {
   writableRoots: string[];
   readableRoots: string[];
   protectedPaths: string[];
-  sandboxHomeDir: string;
+  profileMode: string;
   restrictedToken: boolean;
   writeRestricted: boolean;
   ownerPreserved: boolean;
@@ -103,7 +105,13 @@ interface WindowsNativeRunRequest {
     writableRoots: string[];
     readableRoots: string[];
     protectedPaths: string[];
-    sandboxHomeDir: string;
+    profile: {
+      mode: typeof LobsterNativeSandboxProfileMode.InheritHost;
+      homeDir: string;
+      userProfileDir: string;
+      appDataDir: string;
+      localAppDataDir: string;
+    };
     scratchDir: string;
     networkMode: 'disabled';
     limits: {
@@ -763,7 +771,7 @@ export class WindowsNativeSandboxExecutor implements NativeSandboxExecutor {
           params.policyContext.readableRoots.map(root => root.path),
         ),
         protectedPaths: this.policyRegistry.uniquePaths(params.policyContext.protectedPaths),
-        sandboxHomeDir: params.policyContext.sandboxHomeDir,
+        profile: params.policyContext.profile,
         scratchDir: this.requireScratch(),
         networkMode: 'disabled',
         limits: {
@@ -841,7 +849,11 @@ export class WindowsNativeSandboxExecutor implements NativeSandboxExecutor {
           `Sandbox child environment variable is not allowed: ${name}`,
         );
       }
-      if (PROTECTED_CHILD_ENV_NAMES.has(upperName) || upperName.startsWith('GIT_CONFIG_')) {
+      if (
+        PROTECTED_CHILD_ENV_NAMES.has(upperName)
+        || upperName.startsWith('GIT_CONFIG_')
+        || SENSITIVE_CHILD_ENV_NAME_PATTERN.test(upperName)
+      ) {
         continue;
       }
       result[name] = value;
@@ -865,7 +877,7 @@ export class WindowsNativeSandboxExecutor implements NativeSandboxExecutor {
       || !Array.isArray(report.writableRoots)
       || !Array.isArray(report.readableRoots)
       || !Array.isArray(report.protectedPaths)
-      || typeof report.sandboxHomeDir !== 'string'
+      || report.profileMode !== LobsterNativeSandboxProfileMode.InheritHost
       || typeof report.networkIsolated !== 'boolean'
       || typeof report.readIsolated !== 'boolean'
       || typeof report.productionReady !== 'boolean'

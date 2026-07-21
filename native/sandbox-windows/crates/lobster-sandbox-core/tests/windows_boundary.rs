@@ -9,7 +9,8 @@ use std::sync::Mutex;
 use lobster_sandbox_core::{cleanup, execute, verify};
 use lobster_sandbox_protocol::{
     ExecutionOutcome, NATIVE_SANDBOX_POLICY_VERSION, NATIVE_SANDBOX_PROTOCOL_VERSION, NetworkMode,
-    RunRequest, SandboxCommand, SandboxPolicySnapshot, SandboxResourceLimits,
+    RunRequest, SandboxCommand, SandboxHostProfile, SandboxPolicySnapshot, SandboxProfileMode,
+    SandboxResourceLimits,
 };
 use tempfile::TempDir;
 
@@ -17,7 +18,7 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 struct Fixture {
     workspace: TempDir,
-    sandbox_home: TempDir,
+    host_profile: TempDir,
     skills: TempDir,
     outside: TempDir,
     request: RunRequest,
@@ -26,14 +27,21 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let workspace = must(tempfile::tempdir(), "workspace tempdir");
-        let sandbox_home = must(tempfile::tempdir(), "sandbox home tempdir");
+        let host_profile = must(tempfile::tempdir(), "host profile tempdir");
         let skills = must(tempfile::tempdir(), "skills tempdir");
         let outside = must(tempfile::tempdir(), "outside tempdir");
         grant_broad_non_world_access(workspace.path());
-        grant_broad_non_world_access(sandbox_home.path());
+        grant_broad_non_world_access(host_profile.path());
         grant_broad_non_world_access(skills.path());
         grant_broad_non_world_access(outside.path());
         let scratch = workspace.path().join(".lobster-scratch");
+        let app_data = host_profile.path().join("AppData").join("Roaming");
+        let local_app_data = host_profile.path().join("AppData").join("Local");
+        must(std::fs::create_dir_all(&app_data), "create host APPDATA");
+        must(
+            std::fs::create_dir_all(&local_app_data),
+            "create host LOCALAPPDATA",
+        );
         let request = RunRequest {
             protocol_version: NATIVE_SANDBOX_PROTOCOL_VERSION,
             policy: SandboxPolicySnapshot {
@@ -41,10 +49,16 @@ impl Fixture {
                 task_id: "m1-boundary-test".to_string(),
                 agent_id: "main".to_string(),
                 cwd: display(workspace.path()),
-                writable_roots: vec![display(workspace.path()), display(sandbox_home.path())],
+                writable_roots: vec![display(workspace.path())],
                 readable_roots: vec![display(skills.path())],
                 protected_paths: Vec::new(),
-                sandbox_home_dir: display(sandbox_home.path()),
+                profile: SandboxHostProfile {
+                    mode: SandboxProfileMode::InheritHost,
+                    home_dir: display(host_profile.path()),
+                    user_profile_dir: display(host_profile.path()),
+                    app_data_dir: display(&app_data),
+                    local_app_data_dir: display(&local_app_data),
+                },
                 scratch_dir: display(&scratch),
                 network_mode: NetworkMode::Disabled,
                 limits: SandboxResourceLimits {
@@ -65,7 +79,7 @@ impl Fixture {
         };
         Self {
             workspace,
-            sandbox_home,
+            host_profile,
             skills,
             outside,
             request,
@@ -130,42 +144,97 @@ fn declared_skills_root_is_readable_but_not_writable() {
 }
 
 #[test]
-fn profile_environment_uses_the_persistent_sandbox_home() {
+fn profile_environment_inherits_host_paths_without_granting_profile_write() {
     let _guard = TEST_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut fixture = Fixture::new();
-    let profile_file = fixture.sandbox_home.path().join("profile-value.txt");
-    let first = fixture.run(vec![
+    let profile_file = fixture.host_profile.path().join("profile-value.txt");
+    must(
+        std::fs::write(&profile_file, "host-value"),
+        "write host profile fixture",
+    );
+    let read = fixture.run(vec![
         powershell_exe(),
         "-NoLogo".to_string(),
         "-NoProfile".to_string(),
         "-NonInteractive".to_string(),
         "-Command".to_string(),
-        "Set-Content -LiteralPath (Join-Path $env:USERPROFILE 'profile-value.txt') -Value 'persisted'".to_string(),
+        "$value = Get-Content -LiteralPath (Join-Path $env:USERPROFILE 'profile-value.txt'); Set-Content -LiteralPath 'profile-copy.txt' -Value $value".to_string(),
     ]);
-    assert_eq!(first.outcome, ExecutionOutcome::Completed);
-    assert_eq!(first.exit_code, Some(0));
-    assert!(profile_file.exists());
-
-    let second = fixture.run(vec![
-        powershell_exe(),
-        "-NoLogo".to_string(),
-        "-NoProfile".to_string(),
-        "-NonInteractive".to_string(),
-        "-Command".to_string(),
-        "$value = Get-Content -LiteralPath (Join-Path $env:HOME 'profile-value.txt'); Set-Content -LiteralPath 'profile-copy.txt' -Value $value".to_string(),
-    ]);
-    assert_eq!(second.outcome, ExecutionOutcome::Completed);
-    assert_eq!(second.exit_code, Some(0));
+    assert_eq!(read.outcome, ExecutionOutcome::Completed);
+    assert_eq!(read.exit_code, Some(0));
     assert_eq!(
         must(
             std::fs::read_to_string(fixture.workspace.path().join("profile-copy.txt")),
-            "read persistent profile copy",
+            "read copied profile value",
         )
         .trim(),
-        "persisted",
+        "host-value",
     );
+    let write = fixture.run(vec![
+        powershell_exe(),
+        "-NoLogo".to_string(),
+        "-NoProfile".to_string(),
+        "-NonInteractive".to_string(),
+        "-Command".to_string(),
+        "$ErrorActionPreference='Stop'; Set-Content -LiteralPath (Join-Path $env:HOME 'profile-value.txt') -Value 'changed'".to_string(),
+    ]);
+    assert_eq!(write.outcome, ExecutionOutcome::Completed);
+    assert_ne!(write.exit_code, Some(0));
+    assert_eq!(
+        must(
+            std::fs::read_to_string(profile_file),
+            "read unchanged host profile"
+        )
+        .trim(),
+        "host-value",
+    );
+}
+
+#[test]
+fn explicit_shared_cache_root_is_writable_without_opening_local_app_data() {
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut fixture = Fixture::new();
+    let local_app_data = fixture.host_profile.path().join("AppData").join("Local");
+    let npm_cache = local_app_data.join("npm-cache");
+    let unrelated = local_app_data.join("unrelated");
+    must(std::fs::create_dir_all(&npm_cache), "create npm cache");
+    must(
+        std::fs::create_dir_all(&unrelated),
+        "create unrelated cache",
+    );
+    fixture
+        .request
+        .policy
+        .writable_roots
+        .push(display(&npm_cache));
+
+    let allowed = fixture.run(vec![
+        powershell_exe(),
+        "-NoLogo".to_string(),
+        "-NoProfile".to_string(),
+        "-NonInteractive".to_string(),
+        "-Command".to_string(),
+        "Set-Content -LiteralPath (Join-Path $env:LOCALAPPDATA 'npm-cache\\sandbox.txt') -Value 'cached'".to_string(),
+    ]);
+    assert_eq!(allowed.outcome, ExecutionOutcome::Completed);
+    assert_eq!(allowed.exit_code, Some(0));
+    assert!(npm_cache.join("sandbox.txt").exists());
+
+    let denied = fixture.run(vec![
+        powershell_exe(),
+        "-NoLogo".to_string(),
+        "-NoProfile".to_string(),
+        "-NonInteractive".to_string(),
+        "-Command".to_string(),
+        "$ErrorActionPreference='Stop'; Set-Content -LiteralPath (Join-Path $env:LOCALAPPDATA 'unrelated\\sandbox.txt') -Value 'denied'".to_string(),
+    ]);
+    assert_eq!(denied.outcome, ExecutionOutcome::Completed);
+    assert_ne!(denied.exit_code, Some(0));
+    assert!(!unrelated.join("sandbox.txt").exists());
 }
 
 impl Drop for Fixture {

@@ -2,9 +2,11 @@ import {
   NativeSandboxBackendState,
   NativeSandboxControlStage,
   NativeSandboxErrorCode,
+  NativeSandboxFilesystemCapability,
   NativeSandboxNetworkMode,
   NativeSandboxOperation,
   NativeSandboxPlatform,
+  NativeSandboxProfileMode,
   NativeSandboxRuntimeKind,
   NativeSandboxState,
 } from './constants';
@@ -26,6 +28,12 @@ export type NativeSandboxRuntimeKind =
 
 export type NativeSandboxNetworkMode =
   typeof NativeSandboxNetworkMode[keyof typeof NativeSandboxNetworkMode];
+
+export type NativeSandboxProfileMode =
+  typeof NativeSandboxProfileMode[keyof typeof NativeSandboxProfileMode];
+
+export type NativeSandboxFilesystemCapability =
+  typeof NativeSandboxFilesystemCapability[keyof typeof NativeSandboxFilesystemCapability];
 
 export type NativeSandboxControlStage =
   typeof NativeSandboxControlStage[keyof typeof NativeSandboxControlStage];
@@ -105,6 +113,14 @@ export interface NativeSandboxResourceLimits {
   maxOutputBytes?: number;
 }
 
+export interface NativeSandboxHostProfile {
+  mode: NativeSandboxProfileMode;
+  homeDir: string;
+  userProfileDir: string;
+  appDataDir: string;
+  localAppDataDir: string;
+}
+
 /**
  * Serialized, platform-neutral policy contract. M0 defines the boundary; the
  * native Windows runner starts consuming it in M1.
@@ -118,7 +134,7 @@ export interface NativeSandboxPolicySnapshot {
   writableRoots: string[];
   readableRoots: string[];
   protectedPaths: string[];
-  sandboxHomeDir: string;
+  profile: NativeSandboxHostProfile;
   scratchDir: string;
   networkMode: NativeSandboxNetworkMode;
   limits: NativeSandboxResourceLimits;

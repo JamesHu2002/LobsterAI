@@ -1,11 +1,27 @@
 export const LOBSTER_NATIVE_SANDBOX_BACKEND_ID = 'lobster-native';
 export const LOBSTER_NATIVE_WORKSPACE_PATH_SEMANTICS = 'host';
-export const LOBSTER_NATIVE_PROTOCOL_VERSION = 2;
-export const LOBSTER_NATIVE_POLICY_VERSION = 'workspace-write-v2';
-export const LOBSTER_NATIVE_WINDOWS_RUNTIME_VERSION = '0.2.0';
+export const LOBSTER_NATIVE_PROTOCOL_VERSION = 3;
+export const LOBSTER_NATIVE_POLICY_VERSION = 'workspace-write-v3';
+export const LOBSTER_NATIVE_WINDOWS_RUNTIME_VERSION = '0.3.0';
 export const LOBSTER_NATIVE_WINDOWS_RUNTIME_KIND = 'native-windows';
 export const LEGACY_SRT_RUNTIME_VERSION = '0.0.65';
 export const LEGACY_SRT_RUNTIME_KIND = 'legacy-windows-adapter';
+
+export const LobsterNativeSandboxProfileMode = {
+  InheritHost: 'inherit-host',
+} as const;
+
+export type LobsterNativeSandboxProfileMode =
+  typeof LobsterNativeSandboxProfileMode[keyof typeof LobsterNativeSandboxProfileMode];
+
+export const LobsterNativeSandboxFilesystemCapability = {
+  NpmCacheWrite: 'npm-cache-write',
+} as const;
+
+export type LobsterNativeSandboxFilesystemCapability =
+  typeof LobsterNativeSandboxFilesystemCapability[
+    keyof typeof LobsterNativeSandboxFilesystemCapability
+  ];
 
 export const LobsterNativeSandboxGatewayMethod = {
   Status: 'lobster-native-sandbox.status',

@@ -7,10 +7,12 @@ import {
   LOBSTER_NATIVE_SANDBOX_BACKEND_ID,
   LOBSTER_NATIVE_WINDOWS_RUNTIME_KIND,
   LOBSTER_NATIVE_WINDOWS_RUNTIME_VERSION,
+  type LobsterNativeSandboxFilesystemCapability,
   LobsterNativeSandboxGatewayMethod,
   registerLobsterNativeSandboxBackend,
 } from './src/backend/index.js';
 import { WindowsNativeSandboxExecutor } from './src/windows/windowsNativeSandboxExecutor.js';
+import { parseWindowsSandboxFilesystemCapabilities } from './src/windows/windowsSandboxCapabilityRegistry.js';
 import { createWindowsSandboxPolicyContext } from './src/windows/windowsSandboxPolicyContext.js';
 
 type LobsterNativePluginConfig = {
@@ -19,8 +21,8 @@ type LobsterNativePluginConfig = {
   runtimeVersion: string;
   protocolVersion: number;
   runtimeEnabled: boolean;
-  sandboxDataRoot: string;
   skillsRoot: string;
+  filesystemCapabilities: LobsterNativeSandboxFilesystemCapability[];
 };
 
 const readPluginConfig = (
@@ -33,10 +35,10 @@ const readPluginConfig = (
   runtimeVersion: typeof value?.runtimeVersion === 'string' ? value.runtimeVersion : '',
   protocolVersion: typeof value?.protocolVersion === 'number' ? value.protocolVersion : 0,
   runtimeEnabled: value?.runtimeEnabled === true,
-  sandboxDataRoot: typeof value?.sandboxDataRoot === 'string'
-    ? value.sandboxDataRoot.trim()
-    : '',
   skillsRoot: typeof value?.skillsRoot === 'string' ? value.skillsRoot.trim() : '',
+  filesystemCapabilities: parseWindowsSandboxFilesystemCapabilities(
+    value?.filesystemCapabilities,
+  ),
 });
 
 const getErrorCode = (error: unknown): string => {
@@ -72,12 +74,11 @@ export default definePluginEntry({
       audit,
       runtimeEnabled: config.runtimeEnabled,
       resolvePolicyContext: params => createWindowsSandboxPolicyContext({
-        sessionKey: params.sessionKey,
         agentWorkspaceDir: (
           params as typeof params & { agentWorkspaceDir?: string }
         ).agentWorkspaceDir?.trim() || params.workspaceDir,
-        sandboxDataRoot: config.sandboxDataRoot,
         skillsRoot: config.skillsRoot,
+        filesystemCapabilities: config.filesystemCapabilities,
       }),
     });
     api.registerGatewayMethod(LobsterNativeSandboxGatewayMethod.Status, async ({ params }) => {
@@ -94,10 +95,9 @@ export default definePluginEntry({
           await executor.prepareWorkspace(
             workspaceDir,
             createWindowsSandboxPolicyContext({
-              sessionKey: 'agent:main:sandbox-health-check',
               agentWorkspaceDir: workspaceDir,
-              sandboxDataRoot: config.sandboxDataRoot,
               skillsRoot: config.skillsRoot,
+              filesystemCapabilities: config.filesystemCapabilities,
             }),
           );
         }
@@ -137,7 +137,8 @@ export default definePluginEntry({
     api.logger.info(
       '[lobster-native-sandbox] registered native sandbox backend '
       + `(runtime=${config.runtimeKind || LOBSTER_NATIVE_WINDOWS_RUNTIME_KIND}, `
-      + `protocol=${config.protocolVersion || LOBSTER_NATIVE_PROTOCOL_VERSION}).`,
+      + `protocol=${config.protocolVersion || LOBSTER_NATIVE_PROTOCOL_VERSION}, `
+      + `filesystemCapabilities=${config.filesystemCapabilities.join(',') || 'none'}).`,
     );
   },
 });

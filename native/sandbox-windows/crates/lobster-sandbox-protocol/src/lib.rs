@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const NATIVE_SANDBOX_PROTOCOL_VERSION: u32 = 2;
-pub const NATIVE_SANDBOX_POLICY_VERSION: &str = "workspace-write-v2";
+pub const NATIVE_SANDBOX_PROTOCOL_VERSION: u32 = 3;
+pub const NATIVE_SANDBOX_POLICY_VERSION: &str = "workspace-write-v3";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,11 +26,27 @@ pub struct SandboxPolicySnapshot {
     pub readable_roots: Vec<String>,
     #[serde(default)]
     pub protected_paths: Vec<String>,
-    pub sandbox_home_dir: String,
+    pub profile: SandboxHostProfile,
     pub scratch_dir: String,
     pub network_mode: NetworkMode,
     #[serde(default)]
     pub limits: SandboxResourceLimits,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SandboxHostProfile {
+    pub mode: SandboxProfileMode,
+    pub home_dir: String,
+    pub user_profile_dir: String,
+    pub app_data_dir: String,
+    pub local_app_data_dir: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SandboxProfileMode {
+    InheritHost,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -112,7 +128,7 @@ pub struct VerificationReport {
     pub writable_roots: Vec<String>,
     pub readable_roots: Vec<String>,
     pub protected_paths: Vec<String>,
-    pub sandbox_home_dir: String,
+    pub profile_mode: SandboxProfileMode,
     pub restricted_token: bool,
     pub write_restricted: bool,
     pub owner_preserved: bool,
@@ -149,13 +165,11 @@ pub enum ProtocolValidationError {
     EmptyWritableRoots,
     #[error("scratchDir must not be empty")]
     EmptyScratchDir,
-    #[error("sandboxHomeDir must not be empty")]
-    EmptySandboxHomeDir,
     #[error("path field is empty or contains a NUL byte: {0}")]
     InvalidPath(String),
     #[error("command argv must not be empty")]
     EmptyArgv,
-    #[error("only networkMode=disabled is supported by the M1 runner")]
+    #[error("only networkMode=disabled is supported by the current runner")]
     UnsupportedNetworkMode,
     #[error("timeoutMs must be between 1 and 3600000")]
     InvalidTimeout,
@@ -199,11 +213,17 @@ impl RunRequest {
         if self.policy.scratch_dir.trim().is_empty() {
             return Err(ProtocolValidationError::EmptyScratchDir);
         }
-        if self.policy.sandbox_home_dir.trim().is_empty() {
-            return Err(ProtocolValidationError::EmptySandboxHomeDir);
-        }
         validate_path("cwd", &self.policy.cwd)?;
-        validate_path("sandboxHomeDir", &self.policy.sandbox_home_dir)?;
+        validate_path("profile.homeDir", &self.policy.profile.home_dir)?;
+        validate_path(
+            "profile.userProfileDir",
+            &self.policy.profile.user_profile_dir,
+        )?;
+        validate_path("profile.appDataDir", &self.policy.profile.app_data_dir)?;
+        validate_path(
+            "profile.localAppDataDir",
+            &self.policy.profile.local_app_data_dir,
+        )?;
         validate_path("scratchDir", &self.policy.scratch_dir)?;
         for (index, path) in self.policy.writable_roots.iter().enumerate() {
             validate_path(&format!("writableRoots[{index}]"), path)?;
@@ -280,7 +300,13 @@ mod tests {
                 writable_roots: vec![r"D:\workspace".to_string()],
                 readable_roots: Vec::new(),
                 protected_paths: Vec::new(),
-                sandbox_home_dir: r"D:\sandbox-data\main\home".to_string(),
+                profile: SandboxHostProfile {
+                    mode: SandboxProfileMode::InheritHost,
+                    home_dir: r"C:\Users\tester".to_string(),
+                    user_profile_dir: r"C:\Users\tester".to_string(),
+                    app_data_dir: r"C:\Users\tester\AppData\Roaming".to_string(),
+                    local_app_data_dir: r"C:\Users\tester\AppData\Local".to_string(),
+                },
                 scratch_dir: r"D:\workspace\.scratch".to_string(),
                 network_mode: NetworkMode::Disabled,
                 limits: SandboxResourceLimits::default(),
@@ -297,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn validates_the_m1_contract() {
+    fn validates_the_v3_contract() {
         assert_eq!(request().validate(), Ok(()));
     }
 

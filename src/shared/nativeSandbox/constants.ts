@@ -1,6 +1,6 @@
-export const NATIVE_SANDBOX_PROTOCOL_VERSION = 2;
-export const NATIVE_SANDBOX_POLICY_VERSION = 'workspace-write-v2';
-export const NATIVE_SANDBOX_WINDOWS_RUNTIME_VERSION = '0.2.0';
+export const NATIVE_SANDBOX_PROTOCOL_VERSION = 3;
+export const NATIVE_SANDBOX_POLICY_VERSION = 'workspace-write-v3';
+export const NATIVE_SANDBOX_WINDOWS_RUNTIME_VERSION = '0.3.0';
 export const NATIVE_SANDBOX_OPENCLAW_BACKEND_ID = 'lobster-native';
 export const NATIVE_SANDBOX_OPENCLAW_PLUGIN_ID = 'lobster-native-sandbox';
 export const NATIVE_SANDBOX_RETIRED_OPENCLAW_PLUGIN_IDS = [
@@ -32,6 +32,15 @@ export const NativeSandboxNetworkMode = {
   Disabled: 'disabled',
   ManagedProxy: 'managed-proxy',
   Allowlist: 'allowlist',
+} as const;
+
+export const NativeSandboxProfileMode = {
+  InheritHost: 'inherit-host',
+} as const;
+
+/** Optional filesystem capabilities enabled by LobsterAI policy presets. */
+export const NativeSandboxFilesystemCapability = {
+  NpmCacheWrite: 'npm-cache-write',
 } as const;
 
 export const NativeSandboxPlatform = {

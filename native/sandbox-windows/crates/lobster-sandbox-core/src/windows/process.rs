@@ -395,33 +395,6 @@ fn build_environment_block(command: &SandboxCommand, policy: &PreparedPolicy) ->
             environment.insert(key, value);
         }
     }
-    let scratch = policy.scratch_dir.display().to_string();
-    let sandbox_home = policy.sandbox_home_dir.display().to_string();
-    environment.insert(
-        "APPDATA".to_string(),
-        policy
-            .sandbox_home_dir
-            .join(r"AppData\Roaming")
-            .display()
-            .to_string(),
-    );
-    environment.insert("HOME".to_string(), sandbox_home.clone());
-    if sandbox_home.as_bytes().get(1) == Some(&b':') {
-        environment.insert("HOMEDRIVE".to_string(), sandbox_home[..2].to_string());
-        environment.insert("HOMEPATH".to_string(), sandbox_home[2..].to_string());
-    }
-    environment.insert(
-        "LOCALAPPDATA".to_string(),
-        policy
-            .sandbox_home_dir
-            .join(r"AppData\Local")
-            .display()
-            .to_string(),
-    );
-    environment.insert("TEMP".to_string(), scratch.clone());
-    environment.insert("TMP".to_string(), scratch.clone());
-    environment.insert("USERPROFILE".to_string(), sandbox_home);
-    environment.insert("LOBSTER_SANDBOX".to_string(), "1".to_string());
     for (key, value) in &command.env {
         let existing = environment
             .keys()
@@ -432,6 +405,26 @@ fn build_environment_block(command: &SandboxCommand, policy: &PreparedPolicy) ->
         }
         environment.insert(key.clone(), value.clone());
     }
+    let scratch = policy.scratch_dir.display().to_string();
+    let home = policy.profile.home_dir.display().to_string();
+    let user_profile = policy.profile.user_profile_dir.display().to_string();
+    environment.insert(
+        "APPDATA".to_string(),
+        policy.profile.app_data_dir.display().to_string(),
+    );
+    environment.insert("HOME".to_string(), home);
+    if user_profile.as_bytes().get(1) == Some(&b':') {
+        environment.insert("HOMEDRIVE".to_string(), user_profile[..2].to_string());
+        environment.insert("HOMEPATH".to_string(), user_profile[2..].to_string());
+    }
+    environment.insert(
+        "LOCALAPPDATA".to_string(),
+        policy.profile.local_app_data_dir.display().to_string(),
+    );
+    environment.insert("TEMP".to_string(), scratch.clone());
+    environment.insert("TMP".to_string(), scratch);
+    environment.insert("USERPROFILE".to_string(), user_profile);
+    environment.insert("LOBSTER_SANDBOX".to_string(), "1".to_string());
 
     let mut block = Vec::new();
     for (key, value) in environment {

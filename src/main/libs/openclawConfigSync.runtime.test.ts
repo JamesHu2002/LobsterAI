@@ -240,11 +240,11 @@ describe('OpenClawConfigSync runtime config output', () => {
     expect(config.plugins.entries['lobster-native-sandbox']).toMatchObject({
       enabled: true,
       config: {
-        protocolVersion: 2,
+        protocolVersion: 3,
         runtimeEnabled: true,
         runtimeKind: 'native-windows',
-        runtimeVersion: '0.2.0',
-        sandboxDataRoot: path.join(os.tmpdir(), 'sandbox-data'),
+        runtimeVersion: '0.3.0',
+        filesystemCapabilities: ['npm-cache-write'],
       },
     });
     expect(config.plugins.entries['lobster-native-sandbox'].config.skillsRoot)

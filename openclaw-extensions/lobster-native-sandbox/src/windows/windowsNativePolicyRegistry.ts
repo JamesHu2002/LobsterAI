@@ -1,16 +1,20 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { LobsterNativeSandboxBackendErrorCode } from '../backend/constants.js';
+import {
+  LobsterNativeSandboxBackendErrorCode,
+  LobsterNativeSandboxProfileMode,
+} from '../backend/constants.js';
 import { LobsterNativeSandboxBackendError } from '../backend/errors.js';
 import type {
+  NativeSandboxHostProfile,
   NativeSandboxPolicyContext,
   NativeSandboxPolicyRoot,
 } from '../runtime/nativeSandboxExecutor.js';
 
 export interface PreparedNativeSandboxPolicyContext {
   agentWorkspaceDir: string;
-  sandboxHomeDir: string;
+  profile: NativeSandboxHostProfile;
   writableRoots: NativeSandboxPolicyRoot[];
   readableRoots: NativeSandboxPolicyRoot[];
   protectedPaths: string[];
@@ -32,7 +36,6 @@ export class WindowsNativePolicyRegistry {
   private readonly registeredWritableRoots = new Map<string, string>();
   private readonly registeredReadableRoots = new Map<string, string>();
   private readonly registeredProtectedPaths = new Map<string, string>();
-  private readonly registeredSandboxHomes = new Map<string, string>();
   private primaryPolicyContext: PreparedNativeSandboxPolicyContext | null = null;
 
   prepare(context: NativeSandboxPolicyContext): PreparedNativeSandboxPolicyContext {
@@ -40,48 +43,12 @@ export class WindowsNativePolicyRegistry {
       context.agentWorkspaceDir,
       'agent workspace',
     );
-    const sandboxHomeInput = context.sandboxHomeDir.trim();
-    if (!sandboxHomeInput) {
-      throw new LobsterNativeSandboxBackendError(
-        LobsterNativeSandboxBackendErrorCode.InvalidWorkspace,
-        'Native Sandbox requires a persistent home directory.',
-      );
-    }
-    const normalizedSandboxHome = normalizeWindowsPath(sandboxHomeInput);
-    if (
-      normalizedSandboxHome.toLowerCase()
-      === path.win32.parse(normalizedSandboxHome).root.toLowerCase()
-    ) {
-      throw new LobsterNativeSandboxBackendError(
-        LobsterNativeSandboxBackendErrorCode.InvalidWorkspace,
-        'A drive root cannot be used as the native Sandbox home.',
-      );
-    }
-    try {
-      fs.mkdirSync(path.win32.join(normalizedSandboxHome, 'AppData', 'Roaming'), {
-        recursive: true,
-      });
-      fs.mkdirSync(path.win32.join(normalizedSandboxHome, 'AppData', 'Local'), {
-        recursive: true,
-      });
-    } catch (error) {
-      throw new LobsterNativeSandboxBackendError(
-        LobsterNativeSandboxBackendErrorCode.InvalidWorkspace,
-        `Native Sandbox home could not be prepared: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
-    const sandboxHomeDir = this.validateExistingDirectory(
-      normalizedSandboxHome,
-      'sandbox home',
-    );
+    const profile = this.prepareProfile(context.profile);
     const writableRoots = this.preparePolicyRoots(context.writableRoots, 'writable');
     this.addPolicyRoot(writableRoots, { id: 'agent', path: agentWorkspaceDir });
-    this.addPolicyRoot(writableRoots, { id: 'sandbox-home', path: sandboxHomeDir });
     return {
       agentWorkspaceDir,
-      sandboxHomeDir,
+      profile,
       writableRoots,
       readableRoots: this.preparePolicyRoots(context.readableRoots, 'readable'),
       protectedPaths: context.protectedPaths.map((protectedPath) => (
@@ -101,10 +68,6 @@ export class WindowsNativePolicyRegistry {
     for (const protectedPath of context.protectedPaths) {
       this.registeredProtectedPaths.set(this.pathKey(protectedPath), protectedPath);
     }
-    this.registeredSandboxHomes.set(
-      this.pathKey(context.sandboxHomeDir),
-      context.sandboxHomeDir,
-    );
   }
 
   require(context?: NativeSandboxPolicyContext): PreparedNativeSandboxPolicyContext {
@@ -124,8 +87,7 @@ export class WindowsNativePolicyRegistry {
     const primary = this.require();
     return {
       agentWorkspaceDir: primary.agentWorkspaceDir,
-      sandboxHomeDir: this.registeredSandboxHomes.values().next().value
-        ?? primary.sandboxHomeDir,
+      profile: primary.profile,
       writableRoots: Array.from(this.registeredWritableRoots.values(), (rootPath, index) => ({
         id: `cleanup-write-${index}`,
         path: rootPath,
@@ -147,7 +109,28 @@ export class WindowsNativePolicyRegistry {
     this.registeredWritableRoots.clear();
     this.registeredReadableRoots.clear();
     this.registeredProtectedPaths.clear();
-    this.registeredSandboxHomes.clear();
+  }
+
+  private prepareProfile(profile: NativeSandboxHostProfile): NativeSandboxHostProfile {
+    if (profile.mode !== LobsterNativeSandboxProfileMode.InheritHost) {
+      throw new LobsterNativeSandboxBackendError(
+        LobsterNativeSandboxBackendErrorCode.InvalidWorkspace,
+        `Unsupported native Sandbox profile mode: ${String(profile.mode)}.`,
+      );
+    }
+    return {
+      mode: profile.mode,
+      homeDir: this.validateExistingDirectory(profile.homeDir, 'host HOME'),
+      userProfileDir: this.validateExistingDirectory(
+        profile.userProfileDir,
+        'host USERPROFILE',
+      ),
+      appDataDir: this.validateExistingDirectory(profile.appDataDir, 'host APPDATA'),
+      localAppDataDir: this.validateExistingDirectory(
+        profile.localAppDataDir,
+        'host LOCALAPPDATA',
+      ),
+    };
   }
 
   private preparePolicyRoots(

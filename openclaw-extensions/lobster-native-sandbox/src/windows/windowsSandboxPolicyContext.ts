@@ -1,58 +1,41 @@
-import { createHash } from 'node:crypto';
 import path from 'node:path';
 
+import type { LobsterNativeSandboxFilesystemCapability } from '../backend/constants.js';
 import type { NativeSandboxPolicyContext } from '../runtime/nativeSandboxExecutor.js';
+import {
+  resolveWindowsHostProfile,
+  WindowsSandboxCapabilityRegistry,
+} from './windowsSandboxCapabilityRegistry.js';
 
 export type WindowsSandboxPolicyContextOptions = {
-  sessionKey: string;
   agentWorkspaceDir: string;
-  sandboxDataRoot: string;
   skillsRoot?: string;
+  filesystemCapabilities?: readonly LobsterNativeSandboxFilesystemCapability[];
+  environment?: NodeJS.ProcessEnv;
 };
 
-const deriveAgentId = (sessionKey: string): string => {
-  const match = sessionKey.match(/^agent:([^:]+)/i);
-  return match?.[1]?.trim() || 'main';
-};
-
-const buildAgentDirectoryName = (agentId: string): string => {
-  const normalizedAgentId = agentId.toLowerCase();
-  const slug = normalizedAgentId
-    .replace(/[^a-z0-9_-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 32) || 'agent';
-  const digest = createHash('sha256').update(normalizedAgentId).digest('hex').slice(0, 12);
-  return `${slug}-${digest}`;
-};
-
-/** Builds stable per-agent roots without exposing a session key as a path. */
+/** Builds the host-profile policy and semantic fixed roots for one Agent. */
 export function createWindowsSandboxPolicyContext(
   options: WindowsSandboxPolicyContextOptions,
 ): NativeSandboxPolicyContext {
   if (!options.agentWorkspaceDir.trim()) {
     throw new Error('Native Sandbox requires an agent workspace directory.');
   }
-  if (!options.sandboxDataRoot.trim()) {
-    throw new Error('Native Sandbox requires a product-owned data root.');
-  }
-  const agentId = deriveAgentId(options.sessionKey);
-  const sandboxHomeDir = path.resolve(
-    options.sandboxDataRoot,
-    'agents',
-    buildAgentDirectoryName(agentId),
-    'home',
+  const profile = resolveWindowsHostProfile(options.environment);
+  const capabilities = new WindowsSandboxCapabilityRegistry(profile).resolve(
+    options.filesystemCapabilities ?? [],
   );
   const skillsRoot = options.skillsRoot?.trim();
   return {
     agentWorkspaceDir: path.resolve(options.agentWorkspaceDir),
-    sandboxHomeDir,
+    profile,
     writableRoots: [
       { id: 'agent', path: path.resolve(options.agentWorkspaceDir) },
-      { id: 'sandbox-home', path: sandboxHomeDir },
+      ...capabilities.writableRoots,
     ],
     readableRoots: skillsRoot
-      ? [{ id: 'skills', path: path.resolve(skillsRoot) }]
-      : [],
+      ? [{ id: 'skills', path: path.resolve(skillsRoot) }, ...capabilities.readableRoots]
+      : capabilities.readableRoots,
     protectedPaths: [],
   };
 }

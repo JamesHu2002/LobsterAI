@@ -21,13 +21,13 @@ type CapturedRunnerRequest = {
 };
 
 const verificationReport = Buffer.from(JSON.stringify({
-  protocolVersion: 2,
-  policyVersion: 'workspace-write-v2',
+  protocolVersion: 3,
+  policyVersion: 'workspace-write-v3',
   capabilitySids: ['S-1-5-21-test'],
   writableRoots: [],
   readableRoots: [],
   protectedPaths: [],
-  sandboxHomeDir: '',
+  profileMode: 'inherit-host',
   restrictedToken: true,
   writeRestricted: true,
   ownerPreserved: true,
@@ -37,7 +37,7 @@ const verificationReport = Buffer.from(JSON.stringify({
 }));
 
 const executionReport = JSON.stringify({
-  protocolVersion: 2,
+  protocolVersion: 3,
   outcome: 'completed',
   exitCode: 0,
   durationMs: 10,
@@ -51,7 +51,10 @@ const createFixture = () => {
   const workspace = path.join(root, 'workspace');
   const otherWorkspace = path.join(root, 'other');
   const agentWorkspace = path.join(root, 'agent-workspace');
-  const sandboxHome = path.join(root, 'sandbox-data', 'main', 'home');
+  const profileRoot = path.join(root, 'profile');
+  const appData = path.join(profileRoot, 'AppData', 'Roaming');
+  const localAppData = path.join(profileRoot, 'AppData', 'Local');
+  const npmCache = path.join(localAppData, 'npm-cache');
   const skillsRoot = path.join(root, 'SKILLs');
   const scratch = path.join(root, 'scratch');
   const runnerRequests: Array<{ command: string; request: CapturedRunnerRequest }> = [];
@@ -59,12 +62,20 @@ const createFixture = () => {
   fs.mkdirSync(otherWorkspace);
   fs.mkdirSync(agentWorkspace);
   fs.mkdirSync(skillsRoot);
+  fs.mkdirSync(appData, { recursive: true });
+  fs.mkdirSync(npmCache, { recursive: true });
   const policyContext: NativeSandboxPolicyContext = {
     agentWorkspaceDir: agentWorkspace,
-    sandboxHomeDir: sandboxHome,
+    profile: {
+      mode: 'inherit-host',
+      homeDir: profileRoot,
+      userProfileDir: profileRoot,
+      appDataDir: appData,
+      localAppDataDir: localAppData,
+    },
     writableRoots: [
       { id: 'agent', path: agentWorkspace },
-      { id: 'sandbox-home', path: sandboxHome },
+      { id: 'npm-cache', path: npmCache },
     ],
     readableRoots: [{ id: 'skills', path: skillsRoot }],
     protectedPaths: [],
@@ -95,8 +106,8 @@ const createFixture = () => {
     runnerPath: path.join(root, 'lobster-command-runner.exe'),
     runtimeEnabled: true,
     audit: new SandboxAuditRecorder({
-      policyVersion: 'workspace-write-v2',
-      runtimeVersion: '0.2.0',
+      policyVersion: 'workspace-write-v3',
+      runtimeVersion: '0.3.0',
     }),
     platform: 'win32',
     pathExists: () => true,
@@ -110,10 +121,11 @@ const createFixture = () => {
     executor,
     invokeRunner,
     otherWorkspace,
+    npmCache,
     policyContext,
+    profileRoot,
     root,
     runnerRequests,
-    sandboxHome,
     scratch,
     skillsRoot,
     workspace,
@@ -148,8 +160,9 @@ describe('WindowsNativeSandboxExecutor', () => {
     const {
       agentWorkspace,
       executor,
+      npmCache,
       policyContext,
-      sandboxHome,
+      profileRoot,
       skillsRoot,
       workspace,
     } = createFixture();
@@ -162,6 +175,7 @@ describe('WindowsNativeSandboxExecutor', () => {
         CI: '1',
         PATH: 'C:\\untrusted',
         HTTPS_PROXY: 'http://proxy.invalid',
+        API_TOKEN: 'must-not-leak',
       },
       sessionKey: 'agent:main:session-1',
     });
@@ -175,16 +189,20 @@ describe('WindowsNativeSandboxExecutor', () => {
       wrapped.token.reportPath,
     ]);
     expect(request.policy).toMatchObject({
-      policyVersion: 'workspace-write-v2',
+      policyVersion: 'workspace-write-v3',
       agentId: 'main',
       cwd: fs.realpathSync.native(workspace),
       writableRoots: [
         fs.realpathSync.native(workspace),
         fs.realpathSync.native(agentWorkspace),
-        fs.realpathSync.native(sandboxHome),
+        fs.realpathSync.native(npmCache),
       ],
       readableRoots: [fs.realpathSync.native(skillsRoot)],
-      sandboxHomeDir: fs.realpathSync.native(sandboxHome),
+      profile: {
+        mode: 'inherit-host',
+        homeDir: fs.realpathSync.native(profileRoot),
+        userProfileDir: fs.realpathSync.native(profileRoot),
+      },
       networkMode: 'disabled',
     });
     expect(request.command.env).toEqual({ CI: '1' });
@@ -242,15 +260,15 @@ describe('WindowsNativeSandboxExecutor', () => {
     await executor.prepareWorkspace(workspace, policyContext);
 
     const secondAgentWorkspace = path.join(root, 'agent-workspace-2');
-    const secondSandboxHome = path.join(root, 'sandbox-data', 'agent-2', 'home');
+    const secondCache = path.join(root, 'tool-cache-2');
     fs.mkdirSync(secondAgentWorkspace);
+    fs.mkdirSync(secondCache);
     await executor.prepareWorkspace(workspace, {
       ...policyContext,
       agentWorkspaceDir: secondAgentWorkspace,
-      sandboxHomeDir: secondSandboxHome,
       writableRoots: [
         { id: 'agent', path: secondAgentWorkspace },
-        { id: 'sandbox-home', path: secondSandboxHome },
+        { id: 'tool-cache', path: secondCache },
       ],
     });
 
@@ -259,9 +277,8 @@ describe('WindowsNativeSandboxExecutor', () => {
     expect(cleanup?.request.policy.writableRoots).toEqual(expect.arrayContaining([
       fs.realpathSync.native(workspace),
       fs.realpathSync.native(policyContext.agentWorkspaceDir),
-      fs.realpathSync.native(policyContext.sandboxHomeDir),
       fs.realpathSync.native(secondAgentWorkspace),
-      fs.realpathSync.native(secondSandboxHome),
+      fs.realpathSync.native(secondCache),
     ]));
   });
 

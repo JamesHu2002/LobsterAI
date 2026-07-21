@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf, Prefix};
 
-use lobster_sandbox_protocol::{SandboxPolicySnapshot, SandboxResourceLimits};
+use lobster_sandbox_protocol::{SandboxPolicySnapshot, SandboxProfileMode, SandboxResourceLimits};
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_REPARSE_POINT, GetFileAttributesW, INVALID_FILE_ATTRIBUTES,
 };
@@ -16,9 +16,18 @@ pub struct PreparedPolicy {
     pub writable_roots: Vec<PathBuf>,
     pub readable_roots: Vec<PathBuf>,
     pub protected_paths: Vec<PathBuf>,
-    pub sandbox_home_dir: PathBuf,
+    pub profile: PreparedHostProfile,
     pub scratch_dir: PathBuf,
     pub limits: SandboxResourceLimits,
+}
+
+#[derive(Debug)]
+pub struct PreparedHostProfile {
+    pub mode: SandboxProfileMode,
+    pub home_dir: PathBuf,
+    pub user_profile_dir: PathBuf,
+    pub app_data_dir: PathBuf,
+    pub local_app_data_dir: PathBuf,
 }
 
 pub fn prepare_policy(snapshot: &SandboxPolicySnapshot) -> SandboxResult<PreparedPolicy> {
@@ -81,22 +90,25 @@ pub fn prepare_policy(snapshot: &SandboxPolicySnapshot) -> SandboxResult<Prepare
         }
     }
 
-    let sandbox_home_dir =
-        canonical_existing(&PathBuf::from(&snapshot.sandbox_home_dir), "sandboxHomeDir")?;
-    if is_drive_root(&sandbox_home_dir)
-        || !writable_roots
-            .iter()
-            .any(|root| is_within(&sandbox_home_dir, root))
-    {
-        return Err(SandboxError::new(
-            "sandbox-home-outside-writable-roots",
-            "prepare-paths",
-            format!(
-                "sandboxHomeDir {} is not inside a declared writable root",
-                sandbox_home_dir.display()
-            ),
-        ));
-    }
+    let profile = PreparedHostProfile {
+        mode: snapshot.profile.mode,
+        home_dir: canonical_profile_directory(
+            &PathBuf::from(&snapshot.profile.home_dir),
+            "profile.homeDir",
+        )?,
+        user_profile_dir: canonical_profile_directory(
+            &PathBuf::from(&snapshot.profile.user_profile_dir),
+            "profile.userProfileDir",
+        )?,
+        app_data_dir: canonical_profile_directory(
+            &PathBuf::from(&snapshot.profile.app_data_dir),
+            "profile.appDataDir",
+        )?,
+        local_app_data_dir: canonical_profile_directory(
+            &PathBuf::from(&snapshot.profile.local_app_data_dir),
+            "profile.localAppDataDir",
+        )?,
+    };
 
     let mut protected_paths = Vec::new();
     let mut seen_protected = HashSet::new();
@@ -117,19 +129,6 @@ pub fn prepare_policy(snapshot: &SandboxPolicySnapshot) -> SandboxResult<Prepare
         }
     }
 
-    for relative in [r"AppData\Local", r"AppData\Roaming"] {
-        std::fs::create_dir_all(sandbox_home_dir.join(relative)).map_err(|error| {
-            SandboxError::new(
-                "sandbox-home-prepare-failed",
-                "prepare-paths",
-                format!(
-                    "could not create profile directory under {}: {error}",
-                    sandbox_home_dir.display()
-                ),
-            )
-        })?;
-    }
-
     // Delay scratch creation until all existing user-controlled policy paths have passed
     // validation. This keeps malformed requests from creating arbitrary directories.
     let scratch_input = PathBuf::from(&snapshot.scratch_dir);
@@ -145,18 +144,6 @@ pub fn prepare_policy(snapshot: &SandboxPolicySnapshot) -> SandboxResult<Prepare
             ),
         )
     })?;
-    for relative in [r"AppData\Local", r"AppData\Roaming"] {
-        std::fs::create_dir_all(scratch_input.join(relative)).map_err(|error| {
-            SandboxError::new(
-                "scratch-prepare-failed",
-                "prepare-paths",
-                format!(
-                    "could not create isolated profile directory under {}: {error}",
-                    scratch_input.display()
-                ),
-            )
-        })?;
-    }
     let scratch_dir = canonical_existing(&scratch_input, "scratchDir")?;
     if is_drive_root(&scratch_dir) {
         return Err(SandboxError::new(
@@ -190,7 +177,7 @@ pub fn prepare_policy(snapshot: &SandboxPolicySnapshot) -> SandboxResult<Prepare
         writable_roots,
         readable_roots,
         protected_paths,
-        sandbox_home_dir,
+        profile,
         scratch_dir,
         limits: snapshot.limits.clone(),
     })
@@ -209,6 +196,21 @@ fn canonical_existing(path: &Path, label: &str) -> SandboxResult<PathBuf> {
     validate_local_absolute_path(&canonical, label)?;
     reject_reparse_components(&canonical, false)?;
     Ok(canonical)
+}
+
+fn canonical_profile_directory(path: &Path, label: &str) -> SandboxResult<PathBuf> {
+    let directory = canonical_existing(path, label)?;
+    if is_drive_root(&directory) || !directory.is_dir() {
+        return Err(SandboxError::new(
+            "path-invalid",
+            "prepare-paths",
+            format!(
+                "{label} must be a non-root directory: {}",
+                directory.display()
+            ),
+        ));
+    }
+    Ok(directory)
 }
 
 fn validate_local_absolute_path(path: &Path, label: &str) -> SandboxResult<()> {

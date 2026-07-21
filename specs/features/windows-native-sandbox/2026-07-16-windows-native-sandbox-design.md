@@ -4,9 +4,9 @@
 >
 > 全面修订：2026-07-20
 >
-> 实施更新：2026-07-21（M2.x 固定权限根方案）
+> 实施更新：2026-07-21（宿主 Profile 与语义化权限方案）
 >
-> 当前状态：M0、M1、M2 已完成；M2.x 已实施，待端侧验收；Windows 优先，macOS 预留
+> 当前状态：M0、M1、M2 已完成；M2.x 最新迭代已实施，待端侧验收；Windows 优先，macOS 预留
 >
 > 适用范围：LobsterAI、内置 OpenClaw runtime、Windows 原生执行后端
 >
@@ -52,7 +52,7 @@
 
 M3-M5 完成后的 Windows Beta 首发版，其核心安全承诺是：
 
-> 沙箱命令及其子进程只能写入产品明确授权的任务 workspace、Agent workspace、持久 Sandbox Home 和受控临时目录；不能写入其他工程目录、真实用户配置目录或系统目录。
+> 沙箱命令及其子进程只能写入产品明确授权的任务 workspace、Agent workspace、受控临时目录和显式兼容根；继承真实用户 Profile 不会自动开放整个 Home、AppData、其他工程或系统目录的写权限。
 
 同时保证：
 
@@ -219,17 +219,13 @@ D:\projects\demo-app
 
 任务结束后按策略清理；异常退出时由恢复流程回收。
 
-### 4.6 `sandboxHomeDir`
+### 4.6 宿主 Profile 与语义化兼容根
 
-`sandboxHomeDir` 是由 LobsterAI 创建并持久化的每 Agent 沙箱用户目录，用于工具缓存、用户级配置以及需要跨任务保留的轻量状态。
+最新 M2.x 不再创建持久 `sandboxHomeDir`。runner 从可信宿主环境继承 `HOME`、`USERPROFILE`、`APPDATA` 和 `LOCALAPPDATA`，但这些路径不会因此自动进入 `writableRoots`。
 
-Windows M2.x 将以下环境变量映射到该目录，而不暴露真实用户目录：
+高频兼容目录通过稳定能力 ID 解析。首批 `npm-cache-write` 只开放真实 `%LOCALAPPDATA%/npm-cache` 叶子目录，不开放 `%APPDATA%/npm`、整个 Home 或整个 AppData。`TEMP`、`TMP` 继续指向可丢弃的 `scratchDir`。
 
-- `HOME`、`USERPROFILE`、`HOMEDRIVE`、`HOMEPATH` -> `sandboxHomeDir` 对应语义
-- `APPDATA` -> `sandboxHomeDir/AppData/Roaming`
-- `LOCALAPPDATA` -> `sandboxHomeDir/AppData/Local`
-
-`TEMP`、`TMP` 仍指向可丢弃的 `scratchDir`。Sandbox Home 是明确的可写根，但不加入命令搜索路径，也不等同于 LobsterAI 的真实 `userData`。
+完整设计及风险以 `2026-07-21-windows-native-sandbox-host-profile-capabilities-design.md` 为准。
 
 ### 4.7 LobsterAI 全局 Skills 根
 
@@ -758,7 +754,13 @@ interface SandboxPolicySnapshot {
   writableRoots: string[];
   readableRoots: string[];
   protectedPaths: string[];
-  sandboxHomeDir: string;
+  profile: {
+    mode: 'inherit-host';
+    homeDir: string;
+    userProfileDir: string;
+    appDataDir: string;
+    localAppDataDir: string;
+  };
   scratchDir: string;
   networkMode: 'disabled' | 'managed-proxy' | 'allowlist';
   limits: SandboxResourceLimits;
@@ -766,7 +768,7 @@ interface SandboxPolicySnapshot {
 
 interface NativeSandboxPolicyContext {
   agentWorkspaceDir: string;
-  sandboxHomeDir: string;
+  profile: NativeSandboxHostProfile;
   writableRoots: Array<{ id: string; path: string }>;
   readableRoots: Array<{ id: string; path: string }>;
   protectedPaths: string[];
@@ -1249,7 +1251,7 @@ M1 只证明核心技术可行，不接入用户开关。若 M1 不能稳定阻�
    - `writableRoots`
    - `readableRoots`
    - `protectedPaths`
-   - `sandboxHomeDir`
+   - `profile`（`inherit-host`，仅用于可信环境继承）
    - `scratchDir`
    - `networkMode`
    M2 的 `protectedPaths` 和 `networkMode` 仅保留协议字段：前者暂为空，后者即使声明 `disabled` 也不代表已建立系统级网络边界。
@@ -1321,12 +1323,14 @@ M1 只证明核心技术可行，不接入用户开关。若 M1 不能稳定阻�
 - `lobster-native-sandbox` 正常路径已从 legacy executor 切换到 `WindowsNativeSandboxExecutor`，shell exec 和结构化文件工具均通过同一个 runner 策略执行；
 - runner 新增独立机器报告文件，避免协议 JSON 混入用户可见 stdout/stderr；请求、报告和文件工具输入使用每次初始化独立的 scratch 目录，并在完成或重置时清理；
 - 初始化会真实验证 workspace 内可写、workspace 外不可写；单进程仅持有一个活动 task workspace，切换工程需关闭 Sandbox 或重启 gateway 后重新初始化；
-- 打包配置已包含 Windows runner；M2.x 将协议升级为 v2，版本核验固定为 `lobster-command-runner 0.2.0`；旧 runtime 代码和资源仅为回滚/对照保留，不参与正常执行路径；
+- 打包配置已包含 Windows runner；最新 M2.x 将协议升级为 v3，版本核验固定为 `lobster-command-runner 0.3.0`；旧 runtime 代码和资源仅为回滚/对照保留，不参与正常执行路径；
 - M2 自动验证已覆盖相关 Vitest、Rust workspace、Rust Clippy、Electron TypeScript 编译、Renderer/主进程生产构建、扩展预编译和打包资源核验；真实 runner smoke 已验证 shell 与文件工具均可在 workspace 内写入且不能写到外部目录。M2.x 的最终验证结果以本次变更交付记录为准。
 
 M2 仍沿用 M1 从当前登录用户派生的 restricted token，因此显式向 `Everyone` 授予写权限的目标对象仍是已知生产级缺口；网络、读取、安装态专用身份、签名和防篡改均未实现。这些限制不会在 UI 中被描述为已具备能力，正式安全承诺仍以 M3-M5 为门禁。
 
 ## 19A. M2.x：固定产品权限根兼容层
+
+> 历史说明：本节记录持久 Sandbox Home 版本的实施过程。该映射已被 19B 的宿主 Profile 与语义化权限方案取代。
 
 ### 19A.1 背景与目标
 
@@ -1417,6 +1421,22 @@ extension 从 `CreateSandboxBackendParams` 取得 `agentWorkspaceDir`、`taskWor
 - 只读根与可写根重叠时失败关闭；同一 runtime 周期登记过的根会进入 reset 清理并集；
 - 设置页测试文案已更新，不再声称“仅 task workspace 可写”，并继续如实展示网络和一般读取未隔离；
 - 自动测试覆盖固定根接线、稳定 Agent Home、结构化路径访问级别、Skills 原生只读、PowerShell/Node/Python/npm 子进程边界、持久 Home、ACL 清理并集和真实 runner smoke。
+
+## 19B. M2.x 最新迭代：宿主 Profile 与语义化权限
+
+当前实现不再创建持久 Sandbox Home，而是将环境继承和写权限分离：
+
+- `HOME`、`USERPROFILE`、`APPDATA`、`LOCALAPPDATA` 继承可信宿主路径，但不会自动成为可写根；
+- `TEMP`、`TMP` 继续映射到每任务 scratch；
+- task workspace、Agent workspace 保持可写，Skills 保持只读；
+- OpenClaw plugin 配置通过 `filesystemCapabilities` 声明兼容能力；
+- 首批 `npm-cache-write` 仅开放 `%LOCALAPPDATA%/npm-cache`，不开放 npm 全局命令目录或整个 AppData；
+- protocol/policy/runtime 升级为 v3 / `workspace-write-v3` / `0.3.0`；
+- tool call 不能覆盖宿主 Profile、系统、代理和临时目录环境变量，KEY/SECRET/TOKEN 类环境变量在进入 runner 前过滤；
+- 权限配置变化必须结束活动任务、清理旧 ACE 并以新 token 启动后生效；
+- 共享 npm cache 可被任务修改、真实用户配置仍可读取、网络和一般读取未隔离，继续作为内部测试风险明确展示。
+
+详细设计、边界和验收见 `2026-07-21-windows-native-sandbox-host-profile-capabilities-design.md`。
 
 ## 20. M3：安装态与系统安全加固
 

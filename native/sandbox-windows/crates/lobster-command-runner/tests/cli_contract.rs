@@ -8,7 +8,8 @@ use lobster_sandbox_core::cleanup;
 use lobster_sandbox_protocol::{
     ExecutionOutcome, ExecutionReport, NATIVE_SANDBOX_POLICY_VERSION,
     NATIVE_SANDBOX_PROTOCOL_VERSION, NetworkMode, RunRequest, RunnerErrorResponse, SandboxCommand,
-    SandboxPolicySnapshot, SandboxResourceLimits, VerificationReport,
+    SandboxHostProfile, SandboxPolicySnapshot, SandboxProfileMode, SandboxResourceLimits,
+    VerificationReport,
 };
 
 const REPORT_PREFIX: &str = "LOBSTER_SANDBOX_REPORT ";
@@ -39,11 +40,7 @@ fn malformed_request_returns_a_machine_readable_error() {
 #[test]
 fn json_cli_verifies_runs_and_cleans_up_a_workspace() {
     let workspace = must(tempfile::tempdir(), "create workspace");
-    let sandbox_home = workspace.path().join(".sandbox-home");
-    must(
-        std::fs::create_dir_all(&sandbox_home),
-        "create sandbox home",
-    );
+    let profile = create_host_profile(workspace.path());
     let request_path = workspace.path().join("request.json");
     let request = RunRequest {
         protocol_version: NATIVE_SANDBOX_PROTOCOL_VERSION,
@@ -55,7 +52,7 @@ fn json_cli_verifies_runs_and_cleans_up_a_workspace() {
             writable_roots: vec![workspace.path().display().to_string()],
             readable_roots: Vec::new(),
             protected_paths: Vec::new(),
-            sandbox_home_dir: sandbox_home.display().to_string(),
+            profile,
             scratch_dir: workspace.path().join(".scratch").display().to_string(),
             network_mode: NetworkMode::Disabled,
             limits: SandboxResourceLimits::default(),
@@ -113,11 +110,7 @@ fn json_cli_verifies_runs_and_cleans_up_a_workspace() {
 #[test]
 fn run_can_write_the_machine_report_to_a_sidecar_without_polluting_stderr() {
     let workspace = must(tempfile::tempdir(), "create workspace");
-    let sandbox_home = workspace.path().join(".sandbox-home");
-    must(
-        std::fs::create_dir_all(&sandbox_home),
-        "create sandbox home",
-    );
+    let profile = create_host_profile(workspace.path());
     let request_path = workspace.path().join("request.json");
     let report_path = workspace.path().join("report.json");
     let request = RunRequest {
@@ -130,7 +123,7 @@ fn run_can_write_the_machine_report_to_a_sidecar_without_polluting_stderr() {
             writable_roots: vec![workspace.path().display().to_string()],
             readable_roots: Vec::new(),
             protected_paths: Vec::new(),
-            sandbox_home_dir: sandbox_home.display().to_string(),
+            profile,
             scratch_dir: workspace.path().join(".scratch").display().to_string(),
             network_mode: NetworkMode::Disabled,
             limits: SandboxResourceLimits::default(),
@@ -185,6 +178,23 @@ fn invoke(command: &str, request: &std::path::Path) -> std::process::Output {
             .output(),
         "run command runner",
     )
+}
+
+fn create_host_profile(root: &std::path::Path) -> SandboxHostProfile {
+    let app_data = root.join("AppData").join("Roaming");
+    let local_app_data = root.join("AppData").join("Local");
+    must(std::fs::create_dir_all(&app_data), "create APPDATA");
+    must(
+        std::fs::create_dir_all(&local_app_data),
+        "create LOCALAPPDATA",
+    );
+    SandboxHostProfile {
+        mode: SandboxProfileMode::InheritHost,
+        home_dir: root.display().to_string(),
+        user_profile_dir: root.display().to_string(),
+        app_data_dir: app_data.display().to_string(),
+        local_app_data_dir: local_app_data.display().to_string(),
+    }
 }
 
 fn must<T, E: Debug>(result: Result<T, E>, context: &str) -> T {

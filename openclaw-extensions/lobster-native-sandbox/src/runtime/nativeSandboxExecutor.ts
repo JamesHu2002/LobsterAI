@@ -1,3 +1,4 @@
+import type { LobsterNativeSandboxProfileMode } from '../backend/constants.js';
 import type { SandboxFsIo } from '../fs/sandboxFsIo.js';
 
 export interface NativeSandboxExecutorStatus {
@@ -48,13 +49,21 @@ export type NativeSandboxPolicyRoot = {
   path: string;
 };
 
+export type NativeSandboxHostProfile = {
+  mode: LobsterNativeSandboxProfileMode;
+  homeDir: string;
+  userProfileDir: string;
+  appDataDir: string;
+  localAppDataDir: string;
+};
+
 /**
  * Product-owned roots that accompany one task workspace. The executor keeps
  * the task workspace implicit so callers cannot accidentally replace it.
  */
 export interface NativeSandboxPolicyContext {
   agentWorkspaceDir: string;
-  sandboxHomeDir: string;
+  profile: NativeSandboxHostProfile;
   writableRoots: readonly NativeSandboxPolicyRoot[];
   readableRoots: readonly NativeSandboxPolicyRoot[];
   protectedPaths: readonly string[];

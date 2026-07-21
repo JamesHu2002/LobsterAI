@@ -9,10 +9,16 @@ const createHarness = () => {
   const io = {} as SandboxFsIo;
   const policyContext = {
     agentWorkspaceDir: 'C:\\openclaw\\workspace-main',
-    sandboxHomeDir: 'C:\\LobsterAI\\sandbox-data\\agents\\main\\home',
+    profile: {
+      mode: 'inherit-host' as const,
+      homeDir: 'C:\\Users\\tester',
+      userProfileDir: 'C:\\Users\\tester',
+      appDataDir: 'C:\\Users\\tester\\AppData\\Roaming',
+      localAppDataDir: 'C:\\Users\\tester\\AppData\\Local',
+    },
     writableRoots: [
       { id: 'agent', path: 'C:\\openclaw\\workspace-main' },
-      { id: 'sandbox-home', path: 'C:\\LobsterAI\\sandbox-data\\agents\\main\\home' },
+      { id: 'npm-cache', path: 'C:\\Users\\tester\\AppData\\Local\\npm-cache' },
     ],
     readableRoots: [{ id: 'skills', path: 'C:\\LobsterAI\\SKILLs' }],
     protectedPaths: [],
@@ -41,8 +47,8 @@ const createHarness = () => {
   const factory = createLobsterNativeSandboxBackendFactory({
     executor,
     audit: new SandboxAuditRecorder({
-      policyVersion: 'workspace-write-v2',
-      runtimeVersion: '0.2.0',
+      policyVersion: 'workspace-write-v3',
+      runtimeVersion: '0.3.0',
     }),
     runtimeEnabled: true,
     platform: 'win32',

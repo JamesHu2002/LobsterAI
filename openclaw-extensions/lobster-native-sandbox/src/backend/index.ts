@@ -33,6 +33,7 @@ export {
   LOBSTER_NATIVE_WINDOWS_RUNTIME_VERSION,
   LOBSTER_NATIVE_WORKSPACE_PATH_SEMANTICS,
   LobsterNativeSandboxBackendErrorCode,
+  LobsterNativeSandboxFilesystemCapability,
   LobsterNativeSandboxGatewayMethod,
   LobsterNativeSandboxRuntimeState,
 } from './constants.js';

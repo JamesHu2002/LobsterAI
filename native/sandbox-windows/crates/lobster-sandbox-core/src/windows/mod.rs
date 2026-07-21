@@ -87,7 +87,7 @@ pub fn verify(request: &RunRequest) -> SandboxResult<VerificationReport> {
             .iter()
             .map(|path| path.display().to_string())
             .collect(),
-        sandbox_home_dir: prepared.policy.sandbox_home_dir.display().to_string(),
+        profile_mode: prepared.policy.profile.mode,
         restricted_token: diagnostics.restricted_sid_count >= prepared.capabilities.len() as u32,
         write_restricted: true,
         owner_preserved: true,

@@ -24,11 +24,16 @@
       "runtimeEnabled": {
         "type": "boolean"
       },
-      "sandboxDataRoot": {
-        "type": "string"
-      },
       "skillsRoot": {
         "type": "string"
+      },
+      "filesystemCapabilities": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": ["npm-cache-write"]
+        },
+        "uniqueItems": true
       }
     },
     "required": [
@@ -37,8 +42,8 @@
       "runtimeVersion",
       "protocolVersion",
       "runtimeEnabled",
-      "sandboxDataRoot",
-      "skillsRoot"
+      "skillsRoot",
+      "filesystemCapabilities"
     ]
   }
 }

@@ -18,19 +18,26 @@ cargo build --manifest-path native/sandbox-windows/Cargo.toml `
 
 ```json
 {
-  "protocolVersion": 2,
+  "protocolVersion": 3,
   "policy": {
-    "policyVersion": "workspace-write-v2",
+    "policyVersion": "workspace-write-v3",
     "taskId": "manual-smoke",
     "agentId": "main",
     "cwd": "D:\\projects\\demo",
     "writableRoots": [
       "D:\\projects\\demo",
-      "C:\\LobsterAI\\sandbox-data\\agents\\main\\home"
+      "C:\\Users\\alice\\AppData\\Roaming\\LobsterAI\\openclaw\\state\\workspace-main",
+      "C:\\Users\\alice\\AppData\\Local\\npm-cache"
     ],
     "readableRoots": ["C:\\LobsterAI\\SKILLs"],
     "protectedPaths": [],
-    "sandboxHomeDir": "C:\\LobsterAI\\sandbox-data\\agents\\main\\home",
+    "profile": {
+      "mode": "inherit-host",
+      "homeDir": "C:\\Users\\alice",
+      "userProfileDir": "C:\\Users\\alice",
+      "appDataDir": "C:\\Users\\alice\\AppData\\Roaming",
+      "localAppDataDir": "C:\\Users\\alice\\AppData\\Local"
+    },
     "scratchDir": "D:\\projects\\demo\\.lobster-sandbox-scratch",
     "networkMode": "disabled",
     "limits": {
@@ -72,9 +79,9 @@ npm run sandbox-native:lint
 
 The test suite exercises an existing ordinary directory, broad `Users` and
 `Authenticated Users` ACLs, writes inside and outside the workspace,
-PowerShell/cmd child processes, Node.js, Python, npm, persistent profile
-mapping, read-only roots, protected paths, junction escape attempts, timeout,
-and process-tree cleanup.
+PowerShell/cmd child processes, Node.js, Python, npm, inherited profile paths,
+an explicit shared cache root, read-only roots, protected paths, junction escape
+attempts, timeout, and process-tree cleanup.
 
 ## Current boundaries
 
@@ -82,8 +89,11 @@ and process-tree cleanup.
 - Enforces write roots through a `WRITE_RESTRICTED` token and path-scoped SIDs.
 - Assigns the suspended child to a kill-on-close Job Object before resuming it.
 - Rejects UNC/device/drive-root policies and reparse points in policy roots.
-- Maps `HOME`/`USERPROFILE` and AppData variables to a persistent per-agent
-  Sandbox home; temporary files remain in a disposable scratch directory.
+- Inherits trusted host `HOME`/`USERPROFILE` and AppData paths without making
+  the profile a writable root; temporary files remain in a disposable scratch
+  directory.
+- Allows product-selected compatibility roots such as the shared npm cache.
+  These grants improve tool compatibility but permit cross-task cache mutation.
 - Supports multiple writable roots and explicit read-only roots.
 - Does not yet implement system network isolation, setup/upgrade, signing,
   multi-task authorization lifecycle, or macOS.

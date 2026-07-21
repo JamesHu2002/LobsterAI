@@ -5,7 +5,9 @@ import path from 'node:path';
 import { describe, expect, test } from 'vitest';
 
 import { SandboxAuditRecorder } from '../audit/sandboxAuditRecorder.js';
+import { LobsterNativeSandboxFilesystemCapability } from '../backend/constants.js';
 import { WindowsNativeSandboxExecutor } from './windowsNativeSandboxExecutor.js';
+import { createWindowsSandboxPolicyContext } from './windowsSandboxPolicyContext.js';
 
 const runnerPath = path.join(
   process.cwd(),
@@ -22,27 +24,33 @@ describe.skipIf(!canRun)('WindowsNativeSandboxExecutor smoke', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lobster-native-m2-smoke-'));
     const workspace = path.join(root, 'workspace');
     const agentWorkspace = path.join(root, 'agent-workspace');
-    const sandboxHome = path.join(root, 'sandbox-data', 'main', 'home');
+    const profileRoot = path.join(root, 'profile');
+    const appData = path.join(profileRoot, 'AppData', 'Roaming');
+    const localAppData = path.join(profileRoot, 'AppData', 'Local');
+    const npmCache = path.join(localAppData, 'npm-cache');
     const outside = path.join(root, 'outside');
     fs.mkdirSync(workspace);
     fs.mkdirSync(agentWorkspace);
     fs.mkdirSync(outside);
-    const policyContext = {
+    fs.mkdirSync(appData, { recursive: true });
+    const policyContext = createWindowsSandboxPolicyContext({
       agentWorkspaceDir: agentWorkspace,
-      sandboxHomeDir: sandboxHome,
-      writableRoots: [
-        { id: 'agent', path: agentWorkspace },
-        { id: 'sandbox-home', path: sandboxHome },
+      filesystemCapabilities: [
+        LobsterNativeSandboxFilesystemCapability.NpmCacheWrite,
       ],
-      readableRoots: [],
-      protectedPaths: [],
-    };
+      environment: {
+        APPDATA: appData,
+        HOME: profileRoot,
+        LOCALAPPDATA: localAppData,
+        USERPROFILE: profileRoot,
+      },
+    });
     const executor = new WindowsNativeSandboxExecutor({
       runnerPath,
       runtimeEnabled: true,
       audit: new SandboxAuditRecorder({
-        policyVersion: 'workspace-write-v2',
-        runtimeVersion: '0.2.0',
+        policyVersion: 'workspace-write-v3',
+        runtimeVersion: '0.3.0',
       }),
     });
     try {
@@ -66,6 +74,15 @@ describe.skipIf(!canRun)('WindowsNativeSandboxExecutor smoke', () => {
       });
       expect(shellOutside.code).not.toBe(0);
       expect(fs.existsSync(escapedPath)).toBe(false);
+
+      const cacheWrite = await executor.runIsolatedCommand({
+        command: "Set-Content -LiteralPath (Join-Path $env:LOCALAPPDATA 'npm-cache\\smoke.txt') -Value cached",
+        workspaceDir: workspace,
+        policyContext,
+        sessionKey: 'agent:main:m2-smoke',
+      });
+      expect(cacheWrite.code).toBe(0);
+      expect(fs.readFileSync(path.join(npmCache, 'smoke.txt'), 'utf8').trim()).toBe('cached');
 
       const io = executor.createFsIo({
         workspaceDir: workspace,

@@ -19,6 +19,7 @@ import {
   NATIVE_SANDBOX_OPENCLAW_BACKEND_ID,
   NATIVE_SANDBOX_OPENCLAW_PLUGIN_ID,
   NATIVE_SANDBOX_RETIRED_OPENCLAW_PLUGIN_IDS,
+  NativeSandboxFilesystemCapability,
 } from '../../shared/nativeSandbox/constants';
 import {
   AuthType,
@@ -1889,7 +1890,6 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
       NATIVE_SANDBOX_OPENCLAW_PLUGIN_ID,
     );
     const skillsExtraDirs = this.resolveSkillsExtraDirs();
-    const nativeSandboxDataRoot = path.join(app.getPath('userData'), 'sandbox-data');
     // Runtime-bundled xai extension (dist/extensions/xai): provides the Grok
     // model compat hooks (e.g. only grok-4.3 accepts reasoningEffort) plus the
     // OAuth refresh hook for credentials in the auth-profiles store. Declare
@@ -2138,8 +2138,10 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
                     runtimeVersion: nativeSandboxRuntime.runtimeVersion,
                     protocolVersion: nativeSandboxRuntime.protocolVersion,
                     runtimeEnabled: nativeSandboxRuntimeEnabled,
-                    sandboxDataRoot: nativeSandboxDataRoot,
                     skillsRoot: skillsExtraDirs[0] ?? '',
+                    filesystemCapabilities: [
+                      NativeSandboxFilesystemCapability.NpmCacheWrite,
+                    ],
                   },
                 },
               }

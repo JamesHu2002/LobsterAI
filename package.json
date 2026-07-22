@@ -118,6 +118,7 @@
     "openclaw:prune": "node scripts/prune-openclaw-runtime.cjs",
     "sandbox-native:build": "node scripts/native-sandbox/build.cjs",
     "sandbox-native:test": "cargo test --manifest-path native/sandbox-windows/Cargo.toml --workspace",
+    "sandbox-native:test:installed": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/native-sandbox/test-installed.ps1",
     "sandbox-native:lint": "cargo clippy --manifest-path native/sandbox-windows/Cargo.toml --workspace --all-targets -- -D warnings",
     "sandbox-runtime:verify": "node scripts/native-sandbox/verify-package.cjs",
     "openclaw:runtime:host": "node scripts/openclaw-runtime-host.cjs",

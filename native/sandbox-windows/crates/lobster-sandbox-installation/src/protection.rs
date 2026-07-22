@@ -50,13 +50,14 @@ pub fn protect_installation(
     owner_sid: &str,
     sandbox_sid: &str,
 ) -> InstallationResult<()> {
-    let runtime_sddl = runtime_sddl(owner_sid, sandbox_sid);
-    apply_tree_security(&paths.current, &runtime_sddl)?;
+    let runtime_directory_sddl = runtime_sddl(owner_sid, sandbox_sid);
+    let runtime_file_sddl = runtime_file_sddl(owner_sid, sandbox_sid);
+    apply_tree_security(&paths.current, &runtime_directory_sddl, &runtime_file_sddl)?;
     if paths.previous.exists() {
-        apply_tree_security(&paths.previous, &runtime_sddl)?;
+        apply_tree_security(&paths.previous, &runtime_directory_sddl, &runtime_file_sddl)?;
     }
     if let Some(logs) = paths.setup_log.parent().filter(|logs| logs.exists()) {
-        apply_tree_security(logs, &runtime_sddl)?;
+        apply_tree_security(logs, &runtime_directory_sddl, &runtime_file_sddl)?;
     }
     protect_installation_base(paths, owner_sid, sandbox_sid)
 }
@@ -89,11 +90,16 @@ pub fn verify_runtime_protection(
     owner_sid: &str,
     sandbox_sid: &str,
 ) -> InstallationResult<bool> {
-    let runtime_sddl = runtime_sddl(owner_sid, sandbox_sid);
+    let runtime_directory_sddl = runtime_sddl(owner_sid, sandbox_sid);
+    let runtime_file_sddl = runtime_file_sddl(owner_sid, sandbox_sid);
     let state_sddl = state_sddl(owner_sid, sandbox_sid);
     Ok(
-        path_matches_security_descriptor(&paths.root, &runtime_sddl)?
-            && tree_matches_security_descriptor(&paths.current, &runtime_sddl)?
+        path_matches_security_descriptor(&paths.root, &runtime_directory_sddl)?
+            && tree_matches_security_descriptor(
+                &paths.current,
+                &runtime_directory_sddl,
+                &runtime_file_sddl,
+            )?
             && path_matches_security_descriptor(&paths.state_dir, &state_sddl)?,
     )
 }
@@ -103,15 +109,18 @@ pub fn verify_installation_protection(
     owner_sid: &str,
     sandbox_sid: &str,
 ) -> InstallationResult<(bool, bool)> {
+    let runtime_directory_sddl = runtime_sddl(owner_sid, sandbox_sid);
+    let runtime_file_sddl = runtime_file_sddl(owner_sid, sandbox_sid);
     let runtime_protected = verify_runtime_protection(paths, owner_sid, sandbox_sid)?
         && (!paths.previous.exists()
             || tree_matches_security_descriptor(
                 &paths.previous,
-                &runtime_sddl(owner_sid, sandbox_sid),
+                &runtime_directory_sddl,
+                &runtime_file_sddl,
             )?)
         && match paths.setup_log.parent() {
             Some(logs) if logs.exists() => {
-                tree_matches_security_descriptor(logs, &runtime_sddl(owner_sid, sandbox_sid))?
+                tree_matches_security_descriptor(logs, &runtime_directory_sddl, &runtime_file_sddl)?
             }
             _ => true,
         };
@@ -137,19 +146,29 @@ pub fn protect_setup_result(
         let directory_sddl = format!(
             "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x120089;;;{owner_sid}){sandbox_read}"
         );
+        let sandbox_file_read = sandbox_sid
+            .map(|sid| format!("(A;;0x120089;;;{sid})"))
+            .unwrap_or_default();
+        let file_sddl = format!(
+            "O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x120089;;;{owner_sid}){sandbox_file_read}"
+        );
         set_path_security(&paths.root, &directory_sddl)?;
         set_path_security(&paths.state_dir, &directory_sddl)?;
         if let Some(logs) = paths.setup_log.parent().filter(|logs| logs.exists()) {
-            apply_tree_security(logs, &directory_sddl)?;
+            apply_tree_security(logs, &directory_sddl, &file_sddl)?;
         }
     } else if let (Some(logs), Some(sandbox_sid)) = (
         paths.setup_log.parent().filter(|logs| logs.exists()),
         sandbox_sid,
     ) {
-        apply_tree_security(logs, &runtime_sddl(owner_sid, sandbox_sid))?;
+        apply_tree_security(
+            logs,
+            &runtime_sddl(owner_sid, sandbox_sid),
+            &runtime_file_sddl(owner_sid, sandbox_sid),
+        )?;
     }
     let deny_sandbox = sandbox_sid
-        .map(|sid| format!("(D;;GA;;;{sid})"))
+        .map(|sid| format!("(D;;FA;;;{sid})"))
         .unwrap_or_default();
     let sddl = format!("O:BAD:P{deny_sandbox}(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;{owner_sid})");
     set_path_security(&paths.setup_result, &sddl)
@@ -171,8 +190,17 @@ fn path_matches_security_descriptor(path: &Path, expected_sddl: &str) -> Install
     Ok(acl_bytes(actual_dacl)? == acl_bytes(expected_dacl)?)
 }
 
-fn tree_matches_security_descriptor(root: &Path, expected_sddl: &str) -> InstallationResult<bool> {
+fn tree_matches_security_descriptor(
+    root: &Path,
+    directory_sddl: &str,
+    file_sddl: &str,
+) -> InstallationResult<bool> {
     reject_reparse(root)?;
+    let expected_sddl = if root.is_dir() {
+        directory_sddl
+    } else {
+        file_sddl
+    };
     if !path_matches_security_descriptor(root, expected_sddl)? {
         return Ok(false);
     }
@@ -195,7 +223,7 @@ fn tree_matches_security_descriptor(root: &Path, expected_sddl: &str) -> Install
                 )
             })?
             .path();
-        if !tree_matches_security_descriptor(&path, expected_sddl)? {
+        if !tree_matches_security_descriptor(&path, directory_sddl, file_sddl)? {
             return Ok(false);
         }
     }
@@ -319,6 +347,12 @@ fn runtime_sddl(owner_sid: &str, sandbox_sid: &str) -> String {
     )
 }
 
+fn runtime_file_sddl(owner_sid: &str, sandbox_sid: &str) -> String {
+    format!(
+        "O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1200a9;;;{owner_sid})(A;;0x1200a9;;;{sandbox_sid})"
+    )
+}
+
 fn state_sddl(owner_sid: &str, sandbox_sid: &str) -> String {
     format!(
         "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x120089;;;{owner_sid})(A;OICI;0x120089;;;{sandbox_sid})"
@@ -326,12 +360,23 @@ fn state_sddl(owner_sid: &str, sandbox_sid: &str) -> String {
 }
 
 fn credentials_sddl(owner_sid: &str, sandbox_sid: &str) -> String {
-    format!("O:BAD:P(D;;GA;;;{sandbox_sid})(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;{owner_sid})")
+    format!("O:BAD:P(D;;FA;;;{sandbox_sid})(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;{owner_sid})")
 }
 
-fn apply_tree_security(root: &Path, sddl: &str) -> InstallationResult<()> {
+fn apply_tree_security(
+    root: &Path,
+    directory_sddl: &str,
+    file_sddl: &str,
+) -> InstallationResult<()> {
     reject_reparse(root)?;
-    set_path_security(root, sddl)?;
+    set_path_security(
+        root,
+        if root.is_dir() {
+            directory_sddl
+        } else {
+            file_sddl
+        },
+    )?;
     if !root.is_dir() {
         return Ok(());
     }
@@ -354,9 +399,9 @@ fn apply_tree_security(root: &Path, sddl: &str) -> InstallationResult<()> {
             .path();
         reject_reparse(&path)?;
         if path.is_dir() {
-            apply_tree_security(&path, sddl)?;
+            apply_tree_security(&path, directory_sddl, file_sddl)?;
         } else {
-            set_path_security(&path, sddl)?;
+            set_path_security(&path, file_sddl)?;
         }
     }
     Ok(())
@@ -492,6 +537,48 @@ mod tests {
         assert_eq!(
             path_matches_security_descriptor(temporary.path(), &read_access).ok(),
             Some(false)
+        );
+    }
+
+    #[test]
+    fn protected_tree_security_round_trips_for_directories_and_files() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let nested = temporary.path().join("nested");
+        fs::create_dir(&nested).expect("nested directory");
+        fs::write(nested.join("runtime.exe"), b"runtime").expect("runtime fixture");
+        let sid = crate::identity::current_user_sid().expect("current user SID");
+        let directory_sddl = format!("O:{sid}D:P(A;OICI;FA;;;{sid})(A;OICI;FR;;;SY)");
+        let file_sddl = format!("O:{sid}D:P(A;;FA;;;{sid})(A;;FR;;;SY)");
+
+        apply_tree_security(temporary.path(), &directory_sddl, &file_sddl)
+            .expect("apply tree security");
+        for (path, expected_sddl) in [
+            (temporary.path().to_path_buf(), directory_sddl.as_str()),
+            (nested.clone(), directory_sddl.as_str()),
+            (nested.join("runtime.exe"), file_sddl.as_str()),
+        ] {
+            assert!(
+                path_matches_security_descriptor(&path, expected_sddl)
+                    .expect("verify path security"),
+                "security descriptor did not round trip for {}",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn protected_credentials_deny_ace_round_trips_on_a_file() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let credentials = temporary.path().join("credentials.dat");
+        fs::write(&credentials, b"encrypted fixture").expect("credentials fixture");
+        let owner_sid = crate::identity::current_user_sid().expect("current user SID");
+        let sddl = format!("O:{owner_sid}D:P(D;;FA;;;SY)(A;;FA;;;{owner_sid})");
+
+        set_path_security(&credentials, &sddl).expect("apply credentials security");
+        assert!(
+            path_matches_security_descriptor(&credentials, &sddl)
+                .expect("verify credentials security"),
+            "credentials security descriptor did not round trip"
         );
     }
 }

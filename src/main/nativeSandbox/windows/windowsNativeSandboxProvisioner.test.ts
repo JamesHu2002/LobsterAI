@@ -25,7 +25,7 @@ const setupReport = (overrides: Record<string, unknown> = {}) => ({
   runnerPath,
   setupPath: `${installRoot}\\current\\lobster-sandbox-setup.exe`,
   identity: {
-    accountName: 'LobsterSandboxOffline',
+    accountName: 'LobsterSandboxUser',
     accountSid: 'S-1-5-21-test',
     ready: true,
   },

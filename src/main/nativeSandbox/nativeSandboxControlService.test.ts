@@ -197,8 +197,17 @@ describe('NativeSandboxControlService', () => {
 
     expect(result.success).toBe(false);
     expect(result.enabled).toBe(false);
+    expect(result.status.busy).toBe(false);
+    expect(result.status.operation).toBeUndefined();
     expect(harness.persistEnabled).not.toHaveBeenCalled();
     expect(harness.applyConfiguration).not.toHaveBeenCalled();
+
+    harness.provisioner.install.mockResolvedValue(
+      createResult({ enabled: false, healthy: true, installed: true }),
+    );
+    const retry = await harness.service.setEnabled(true);
+    expect(retry.success).toBe(true);
+    expect(harness.provisioner.install).toHaveBeenCalledTimes(2);
   });
 
   test('keeps persisted enabled state consistent when a repeated health repair is cancelled', async () => {

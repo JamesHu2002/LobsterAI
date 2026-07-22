@@ -7,7 +7,7 @@ pub const CREDENTIALS_FILENAME: &str = "credentials.json";
 pub const RUNNER_FILENAME: &str = "lobster-command-runner.exe";
 pub const SETUP_FILENAME: &str = "lobster-sandbox-setup.exe";
 pub const THIRD_PARTY_NOTICES_FILENAME: &str = "THIRD_PARTY_NOTICES.txt";
-pub const SANDBOX_ACCOUNT_NAME: &str = "LobsterSandboxOffline";
+pub const SANDBOX_ACCOUNT_NAME: &str = "LobsterSandboxUser";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]

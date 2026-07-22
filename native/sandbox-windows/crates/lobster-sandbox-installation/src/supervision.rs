@@ -1,5 +1,7 @@
 use std::ffi::c_void;
+use std::fs;
 
+use lobster_sandbox_protocol::{NATIVE_SANDBOX_PROTOCOL_VERSION, RunnerErrorResponse};
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
@@ -67,12 +69,7 @@ pub fn start_broker_watchdog(broker_pid: u32, expected_owner_sid: &str) -> Insta
     }
     std::thread::Builder::new()
         .name("lobster-sandbox-broker-watchdog".to_string())
-        .spawn(move || {
-            let _ = unsafe { WaitForSingleObject(handle.0, INFINITE) };
-            // A signalled or failed wait means supervision can no longer be proven. Exit so the
-            // worker's kill-on-close command Job cannot become an orphaned execution path.
-            std::process::exit(SUPERVISOR_LOST_EXIT_CODE);
-        })
+        .spawn(move || supervise_broker_lifetime(handle))
         .map_err(|error| {
             InstallationError::new(
                 "sandbox-broker-watchdog-failed",
@@ -81,6 +78,49 @@ pub fn start_broker_watchdog(broker_pid: u32, expected_owner_sid: &str) -> Insta
             )
         })?;
     Ok(())
+}
+
+fn supervise_broker_lifetime(handle: ProcessHandle) -> ! {
+    let wait_result = unsafe { WaitForSingleObject(handle.0, INFINITE) };
+    // Moving the complete RAII handle into this function keeps the Windows handle open for the
+    // entire wait. Capturing only `handle.0` would copy the integer and let the outer guard close
+    // the real handle before this thread starts.
+    write_watchdog_failure(wait_result);
+    std::process::exit(SUPERVISOR_LOST_EXIT_CODE);
+}
+
+fn write_watchdog_failure(wait_result: u32) {
+    let Some(stderr_path) = std::env::var_os("LOBSTER_SANDBOX_WORKER_STDERR") else {
+        return;
+    };
+    let (message, windows_error) = if wait_result == windows_sys::Win32::Foundation::WAIT_OBJECT_0 {
+        (
+            "the Sandbox broker exited while its worker was active".to_string(),
+            None,
+        )
+    } else if wait_result == windows_sys::Win32::Foundation::WAIT_FAILED {
+        let error = unsafe { GetLastError() };
+        (
+            format!("waiting for the Sandbox broker failed (Windows error {error})"),
+            Some(error),
+        )
+    } else {
+        (
+            format!("waiting for the Sandbox broker returned unexpected status {wait_result}"),
+            None,
+        )
+    };
+    let response = RunnerErrorResponse {
+        protocol_version: NATIVE_SANDBOX_PROTOCOL_VERSION,
+        ok: false,
+        code: "sandbox-broker-lost".to_string(),
+        stage: "supervise-worker".to_string(),
+        message,
+        windows_error,
+    };
+    if let Ok(json) = serde_json::to_vec(&response) {
+        let _ = fs::write(stderr_path, json);
+    }
 }
 
 fn current_parent_process_id() -> InstallationResult<u32> {

@@ -25,7 +25,7 @@ use crate::protection::{
     verify_installation_protection, verify_runtime_protection,
 };
 
-const PROTECTION_VERSION: u32 = 1;
+const PROTECTION_VERSION: u32 = 2;
 
 pub struct RuntimeSecurityContext {
     pub state: InstallState,
@@ -212,7 +212,7 @@ fn deploy_runtime(
         }
         return Err(error);
     }
-    if let Err(error) = ensure_offline_firewall(&identity.account_sid) {
+    if let Err(error) = ensure_offline_firewall(&identity.account_sid, &owner_sid) {
         if !had_installation {
             cleanup_new_installation(paths);
         }
@@ -344,7 +344,9 @@ fn verify_installation(
         return Err(InstallationError::new(
             "runtime-protection-invalid",
             "verify-protection",
-            "runtime or credential ACL inheritance is not protected",
+            format!(
+                "installed ACL policy does not match: runtimeProtected={runtime_protected}, credentialsProtected={credentials_protected}"
+            ),
         ));
     }
     let mut report = SetupReport::empty(operation, &paths.display_root());

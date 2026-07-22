@@ -185,7 +185,10 @@ pub fn prepare_policy(snapshot: &SandboxPolicySnapshot) -> SandboxResult<Prepare
 
 fn canonical_existing(path: &Path, label: &str) -> SandboxResult<PathBuf> {
     validate_local_absolute_path(path, label)?;
-    reject_reparse_components(path, false)?;
+    let installed_worker = std::env::var("LOBSTER_SANDBOX_WORKER").as_deref() == Ok("1");
+    if !installed_worker {
+        reject_reparse_components(path, false)?;
+    }
     let canonical = dunce::canonicalize(path).map_err(|error| {
         SandboxError::new(
             "path-invalid",
@@ -194,23 +197,54 @@ fn canonical_existing(path: &Path, label: &str) -> SandboxResult<PathBuf> {
         )
     })?;
     validate_local_absolute_path(&canonical, label)?;
-    reject_reparse_components(&canonical, false)?;
+    if installed_worker {
+        // The broker has already inspected every component before granting the dedicated identity
+        // access to this exact root. That identity may deliberately be unable to query private
+        // ancestors such as the product owner's AppData directory. Re-resolve the final target and
+        // require it to remain identical instead of reopening every ancestor. A swapped junction
+        // or symbolic link changes the canonical path and fails closed before token creation.
+        if path_key(path) != path_key(&canonical) {
+            return Err(SandboxError::new(
+                "reparse-point-denied",
+                "prepare-paths",
+                format!(
+                    "sandbox path changed while preparing {label}: {}",
+                    path.display()
+                ),
+            ));
+        }
+    } else {
+        reject_reparse_components(&canonical, false)?;
+    }
     Ok(canonical)
 }
 
 fn canonical_profile_directory(path: &Path, label: &str) -> SandboxResult<PathBuf> {
-    let directory = canonical_existing(path, label)?;
-    if is_drive_root(&directory) || !directory.is_dir() {
+    validate_local_absolute_path(path, label)?;
+    if path
+        .components()
+        .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+    {
         return Err(SandboxError::new(
             "path-invalid",
             "prepare-paths",
             format!(
-                "{label} must be a non-root directory: {}",
-                directory.display()
+                "{label} must not contain relative path components: {}",
+                path.display()
             ),
         ));
     }
-    Ok(directory)
+    if is_drive_root(path) {
+        return Err(SandboxError::new(
+            "path-invalid",
+            "prepare-paths",
+            format!("{label} must be a non-root directory: {}", path.display()),
+        ));
+    }
+    // Profile paths only populate the child environment. They do not grant read or write access,
+    // so the dedicated worker must not need to inspect a host-user directory merely to preserve
+    // its path. Authorization roots above still require full canonicalization and reparse checks.
+    Ok(path.to_path_buf())
 }
 
 fn validate_local_absolute_path(path: &Path, label: &str) -> SandboxResult<()> {

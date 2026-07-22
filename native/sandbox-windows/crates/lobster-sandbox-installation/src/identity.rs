@@ -3,12 +3,17 @@ use std::fs;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 
-use windows_sys::Win32::Foundation::{GetLastError, HLOCAL, LocalFree};
+use windows_sys::Win32::Foundation::{
+    ERROR_MEMBER_IN_ALIAS, ERROR_MORE_DATA, GetLastError, HLOCAL, LocalFree,
+};
 use windows_sys::Win32::NetworkManagement::NetManagement::{
-    NERR_Success, NERR_UserNotFound, NetApiBufferFree, NetUserAdd, NetUserDel, NetUserGetInfo,
-    NetUserSetInfo, UF_ACCOUNTDISABLE, UF_DONT_EXPIRE_PASSWD, UF_ENCRYPTED_TEXT_PASSWORD_ALLOWED,
-    UF_LOCKOUT, UF_NORMAL_ACCOUNT, UF_NOT_DELEGATED, UF_PASSWD_NOTREQD, UF_SCRIPT, USER_INFO_1,
-    USER_INFO_1003, USER_INFO_1008, USER_PRIV_USER,
+    LOCALGROUP_MEMBERS_INFO_0, MAX_PREFERRED_LENGTH, NERR_Success, NERR_UserExists,
+    NERR_UserNotFound, NetApiBufferFree, NetLocalGroupAddMembers, NetLocalGroupGetMembers,
+    NetUserAdd, NetUserDel, NetUserGetInfo, NetUserSetInfo, UF_ACCOUNTDISABLE,
+    UF_DONT_EXPIRE_PASSWD, UF_ENCRYPTED_TEXT_PASSWORD_ALLOWED, UF_LOCKOUT, UF_NORMAL_ACCOUNT,
+    UF_PASSWD_NOTREQD, UF_SCRIPT, UF_TRUSTED_FOR_DELEGATION,
+    UF_TRUSTED_TO_AUTHENTICATE_FOR_DELEGATION, USER_INFO_1, USER_INFO_1003, USER_INFO_1008,
+    USER_PRIV_USER,
 };
 use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
@@ -17,8 +22,8 @@ use windows_sys::Win32::Security::Cryptography::{
     CryptUnprotectData,
 };
 use windows_sys::Win32::Security::{
-    GetLengthSid, GetTokenInformation, IsValidSid, LookupAccountNameW, LookupAccountSidW,
-    SID_NAME_USE, SidTypeUser, TOKEN_QUERY, TOKEN_USER, TokenUser,
+    EqualSid, GetLengthSid, GetTokenInformation, IsValidSid, LookupAccountNameW, LookupAccountSidW,
+    SID_NAME_USE, SidTypeAlias, SidTypeUser, TOKEN_QUERY, TOKEN_USER, TokenUser,
 };
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
@@ -26,6 +31,8 @@ use crate::error::{InstallationError, InstallationResult};
 use crate::model::{CredentialsFile, SANDBOX_ACCOUNT_NAME, SETUP_SCHEMA_VERSION};
 
 const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
+const WINDOWS_LOCAL_ACCOUNT_NAME_MAX_UTF16_UNITS: usize = 20;
+const SID_BUILTIN_USERS: &str = "S-1-5-32-545";
 
 #[link(name = "advapi32")]
 unsafe extern "system" {
@@ -331,6 +338,7 @@ pub fn free_local(value: *mut c_void) {
 }
 
 fn ensure_local_user(name: &str, password: &str) -> InstallationResult<()> {
+    validate_local_user_name(name)?;
     let name_wide = to_wide(name);
     let password_wide = to_wide(password);
     let info = USER_INFO_1 {
@@ -351,29 +359,30 @@ fn ensure_local_user(name: &str, password: &str) -> InstallationResult<()> {
             std::ptr::null_mut(),
         )
     };
-    if status == NERR_Success {
-        return Ok(());
+    let disposition = classify_user_add_status(status, name)?;
+    if disposition == UserAddDisposition::UpdateExisting {
+        let password_info = USER_INFO_1003 {
+            usri1003_password: password_wide.as_ptr() as *mut u16,
+        };
+        let updated = unsafe {
+            NetUserSetInfo(
+                std::ptr::null(),
+                name_wide.as_ptr(),
+                1003,
+                &password_info as *const _ as *mut u8,
+                std::ptr::null_mut(),
+            )
+        };
+        if updated != NERR_Success {
+            return Err(InstallationError::windows(
+                "sandbox-identity-create-failed",
+                "provision-identity",
+                format!("could not update the password for {name}"),
+                updated,
+            ));
+        }
     }
-    let password_info = USER_INFO_1003 {
-        usri1003_password: password_wide.as_ptr() as *mut u16,
-    };
-    let updated = unsafe {
-        NetUserSetInfo(
-            std::ptr::null(),
-            name_wide.as_ptr(),
-            1003,
-            &password_info as *const _ as *mut u8,
-            std::ptr::null_mut(),
-        )
-    };
-    if updated != NERR_Success {
-        return Err(InstallationError::windows(
-            "sandbox-identity-create-failed",
-            "provision-identity",
-            format!("could not create or update {name}"),
-            updated,
-        ));
-    }
+    ensure_local_group_member(SID_BUILTIN_USERS, name)?;
     let flags = USER_INFO_1008 {
         usri1008_flags: sandbox_account_flags(),
     };
@@ -397,8 +406,224 @@ fn ensure_local_user(name: &str, password: &str) -> InstallationResult<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UserAddDisposition {
+    Created,
+    UpdateExisting,
+}
+
+fn classify_user_add_status(status: u32, name: &str) -> InstallationResult<UserAddDisposition> {
+    if status == NERR_Success {
+        return Ok(UserAddDisposition::Created);
+    }
+    if status == NERR_UserExists {
+        return Ok(UserAddDisposition::UpdateExisting);
+    }
+    Err(InstallationError::windows(
+        "sandbox-identity-create-failed",
+        "provision-identity",
+        format!("could not create {name}"),
+        status,
+    ))
+}
+
+fn validate_local_user_name(name: &str) -> InstallationResult<()> {
+    let length = name.encode_utf16().count();
+    if name.is_empty() || length > WINDOWS_LOCAL_ACCOUNT_NAME_MAX_UTF16_UNITS {
+        return Err(InstallationError::new(
+            "sandbox-identity-name-invalid",
+            "provision-identity",
+            format!(
+                "managed local account name must contain 1 to {} UTF-16 code units",
+                WINDOWS_LOCAL_ACCOUNT_NAME_MAX_UTF16_UNITS
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn sandbox_account_flags() -> u32 {
-    UF_SCRIPT | UF_NORMAL_ACCOUNT | UF_DONT_EXPIRE_PASSWD | UF_NOT_DELEGATED
+    UF_SCRIPT | UF_NORMAL_ACCOUNT | UF_DONT_EXPIRE_PASSWD
+}
+
+fn ensure_local_group_member(group_sid: &str, member_name: &str) -> InstallationResult<()> {
+    let group_name = resolve_local_alias_name(group_sid)?;
+    let member_sid = resolve_account_sid(member_name)?;
+    let member_sid_wide = to_wide(&member_sid);
+    let mut member_sid_pointer = std::ptr::null_mut();
+    if unsafe { ConvertStringSidToSidW(member_sid_wide.as_ptr(), &mut member_sid_pointer) } == 0
+        || member_sid_pointer.is_null()
+    {
+        return Err(InstallationError::windows(
+            "sandbox-identity-group-update-failed",
+            "provision-identity",
+            format!("could not parse the SID for managed account {member_name}"),
+            unsafe { GetLastError() },
+        ));
+    }
+    let member_sid_pointer = LocalSid(member_sid_pointer);
+    let member = LOCALGROUP_MEMBERS_INFO_0 {
+        lgrmi0_sid: member_sid_pointer.0,
+    };
+    let group_name_wide = to_wide(&group_name);
+    let status = unsafe {
+        NetLocalGroupAddMembers(
+            std::ptr::null(),
+            group_name_wide.as_ptr(),
+            0,
+            &member as *const _ as *const u8,
+            1,
+        )
+    };
+    classify_local_group_add_status(status, member_name, &group_name)
+}
+
+fn classify_local_group_add_status(
+    status: u32,
+    member_name: &str,
+    group_name: &str,
+) -> InstallationResult<()> {
+    if status == NERR_Success || status == ERROR_MEMBER_IN_ALIAS {
+        return Ok(());
+    }
+    Err(InstallationError::windows(
+        "sandbox-identity-group-update-failed",
+        "provision-identity",
+        format!("could not add managed account {member_name} to local group {group_name}"),
+        status,
+    ))
+}
+
+fn resolve_local_alias_name(alias_sid: &str) -> InstallationResult<String> {
+    let sid_wide = to_wide(alias_sid);
+    let mut sid = std::ptr::null_mut();
+    if unsafe { ConvertStringSidToSidW(sid_wide.as_ptr(), &mut sid) } == 0 || sid.is_null() {
+        return Err(InstallationError::windows(
+            "sandbox-identity-group-resolution-failed",
+            "verify-identity",
+            format!("could not parse local group SID {alias_sid}"),
+            unsafe { GetLastError() },
+        ));
+    }
+    let sid = LocalSid(sid);
+    let mut name_length = 0;
+    let mut domain_length = 0;
+    let mut sid_use: SID_NAME_USE = 0;
+    unsafe {
+        LookupAccountSidW(
+            std::ptr::null(),
+            sid.0,
+            std::ptr::null_mut(),
+            &mut name_length,
+            std::ptr::null_mut(),
+            &mut domain_length,
+            &mut sid_use,
+        );
+    }
+    if unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER || name_length == 0 {
+        return Err(InstallationError::windows(
+            "sandbox-identity-group-resolution-failed",
+            "verify-identity",
+            format!("local group SID {alias_sid} did not resolve to an account"),
+            unsafe { GetLastError() },
+        ));
+    }
+    let mut name = vec![0u16; name_length as usize];
+    let mut domain = vec![0u16; domain_length as usize];
+    if unsafe {
+        LookupAccountSidW(
+            std::ptr::null(),
+            sid.0,
+            name.as_mut_ptr(),
+            &mut name_length,
+            domain.as_mut_ptr(),
+            &mut domain_length,
+            &mut sid_use,
+        )
+    } == 0
+    {
+        return Err(InstallationError::windows(
+            "sandbox-identity-group-resolution-failed",
+            "verify-identity",
+            format!("could not resolve the local group name for SID {alias_sid}"),
+            unsafe { GetLastError() },
+        ));
+    }
+    if sid_use != SidTypeAlias {
+        return Err(InstallationError::new(
+            "sandbox-identity-group-resolution-failed",
+            "verify-identity",
+            format!("SID {alias_sid} did not resolve to a local alias"),
+        ));
+    }
+    let end = name
+        .iter()
+        .position(|value| *value == 0)
+        .unwrap_or(name.len());
+    Ok(String::from_utf16_lossy(&name[..end]))
+}
+
+fn is_local_group_member(group_sid: &str, member_name: &str) -> InstallationResult<bool> {
+    let group_name = resolve_local_alias_name(group_sid)?;
+    let member_sid = resolve_account_sid(member_name)?;
+    let member_sid_wide = to_wide(&member_sid);
+    let mut member_sid_pointer = std::ptr::null_mut();
+    if unsafe { ConvertStringSidToSidW(member_sid_wide.as_ptr(), &mut member_sid_pointer) } == 0
+        || member_sid_pointer.is_null()
+    {
+        return Err(InstallationError::windows(
+            "sandbox-identity-group-query-failed",
+            "verify-identity",
+            format!("could not parse the SID for managed account {member_name}"),
+            unsafe { GetLastError() },
+        ));
+    }
+    let member_sid_pointer = LocalSid(member_sid_pointer);
+    let group_name_wide = to_wide(&group_name);
+    let mut resume_handle = 0usize;
+    loop {
+        let mut buffer = std::ptr::null_mut();
+        let mut entries_read = 0;
+        let mut total_entries = 0;
+        let status = unsafe {
+            NetLocalGroupGetMembers(
+                std::ptr::null(),
+                group_name_wide.as_ptr(),
+                0,
+                &mut buffer,
+                MAX_PREFERRED_LENGTH,
+                &mut entries_read,
+                &mut total_entries,
+                &mut resume_handle,
+            )
+        };
+        if status != NERR_Success && status != ERROR_MORE_DATA {
+            return Err(InstallationError::windows(
+                "sandbox-identity-group-query-failed",
+                "verify-identity",
+                format!("could not enumerate local group {group_name}"),
+                status,
+            ));
+        }
+        let buffer = NetApiBuffer(buffer);
+        if !buffer.0.is_null() {
+            let members = unsafe {
+                std::slice::from_raw_parts(
+                    buffer.0 as *const LOCALGROUP_MEMBERS_INFO_0,
+                    entries_read as usize,
+                )
+            };
+            if members
+                .iter()
+                .any(|member| unsafe { EqualSid(member.lgrmi0_sid, member_sid_pointer.0) != 0 })
+            {
+                return Ok(true);
+            }
+        }
+        if status == NERR_Success {
+            return Ok(false);
+        }
+    }
 }
 
 fn ensure_identity_configuration(name: &str) -> InstallationResult<()> {
@@ -409,17 +634,31 @@ fn ensure_identity_configuration(name: &str) -> InstallationResult<()> {
             format!("managed local account {name} is missing"),
         ));
     };
+    let users_group_member = is_local_group_member(SID_BUILTIN_USERS, name)?;
+    validate_local_user_configuration(&info, users_group_member)
+}
+
+fn validate_local_user_configuration(
+    info: &LocalUserConfiguration,
+    users_group_member: bool,
+) -> InstallationResult<()> {
     let required = sandbox_account_flags();
-    let forbidden =
-        UF_ACCOUNTDISABLE | UF_LOCKOUT | UF_PASSWD_NOTREQD | UF_ENCRYPTED_TEXT_PASSWORD_ALLOWED;
-    if info.privilege != USER_PRIV_USER
-        || info.flags & required != required
-        || info.flags & forbidden != 0
-    {
+    let forbidden = UF_ACCOUNTDISABLE
+        | UF_LOCKOUT
+        | UF_PASSWD_NOTREQD
+        | UF_ENCRYPTED_TEXT_PASSWORD_ALLOWED
+        | UF_TRUSTED_FOR_DELEGATION
+        | UF_TRUSTED_TO_AUTHENTICATE_FOR_DELEGATION;
+    let missing = required & !info.flags;
+    let forbidden_present = forbidden & info.flags;
+    if !users_group_member || missing != 0 || forbidden_present != 0 {
         return Err(InstallationError::new(
             "sandbox-identity-configuration-invalid",
             "verify-identity",
-            "managed sandbox account flags or privilege level are not hardened",
+            format!(
+                "managed sandbox account is not hardened: usersGroupMember={users_group_member}, reportedPrivilege={}, flags=0x{:08x}, missing=0x{missing:08x}, forbidden=0x{forbidden_present:08x}",
+                info.privilege, info.flags,
+            ),
         ));
     }
     Ok(())
@@ -448,6 +687,7 @@ fn query_local_user(name: &str) -> InstallationResult<Option<LocalUserConfigurat
     }))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct LocalUserConfiguration {
     privilege: u32,
     flags: u32,
@@ -716,6 +956,7 @@ impl Drop for TokenHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows_sys::Win32::NetworkManagement::NetManagement::USER_PRIV_GUEST;
 
     #[test]
     fn hexadecimal_round_trip_preserves_binary_credentials() {
@@ -731,6 +972,80 @@ mod tests {
         assert!(password.iter().any(u8::is_ascii_lowercase));
         assert!(password.iter().any(u8::is_ascii_digit));
         assert!(password.iter().any(|value| !value.is_ascii_alphanumeric()));
+    }
+
+    #[test]
+    fn managed_account_name_fits_the_windows_local_account_limit() {
+        assert!(validate_local_user_name(SANDBOX_ACCOUNT_NAME).is_ok());
+        assert!(
+            SANDBOX_ACCOUNT_NAME.encode_utf16().count()
+                <= WINDOWS_LOCAL_ACCOUNT_NAME_MAX_UTF16_UNITS
+        );
+        assert!(validate_local_user_name("LobsterSandboxOffline").is_err());
+    }
+
+    #[test]
+    fn user_add_only_falls_back_to_update_when_the_account_exists() {
+        assert!(matches!(
+            classify_user_add_status(NERR_Success, SANDBOX_ACCOUNT_NAME),
+            Ok(UserAddDisposition::Created)
+        ));
+        assert!(matches!(
+            classify_user_add_status(NERR_UserExists, SANDBOX_ACCOUNT_NAME),
+            Ok(UserAddDisposition::UpdateExisting)
+        ));
+
+        let result = classify_user_add_status(2202, SANDBOX_ACCOUNT_NAME);
+        let Err(error) = result else {
+            panic!("an invalid user name status must not enter the update path");
+        };
+        assert_eq!(error.windows_error, Some(2202));
+    }
+
+    #[test]
+    fn local_account_configuration_uses_group_membership_and_supported_flags() {
+        let valid = LocalUserConfiguration {
+            privilege: USER_PRIV_USER,
+            flags: sandbox_account_flags(),
+        };
+        assert!(validate_local_user_configuration(&valid, true).is_ok());
+
+        let legacy_guest_report = LocalUserConfiguration {
+            privilege: USER_PRIV_GUEST,
+            ..valid
+        };
+        assert!(validate_local_user_configuration(&legacy_guest_report, true).is_ok());
+        assert!(validate_local_user_configuration(&valid, false).is_err());
+
+        let missing_password_policy = LocalUserConfiguration {
+            flags: valid.flags & !UF_DONT_EXPIRE_PASSWD,
+            ..valid
+        };
+        assert!(validate_local_user_configuration(&missing_password_policy, true).is_err());
+
+        let trusted_for_delegation = LocalUserConfiguration {
+            flags: valid.flags | UF_TRUSTED_FOR_DELEGATION,
+            ..valid
+        };
+        assert!(validate_local_user_configuration(&trusted_for_delegation, true).is_err());
+    }
+
+    #[test]
+    fn builtin_users_group_resolves_without_assuming_an_english_windows_name() {
+        assert!(
+            !resolve_local_alias_name(SID_BUILTIN_USERS)
+                .expect("the built-in Users alias should resolve")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn local_group_add_is_idempotent_but_preserves_other_windows_errors() {
+        assert!(classify_local_group_add_status(NERR_Success, "user", "group").is_ok());
+        assert!(classify_local_group_add_status(ERROR_MEMBER_IN_ALIAS, "user", "group").is_ok());
+        let error = classify_local_group_add_status(2220, "user", "group")
+            .expect_err("an unknown group must remain an installation failure");
+        assert_eq!(error.windows_error, Some(2220));
     }
 
     #[test]

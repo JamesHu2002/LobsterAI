@@ -1,6 +1,10 @@
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, c_void};
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
 use std::os::windows::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
 use windows_sys::Win32::System::Console::{
     GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
@@ -35,6 +39,7 @@ unsafe extern "system" {
 pub fn launch_worker(
     arguments: &[String],
     identity: &ProvisionedIdentity,
+    io_directory: &Path,
 ) -> InstallationResult<u32> {
     let paths = InstallationPaths::discover();
     let executable = paths.runner();
@@ -57,7 +62,8 @@ pub fn launch_worker(
     argv.push(broker_pid.to_string());
     let mut command_line = to_wide(argv_to_command_line(&argv));
     let current_directory = to_wide(paths.current.as_os_str());
-    let mut environment = build_worker_environment();
+    let io_bridge = WorkerIoBridge::create(io_directory)?;
+    let mut environment = build_worker_environment(&io_bridge);
     let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
     startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
     startup.dwFlags = STARTF_USESTDHANDLES;
@@ -110,10 +116,11 @@ pub fn launch_worker(
             unsafe { GetLastError() },
         ));
     }
+    io_bridge.forward()?;
     Ok(exit_code)
 }
 
-fn build_worker_environment() -> Vec<u16> {
+fn build_worker_environment(io_bridge: &WorkerIoBridge) -> Vec<u16> {
     const ALLOWED: &[&str] = &[
         "ComSpec",
         "LOBSTER_NATIVE_SANDBOX_INSTALL_ROOT",
@@ -142,6 +149,14 @@ fn build_worker_environment() -> Vec<u16> {
         }
     }
     values.insert("LOBSTER_SANDBOX_WORKER".to_string(), "1".to_string());
+    values.insert(
+        "LOBSTER_SANDBOX_WORKER_STDOUT".to_string(),
+        io_bridge.stdout.display().to_string(),
+    );
+    values.insert(
+        "LOBSTER_SANDBOX_WORKER_STDERR".to_string(),
+        io_bridge.stderr.display().to_string(),
+    );
     let mut block = Vec::new();
     for (key, value) in values {
         let mut pair = to_wide(format!("{key}={value}"));
@@ -151,6 +166,90 @@ fn build_worker_environment() -> Vec<u16> {
     }
     block.push(0);
     block
+}
+
+static WORKER_IO_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+struct WorkerIoBridge {
+    stdout: PathBuf,
+    stderr: PathBuf,
+}
+
+impl WorkerIoBridge {
+    fn create(directory: &Path) -> InstallationResult<Self> {
+        if !directory.is_dir() {
+            return Err(InstallationError::new(
+                "sandbox-worker-io-failed",
+                "prepare-worker-io",
+                format!(
+                    "worker request directory is unavailable: {}",
+                    directory.display()
+                ),
+            ));
+        }
+        for _ in 0..32 {
+            let sequence = WORKER_IO_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let stem = format!(".lobster-worker-{}-{sequence}", std::process::id());
+            let stdout = directory.join(format!("{stem}.stdout"));
+            let stderr = directory.join(format!("{stem}.stderr"));
+            match create_bridge_file(&stdout) {
+                Ok(()) => match create_bridge_file(&stderr) {
+                    Ok(()) => return Ok(Self { stdout, stderr }),
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                        let _ = fs::remove_file(&stdout);
+                    }
+                    Err(error) => {
+                        let _ = fs::remove_file(&stdout);
+                        return Err(worker_io_error("create", &stderr, error));
+                    }
+                },
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(worker_io_error("create", &stdout, error)),
+            }
+        }
+        Err(InstallationError::new(
+            "sandbox-worker-io-failed",
+            "prepare-worker-io",
+            "could not allocate unique worker output files",
+        ))
+    }
+
+    fn forward(&self) -> InstallationResult<()> {
+        let stdout =
+            fs::read(&self.stdout).map_err(|error| worker_io_error("read", &self.stdout, error))?;
+        let stderr =
+            fs::read(&self.stderr).map_err(|error| worker_io_error("read", &self.stderr, error))?;
+        io::stdout()
+            .write_all(&stdout)
+            .map_err(|error| worker_io_error("forward", &self.stdout, error))?;
+        io::stderr()
+            .write_all(&stderr)
+            .map_err(|error| worker_io_error("forward", &self.stderr, error))?;
+        Ok(())
+    }
+}
+
+impl Drop for WorkerIoBridge {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.stdout);
+        let _ = fs::remove_file(&self.stderr);
+    }
+}
+
+fn create_bridge_file(path: &Path) -> io::Result<()> {
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map(|_| ())
+}
+
+fn worker_io_error(action: &str, path: &Path, error: io::Error) -> InstallationError {
+    InstallationError::new(
+        "sandbox-worker-io-failed",
+        "prepare-worker-io",
+        format!("could not {action} {}: {error}", path.display()),
+    )
 }
 
 fn argv_to_command_line(argv: &[String]) -> String {
@@ -219,5 +318,21 @@ mod tests {
         assert_eq!(quote_argument("plain"), "plain");
         assert_eq!(quote_argument("two words"), "\"two words\"");
         assert_eq!(quote_argument("a\\\"b"), "\"a\\\\\\\"b\"");
+    }
+
+    #[test]
+    fn worker_io_bridge_uses_unique_files_and_cleans_them_up() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let first = WorkerIoBridge::create(temporary.path()).expect("first bridge");
+        let second = WorkerIoBridge::create(temporary.path()).expect("second bridge");
+        assert_ne!(first.stdout, second.stdout);
+        assert_ne!(first.stderr, second.stderr);
+        assert!(first.stdout.is_file());
+        assert!(first.stderr.is_file());
+        let first_stdout = first.stdout.clone();
+        let first_stderr = first.stderr.clone();
+        drop(first);
+        assert!(!first_stdout.exists());
+        assert!(!first_stderr.exists());
     }
 }

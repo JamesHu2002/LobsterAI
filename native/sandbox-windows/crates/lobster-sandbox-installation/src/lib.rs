@@ -12,6 +12,7 @@ mod model;
 mod paths;
 mod protection;
 mod supervision;
+mod wfp;
 
 pub use audit::record_setup_audit;
 pub use broker::launch_worker;

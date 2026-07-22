@@ -19,7 +19,6 @@ import {
   NATIVE_SANDBOX_OPENCLAW_BACKEND_ID,
   NATIVE_SANDBOX_OPENCLAW_PLUGIN_ID,
   NATIVE_SANDBOX_RETIRED_OPENCLAW_PLUGIN_IDS,
-  NativeSandboxFilesystemCapability,
 } from '../../shared/nativeSandbox/constants';
 import {
   AuthType,
@@ -2139,9 +2138,7 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
                     protocolVersion: nativeSandboxRuntime.protocolVersion,
                     runtimeEnabled: nativeSandboxRuntimeEnabled,
                     skillsRoot: skillsExtraDirs[0] ?? '',
-                    filesystemCapabilities: [
-                      NativeSandboxFilesystemCapability.NpmCacheWrite,
-                    ],
+                    filesystemCapabilities: [],
                   },
                 },
               }

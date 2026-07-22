@@ -94,7 +94,8 @@ lobster-sandbox-setup.exe uninstall
 `verify` is read-only and never requests elevation. Mutating operations use
 Windows `runas` only when needed. The helper installs to
 `%ProgramData%\LobsterAI-SandboxRuntime`, provisions the
-`LobsterSandboxOffline` ordinary local account, protects runtime and credential
+`LobsterSandboxUser` ordinary local account, ensures its membership in the
+localized built-in Users alias by resolving that alias from its well-known SID, protects runtime and credential
 ACLs, installs account-scoped outbound block rules, and retains one previous
 runtime for rollback. The managed account is hidden from the Windows sign-in
 screen without disabling its batch execution identity. A standard user's SID is carried across an
@@ -113,8 +114,22 @@ Repository shortcuts:
 ```powershell
 npm run sandbox-native:build
 npm run sandbox-native:test
+npm run sandbox-native:test:installed
 npm run sandbox-native:lint
 ```
+
+`sandbox-native:test:installed` is the production-path Windows integration test. Run it from the
+same non-elevated user context as LobsterAI. It builds the release runtime, requests one UAC
+approval, performs install/repair and idempotency verification in the elevated child, then returns
+to the original user to verify the protected installation and exercise the installed broker/worker.
+The runner smoke proves that PowerShell can write inside the selected workspace, forwards stdout
+and stderr, cannot write to a broadly writable sibling directory, can read an existing
+LobsterAI `SKILL.md` through the declared read-only root without printing its contents, can run
+Node/npm with the declared shared cache, and cannot connect to a live host loopback listener. The managed
+runtime remains installed for subsequent product testing; machine-readable results are written
+under `native/sandbox-windows/target/`. `-SkipBuild` and `-SkipLifecycle` are available for focused
+runner iterations after a healthy runtime is already installed; the default command always runs the
+complete one-UAC lifecycle.
 
 The test suite exercises an existing ordinary directory, broad `Users` and
 `Authenticated Users` ACLs, writes inside and outside the workspace,
@@ -133,9 +148,11 @@ attempts, timeout, and process-tree cleanup.
 - Authenticates and supervises the dedicated worker from the signed broker chain, so cancelling
   or terminating the broker closes the command Job and its process tree.
 - Rejects UNC/device/drive-root policies and reparse points in policy roots.
-- Blocks outbound traffic for the dedicated identity, including TCP/UDP
-  loopback, and refuses to run when active Windows Firewall policy or the
-  account-scoped rules cannot be verified.
+- Blocks outbound traffic for the dedicated identity with persistent WFP
+  `ALE_USER_ID` filters at the IPv4/IPv6 connect layers, plus ICMP resource-assignment filters.
+  SID-scoped Windows Firewall rules remain as defense in depth. Setup, the non-elevated product
+  owner, and the dedicated worker all verify the same read-only WFP objects, and execution fails
+  closed if either the WFP policy or active Windows Firewall policy cannot be verified.
 - Verifies manifest schema, protocol, policy, architecture, SHA-256 hashes,
   an exact runtime file set, exact protected install DACLs, and—inside packaged
   builds—Authenticode signatures. Packaged helpers are signed before their

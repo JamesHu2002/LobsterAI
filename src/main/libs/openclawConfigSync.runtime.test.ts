@@ -244,7 +244,7 @@ describe('OpenClawConfigSync runtime config output', () => {
         runtimeEnabled: true,
         runtimeKind: 'native-windows',
         runtimeVersion: '0.4.0',
-        filesystemCapabilities: ['npm-cache-write'],
+        filesystemCapabilities: [],
       },
     });
     expect(config.plugins.entries['lobster-native-sandbox'].config.skillsRoot)

@@ -1,5 +1,7 @@
 use std::fs;
+use std::fs::{File, OpenOptions};
 use std::io::{self, Read};
+use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
@@ -62,6 +64,13 @@ enum Command {
 }
 
 fn main() {
+    let _worker_stdio = match redirect_worker_stdio() {
+        Ok(worker_stdio) => worker_stdio,
+        Err(error) => {
+            write_worker_bootstrap_error(&error);
+            std::process::exit(70);
+        }
+    };
     if let Err(error) = harden_current_process_dll_search() {
         print_error(&installation_error(error));
         std::process::exit(70);
@@ -97,6 +106,7 @@ fn run(cli: Cli) -> Result<i32, SandboxError> {
             launch_worker(
                 &["__worker-verify".to_string(), path_argument(&request)],
                 &context.identity,
+                request_parent(&request)?,
             )
             .map(|code| code.min(255) as i32)
             .map_err(installation_error)
@@ -122,7 +132,7 @@ fn run(cli: Cli) -> Result<i32, SandboxError> {
                 arguments.push("--report-file".to_string());
                 arguments.push(path_argument(&report_file));
             }
-            launch_worker(&arguments, &context.identity)
+            launch_worker(&arguments, &context.identity, request_parent(&request)?)
                 .map(|code| code.min(255) as i32)
                 .map_err(installation_error)
         }
@@ -193,6 +203,102 @@ fn path_argument(path: &Path) -> String {
     path.as_os_str().to_string_lossy().to_string()
 }
 
+fn request_parent(path: &Path) -> Result<&Path, SandboxError> {
+    path.parent()
+        .filter(|parent| parent.is_dir())
+        .ok_or_else(|| {
+            SandboxError::new(
+                "request-path-invalid",
+                "launch-worker",
+                format!("request directory is unavailable: {}", path.display()),
+            )
+        })
+}
+
+struct WorkerStdio {
+    _stdout: File,
+    _stderr: File,
+}
+
+fn redirect_worker_stdio() -> Result<Option<WorkerStdio>, SandboxError> {
+    let stdout_path = std::env::var_os("LOBSTER_SANDBOX_WORKER_STDOUT");
+    let stderr_path = std::env::var_os("LOBSTER_SANDBOX_WORKER_STDERR");
+    let (Some(stdout_path), Some(stderr_path)) = (stdout_path, stderr_path) else {
+        return Ok(None);
+    };
+    let stdout = OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(&stdout_path)
+        .map_err(|error| {
+            SandboxError::new(
+                "worker-stdio-failed",
+                "prepare-worker-stdio",
+                format!("could not open worker stdout bridge: {error}"),
+            )
+        })?;
+    let stderr = OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(&stderr_path)
+        .map_err(|error| {
+            SandboxError::new(
+                "worker-stdio-failed",
+                "prepare-worker-stdio",
+                format!("could not open worker stderr bridge: {error}"),
+            )
+        })?;
+    if unsafe {
+        windows_sys::Win32::System::Console::SetStdHandle(
+            windows_sys::Win32::System::Console::STD_OUTPUT_HANDLE,
+            stdout.as_raw_handle() as isize,
+        )
+    } == 0
+    {
+        return Err(SandboxError::windows(
+            "worker-stdio-failed",
+            "prepare-worker-stdio",
+            "SetStdHandle(STD_OUTPUT_HANDLE) failed",
+            unsafe { windows_sys::Win32::Foundation::GetLastError() },
+        ));
+    }
+    if unsafe {
+        windows_sys::Win32::System::Console::SetStdHandle(
+            windows_sys::Win32::System::Console::STD_ERROR_HANDLE,
+            stderr.as_raw_handle() as isize,
+        )
+    } == 0
+    {
+        return Err(SandboxError::windows(
+            "worker-stdio-failed",
+            "prepare-worker-stdio",
+            "SetStdHandle(STD_ERROR_HANDLE) failed",
+            unsafe { windows_sys::Win32::Foundation::GetLastError() },
+        ));
+    }
+    Ok(Some(WorkerStdio {
+        _stdout: stdout,
+        _stderr: stderr,
+    }))
+}
+
+fn write_worker_bootstrap_error(error: &SandboxError) {
+    let Some(stderr_path) = std::env::var_os("LOBSTER_SANDBOX_WORKER_STDERR") else {
+        return;
+    };
+    let response = RunnerErrorResponse {
+        protocol_version: NATIVE_SANDBOX_PROTOCOL_VERSION,
+        ok: false,
+        code: error.code.to_string(),
+        stage: error.stage.to_string(),
+        message: error.message.clone(),
+        windows_error: error.windows_error,
+    };
+    if let Ok(json) = serde_json::to_vec(&response) {
+        let _ = fs::write(stderr_path, json);
+    }
+}
+
 fn installation_error(error: InstallationError) -> SandboxError {
     SandboxError {
         code: error.code,
@@ -244,6 +350,26 @@ fn print_json<T: serde::Serialize>(value: &T, to_stderr: bool) -> Result<(), San
             format!("could not serialize response: {error}"),
         )
     })?;
+    let worker_bridge = if to_stderr {
+        std::env::var_os("LOBSTER_SANDBOX_WORKER_STDERR")
+    } else {
+        std::env::var_os("LOBSTER_SANDBOX_WORKER_STDOUT")
+    };
+    if let Some(worker_bridge) = worker_bridge {
+        let contents = if to_stderr {
+            format!("LOBSTER_SANDBOX_REPORT {json}\n")
+        } else {
+            format!("{json}\n")
+        };
+        fs::write(worker_bridge, contents).map_err(|error| {
+            SandboxError::new(
+                "response-write-failed",
+                "write-response",
+                format!("could not write the worker control response: {error}"),
+            )
+        })?;
+        return Ok(());
+    }
     if to_stderr {
         eprintln!("LOBSTER_SANDBOX_REPORT {json}");
     } else {
@@ -286,7 +412,13 @@ fn print_error(error: &SandboxError) {
         windows_error: error.windows_error,
     };
     match serde_json::to_string(&response) {
-        Ok(json) => eprintln!("{json}"),
+        Ok(json) => {
+            if let Some(stderr_path) = std::env::var_os("LOBSTER_SANDBOX_WORKER_STDERR") {
+                let _ = fs::write(stderr_path, format!("{json}\n"));
+            } else {
+                eprintln!("{json}");
+            }
+        }
         Err(_) => eprintln!(
             "{{\"protocolVersion\":{},\"ok\":false,\"code\":\"response-json-failed\"}}",
             NATIVE_SANDBOX_PROTOCOL_VERSION

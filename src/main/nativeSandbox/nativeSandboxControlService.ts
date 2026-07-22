@@ -94,12 +94,21 @@ export class NativeSandboxControlService implements NativeSandboxControlServiceA
 
   setEnabled(enabled: boolean): Promise<NativeSandboxSetEnabledResult> {
     if (this.toggleFlight) return this.toggleFlight;
-    const flight = this.setEnabledInner(enabled).finally(() => {
-      if (this.toggleFlight === flight) {
-        this.toggleFlight = null;
-        this.activeOperation = null;
-      }
-    });
+    const flight = this.setEnabledInner(enabled)
+      .then((result): NativeSandboxSetEnabledResult => ({
+        ...result,
+        status: {
+          ...result.status,
+          busy: false,
+          operation: undefined,
+        },
+      }))
+      .finally(() => {
+        if (this.toggleFlight === flight) {
+          this.toggleFlight = null;
+          this.activeOperation = null;
+        }
+      });
     this.toggleFlight = flight;
     return flight;
   }

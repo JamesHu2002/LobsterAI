@@ -2,7 +2,7 @@
 
 > 文档日期：2026-07-21
 >
-> 当前状态：代码已实施，待端侧验收
+> 当前状态：能力注册表已实施；M3 主干验收期间默认不启用共享 npm cache 写能力
 >
 > 适用范围：Windows x64 内部测试版
 
@@ -23,7 +23,7 @@
 3. 保持任务 workspace、Agent workspace 和每任务 scratch 可写。
 4. 保持 LobsterAI Skills 只读。
 5. 通过语义能力 ID 增减常用兼容目录，避免在业务代码散落路径字符串。
-6. 默认启用真实 npm cache 写能力，支持 npm/npx 的常见工作流。
+6. 保留真实 npm cache 写能力作为可选兼容能力；M3 主干验收期间默认关闭，优先验证 workspace 边界和执行链路。
 7. 不修改 OpenClaw 核心，继续通过 LobsterAI extension 和原生 runner 接入。
 8. 权限、协议和 runtime 版本失败关闭，不兼容时不回退实机执行。
 
@@ -43,9 +43,9 @@
 
 **Given** 用户选择已有工程并开启 Sandbox
 
-**When** Agent 修改源码、安装项目依赖并执行 `npm test`
+**When** Agent 修改源码并使用工程中已有工具链执行测试
 
-**Then** 工程、项目内 `node_modules` 和 npm cache 可以写入，其他用户目录不能因 Profile 继承而获得写权限。
+**Then** 工程和项目内 `node_modules` 可以写入，其他用户目录不能因 Profile 继承而获得写权限；依赖真实共享 npm cache 的安装流程不纳入当前默认策略验收。
 
 ### 场景 2：复用真实 npm cache
 
@@ -120,7 +120,7 @@ profile.mode = inherit-host
 | `agentWorkspaceDir` | 读写 | Agent 持久 | OpenClaw Agent |
 | `scratchDir` | 读写 | runtime 临时 | executor |
 | LobsterAI `SKILLs` | 只读 | 产品持久 | LobsterAI config |
-| `%LOCALAPPDATA%/npm-cache` | 读写 | 用户共享 | `npm-cache-write` |
+| `%LOCALAPPDATA%/npm-cache` | 可选读写，默认关闭 | 用户共享 | `npm-cache-write` |
 | 真实 Home/AppData 其他位置 | 不授予写 Capability | 用户持久 | 宿主 Profile |
 
 不开放：
@@ -138,9 +138,11 @@ profile.mode = inherit-host
 ```text
 EffectivePolicy
   = BaseRoots(task workspace + Agent workspace + scratch + Skills RO)
-  + EnabledCapabilities(npm-cache-write)
+  + EnabledCapabilities() // M3 主干验收默认为空
   - ProtectedPaths
 ```
+
+`npm-cache-write` 注册能力及 resolver 继续保留，但 LobsterAI 当前不默认注入。后续只有在完成大型共享目录 ACL 准备的进度、超时、取消和失败清理设计后，才评估重新默认启用。
 
 后续可以在不改变 runner 基础协议的情况下增加：
 
@@ -205,7 +207,7 @@ risk     = shared-cache-mutation
 resolver = LOCALAPPDATA/npm-cache
 ```
 
-OpenClaw config 只传入 `filesystemCapabilities: ['npm-cache-write']`。extension 解析已知 ID、去重并忽略未知配置值；具体路径只由受信任 resolver 计算，不读取项目 `.npmrc`，避免项目配置把 cache 指向任意目录后获得隐式授权。
+OpenClaw config 始终传入 `filesystemCapabilities`，当前产品默认值为 `[]`；需要单独验证兼容能力时才显式传入 `['npm-cache-write']`。extension 解析已知 ID、去重并忽略未知配置值；具体路径只由受信任 resolver 计算，不读取项目 `.npmrc`，避免项目配置把 cache 指向任意目录后获得隐式授权。
 
 ### 4.5 原生执行与文件桥
 
@@ -247,7 +249,7 @@ Capability ACE 是 runtime 周期级状态，不是单条命令状态。`verify`
 
 | 风险 | 当前处理 |
 | --- | --- |
-| npm 共享缓存被当前任务修改 | 明确接受的兼容性风险；仅开放叶子目录并在 UI/spec 标注 |
+| npm 共享缓存被当前任务修改 | 当前默认不授权；显式启用能力时仅开放叶子目录并在 UI/spec 标注 |
 | npm cache junction 指向其他目录 | 注册表 canonicalize 并验证仍位于 `LOCALAPPDATA`，异常失败关闭 |
 | 整个 Home/AppData 获得写权限 | 不加入可写根；profile 仅用于环境继承 |
 | `.npmrc`/`.gitconfig` 等真实配置被自动读取 | 当前 `readIsolated=false`，作为已知剩余风险记录 |
@@ -266,7 +268,7 @@ Capability ACE 是 runtime 周期级状态，不是单条命令状态。`verify`
 3. 严格/平衡/兼容三档 UI，以及企业策略覆盖关系。
 4. 单次任务临时授权和用户显式额外根。
 5. pip、pnpm、Yarn、Cargo、Gradle 等缓存是否按能力逐项支持。
-6. npm cache 的共享污染提示、审计、配额和清理策略。
+6. npm cache 的共享污染提示、审计、配额、ACL 准备进度、超时取消和失败清理策略。
 7. `.git`、`.agents` 等 workspace 内 protected path 默认清单。
 8. macOS resolver 与 Seatbelt 写根实现。
 
@@ -303,8 +305,8 @@ scripts/native-sandbox/verify-package.cjs
 1. 已有工程开启 Sandbox 后，可以修改源码并执行 `npm test`。
 2. `$env:USERPROFILE`、`$env:APPDATA` 和 `$env:LOCALAPPDATA` 显示真实用户路径。
 3. 向真实 Home 普通文件写入失败。
-4. 向 `%LOCALAPPDATA%/npm-cache` 写入成功。
+4. 默认策略下向 `%LOCALAPPDATA%/npm-cache` 写入失败；显式启用 `npm-cache-write` 后再单独验收写入能力。
 5. 向 `%LOCALAPPDATA%` 其他目录或另一个工程写入失败。
 6. 已安装 Skill 可读取但不可修改。
 7. 关闭 Sandbox 后的新任务恢复原有实机行为。
-8. 设置页明确说明共享 npm cache、真实配置可读、网络/一般读取未隔离和内部测试边界。
+8. 设置页明确说明真实配置可读、默认不授权共享 npm cache，以及网络/一般读取隔离的当前边界。

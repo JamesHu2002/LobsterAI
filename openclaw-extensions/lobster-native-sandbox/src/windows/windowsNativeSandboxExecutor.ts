@@ -35,36 +35,11 @@ import {
   type PreparedNativeSandboxPolicyContext,
   WindowsNativePolicyRegistry,
 } from './windowsNativePolicyRegistry.js';
+import { buildWindowsNativeSandboxChildEnvironment } from './windowsNativeSandboxEnvironment.js';
 
-const WINDOWS_ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const SENSITIVE_CHILD_ENV_NAME_PATTERN = /(KEY|SECRET|TOKEN)/i;
 const DEFAULT_TIMEOUT_MS = 3_600_000;
 const DEFAULT_MAX_PROCESSES = 64;
 const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
-const PROTECTED_CHILD_ENV_NAMES = new Set([
-  'ALL_PROXY',
-  'APPDATA',
-  'COMSPEC',
-  'GIT_CONFIG_COUNT',
-  'HOME',
-  'HOMEDRIVE',
-  'HOMEPATH',
-  'HTTP_PROXY',
-  'HTTPS_PROXY',
-  'LOCALAPPDATA',
-  'LOBSTER_SANDBOX',
-  'NODE_EXTRA_CA_CERTS',
-  'NO_PROXY',
-  'PATH',
-  'PATHEXT',
-  'SSL_CERT_FILE',
-  'SYSTEMROOT',
-  'TEMP',
-  'TMP',
-  'USERNAME',
-  'USERPROFILE',
-  'WINDIR',
-]);
 
 interface WindowsNativeRunnerResult {
   exitCode: number | null;
@@ -137,6 +112,7 @@ export interface WindowsNativeSandboxExecutorOptions {
   audit: SandboxAuditRecorder;
   platform?: NodeJS.Platform;
   pathExists?: (filePath: string) => boolean;
+  trustedEnvironment?: NodeJS.ProcessEnv;
   invokeRunner?: (
     args: readonly string[],
     options: { cwd: string; signal?: AbortSignal },
@@ -220,6 +196,7 @@ const defaultInvokeRunner = (
 export class WindowsNativeSandboxExecutor implements NativeSandboxExecutor {
   private readonly platform: NodeJS.Platform;
   private readonly pathExists: (filePath: string) => boolean;
+  private readonly trustedEnvironment: NodeJS.ProcessEnv;
   private readonly invokeRunner: WindowsNativeSandboxExecutorOptions['invokeRunner'];
   private readonly createScratchDirectory: () => string;
   private readonly customWriteBoundaryProbe?: (workspaceDir: string) => Promise<void>;
@@ -240,6 +217,7 @@ export class WindowsNativeSandboxExecutor implements NativeSandboxExecutor {
   constructor(private readonly options: WindowsNativeSandboxExecutorOptions) {
     this.platform = options.platform ?? process.platform;
     this.pathExists = options.pathExists ?? fs.existsSync;
+    this.trustedEnvironment = options.trustedEnvironment ?? process.env;
     this.invokeRunner = options.invokeRunner ?? ((args, invocationOptions) => (
       defaultInvokeRunner(options.runnerPath, args, invocationOptions)
     ));
@@ -483,7 +461,11 @@ export class WindowsNativeSandboxExecutor implements NativeSandboxExecutor {
       const request = this.createRequest({
         commandArgv: this.buildShellArgv(params.command, params.binShell),
         cwd,
-        env: this.filterChildEnvironment(params.env ?? {}),
+        env: buildWindowsNativeSandboxChildEnvironment({
+          requestedEnvironment: params.env ?? {},
+          trustedEnvironment: this.trustedEnvironment,
+          pathExists: this.pathExists,
+        }),
         sessionKey: params.sessionKey,
         policyContext: this.policyRegistry.require(params.policyContext),
       });
@@ -886,32 +868,6 @@ export class WindowsNativeSandboxExecutor implements NativeSandboxExecutor {
       '-Command',
       command,
     ];
-  }
-
-  private filterChildEnvironment(environment: Record<string, string>): Record<string, string> {
-    const result: Record<string, string> = {};
-    for (const [name, value] of Object.entries(environment)) {
-      const upperName = name.toUpperCase();
-      if (
-        !WINDOWS_ENV_NAME_PATTERN.test(name)
-        || name.includes('\0')
-        || value.includes('\0')
-      ) {
-        throw new LobsterNativeSandboxBackendError(
-          LobsterNativeSandboxBackendErrorCode.InvalidEnvironment,
-          `Sandbox child environment variable is not allowed: ${name}`,
-        );
-      }
-      if (
-        PROTECTED_CHILD_ENV_NAMES.has(upperName)
-        || upperName.startsWith('GIT_CONFIG_')
-        || SENSITIVE_CHILD_ENV_NAME_PATTERN.test(upperName)
-      ) {
-        continue;
-      }
-      result[name] = value;
-    }
-    return result;
   }
 
   private parseVerificationReport(bytes: Buffer): WindowsNativeVerificationReport {

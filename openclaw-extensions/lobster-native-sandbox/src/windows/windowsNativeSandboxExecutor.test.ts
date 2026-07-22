@@ -15,6 +15,9 @@ import { WindowsNativeSandboxExecutor } from './windowsNativeSandboxExecutor.js'
 const temporaryRoots: string[] = [];
 
 type CapturedRunnerRequest = {
+  command: {
+    env: Record<string, string>;
+  };
   policy: {
     writableRoots: string[];
   };
@@ -46,7 +49,7 @@ const executionReport = JSON.stringify({
   writableRoots: [],
 });
 
-const createFixture = () => {
+const createFixture = (options: { trustedEnvironment?: NodeJS.ProcessEnv } = {}) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lobster-native-executor-test-'));
   const workspace = path.join(root, 'workspace');
   const otherWorkspace = path.join(root, 'other');
@@ -111,6 +114,7 @@ const createFixture = () => {
     }),
     platform: 'win32',
     pathExists: () => true,
+    trustedEnvironment: options.trustedEnvironment ?? {},
     invokeRunner,
     createScratchDirectory: () => scratch,
     verifyWriteBoundary: async () => undefined,
@@ -165,7 +169,15 @@ describe('WindowsNativeSandboxExecutor', () => {
       profileRoot,
       skillsRoot,
       workspace,
-    } = createFixture();
+    } = createFixture({
+      trustedEnvironment: {
+        LOBSTERAI_ELECTRON_PATH: 'C:\\LobsterAI\\electron.exe',
+        LOBSTERAI_NPM_BIN_DIR: 'C:\\LobsterAI\\npm\\bin',
+        SKILLS_ROOT: 'C:\\LobsterAI\\SKILLs',
+        LOBSTERAI_SKILLS_ROOT: 'C:\\LobsterAI\\SKILLs',
+        TZ: 'Asia/Shanghai',
+      },
+    });
 
     const wrapped = await executor.wrapCommand({
       command: 'npm test',
@@ -176,6 +188,8 @@ describe('WindowsNativeSandboxExecutor', () => {
         PATH: 'C:\\untrusted',
         HTTPS_PROXY: 'http://proxy.invalid',
         API_TOKEN: 'must-not-leak',
+        lobsterai_electron_path: 'C:\\untrusted\\electron.exe',
+        SKILLS_ROOT: 'C:\\untrusted\\SKILLs',
       },
       sessionKey: 'agent:main:session-1',
     });
@@ -205,7 +219,14 @@ describe('WindowsNativeSandboxExecutor', () => {
       },
       networkMode: 'disabled',
     });
-    expect(request.command.env).toEqual({ CI: '1' });
+    expect(request.command.env).toEqual({
+      CI: '1',
+      LOBSTERAI_ELECTRON_PATH: 'C:\\LobsterAI\\electron.exe',
+      LOBSTERAI_NPM_BIN_DIR: 'C:\\LobsterAI\\npm\\bin',
+      SKILLS_ROOT: 'C:\\LobsterAI\\SKILLs',
+      LOBSTERAI_SKILLS_ROOT: 'C:\\LobsterAI\\SKILLs',
+      TZ: 'Asia/Shanghai',
+    });
     expect(request.command.argv.at(-1)).toBe('npm test');
 
     fs.writeFileSync(wrapped.token.reportPath!, executionReport);

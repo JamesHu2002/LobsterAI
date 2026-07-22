@@ -28,6 +28,7 @@ describe.skipIf(!canRun)('WindowsNativeSandboxExecutor smoke', () => {
     const appData = path.join(profileRoot, 'AppData', 'Roaming');
     const localAppData = path.join(profileRoot, 'AppData', 'Local');
     const npmCache = path.join(localAppData, 'npm-cache');
+    const npmBinDir = path.join(process.cwd(), 'node_modules', 'npm', 'bin');
     const outside = path.join(root, 'outside');
     fs.mkdirSync(workspace);
     fs.mkdirSync(agentWorkspace);
@@ -52,9 +53,29 @@ describe.skipIf(!canRun)('WindowsNativeSandboxExecutor smoke', () => {
         policyVersion: 'workspace-write-v3',
         runtimeVersion: '0.3.1',
       }),
+      trustedEnvironment: {
+        LOBSTERAI_ELECTRON_PATH: process.execPath,
+        LOBSTERAI_NPM_BIN_DIR: npmBinDir,
+        TZ: 'Asia/Shanghai',
+      },
     });
     try {
       await executor.prepareWorkspace(workspace, policyContext);
+      const trustedEnvironment = await executor.runIsolatedCommand({
+        command: [
+          "$ErrorActionPreference='Stop'",
+          'if (-not (Test-Path -LiteralPath $env:LOBSTERAI_ELECTRON_PATH -PathType Leaf)) { exit 31 }',
+          'if (-not (Test-Path -LiteralPath $env:LOBSTERAI_NPM_BIN_DIR -PathType Container)) { exit 32 }',
+          "if ($env:TZ -ne 'Asia/Shanghai') { exit 33 }",
+          "Write-Output 'trusted-env-ok'",
+        ].join('; '),
+        workspaceDir: workspace,
+        policyContext,
+        sessionKey: 'agent:main:m2-smoke',
+      });
+      expect(trustedEnvironment.code).toBe(0);
+      expect(trustedEnvironment.stdout.toString('utf8').trim()).toBe('trusted-env-ok');
+
       const shellInside = await executor.runIsolatedCommand({
         command: 'Set-Content -LiteralPath shell-inside.txt -Value ok',
         workspaceDir: workspace,

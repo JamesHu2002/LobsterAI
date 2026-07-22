@@ -95,7 +95,7 @@ OpenClaw plugin 配置使用稳定能力 ID，而不是由调用方直接传入�
 
 ### FR-4：环境变量保护
 
-tool call 不能覆盖 `HOME`、`USERPROFILE`、`APPDATA`、`LOCALAPPDATA`、`TEMP`、`TMP`、`PATH`、代理和系统根等宿主控制变量。名称包含 `KEY`、`SECRET` 或 `TOKEN` 的命令环境变量在进入 runner 前过滤。
+tool call 不能覆盖 `HOME`、`USERPROFILE`、`APPDATA`、`LOCALAPPDATA`、`TEMP`、`TMP`、`PATH`、代理和系统根等宿主控制变量。名称包含 `KEY`、`SECRET` 或 `TOKEN` 的命令环境变量在进入 runner 前过滤。LobsterAI 自带 Node/npm shim 和 Skill 脚本所需变量只能由 extension 从 Gateway 的可信宿主环境按语义白名单注入，同名 tool env 不得覆盖。
 
 ### FR-5：版本与失败关闭
 
@@ -181,6 +181,17 @@ runner 最终环境：
 
 `TEMP`/`TMP` 继续使用 scratch 是为了避免污染共享系统临时目录，不属于持久 Home 映射。
 
+OpenClaw 的 Sandbox 命令环境不会完整继承 Gateway `process.env`。此前虽然 `PATH` 中仍有 LobsterAI 的 Node/npm shim，但 shim 依赖的 Electron、npm bin 等定位变量缺失，表现为命令可以被找到、启动后却立即失败。为此 extension 在生成 `command.env` 时增加可信语义环境注册表：
+
+| 语义组 | 注入变量 |
+| --- | --- |
+| Node/npm runtime | `LOBSTERAI_ELECTRON_PATH`、`LOBSTERAI_NPM_BIN_DIR` |
+| Skill 定位 | `SKILLS_ROOT`、`LOBSTERAI_SKILLS_ROOT` |
+| Python runtime | `LOBSTERAI_PYTHON_ROOT`（宿主存在时） |
+| 时区 | `TZ`（宿主存在时） |
+
+路径值必须是已存在的绝对路径；来源只允许 Gateway 自身环境，tool call 的同名变量按 Windows 大小写不敏感规则过滤。当前有意不注入 `LOBSTERAI_OPENCLAW_ENTRY`、代理、CA、Gateway token 或其他密钥，避免把 OpenClaw 管理面与凭据带入受限命令树。开发态和安装包使用同一注册表，差别仅在 Electron main 预先计算的可信路径值。
+
 ### 4.4 语义化权限注册表
 
 首版注册表定义：
@@ -241,6 +252,8 @@ Capability ACE 是 runtime 周期级状态，不是单条命令状态。`verify`
 | 整个 Home/AppData 获得写权限 | 不加入可写根；profile 仅用于环境继承 |
 | `.npmrc`/`.gitconfig` 等真实配置被自动读取 | 当前 `readIsolated=false`，作为已知剩余风险记录 |
 | 环境变量携带密钥 | tool env 中 KEY/SECRET/TOKEN 名称过滤；后续仍需完整凭据策略 |
+| LobsterAI shim 可执行但定位变量缺失 | 仅从 Gateway 可信环境注入 Node/npm、Skill、Python 与时区语义变量；绝对路径缺失或无效时失败关闭 |
+| OpenClaw CLI 或 Gateway 凭据进入命令树 | 不注入 OpenClaw entry、代理/CA、Gateway token 和其他密钥 |
 | 读取到配置后通过网络外传 | 当前 `networkIsolated=false`；内部测试版不得宣称生产安全 |
 | 在活动任务中直接收权 | 不支持；要求结束任务并重建 token |
 | 通过 npm 全局目录持久化命令 | `%APPDATA%/npm` 不开放写权限 |
@@ -276,13 +289,14 @@ scripts/native-sandbox/verify-package.cjs
 
 1. 协议、policy 和 runner 版本一致升级至 v3 / `workspace-write-v3` / `0.3.1`。
 2. request 不再包含 `sandboxHomeDir`，改为 `profile.mode=inherit-host` 及四个真实 Profile 路径。
-3. tool call 不能覆盖 Profile、TEMP/TMP、PATH、代理和敏感 KEY/SECRET/TOKEN 环境变量。
-4. 有 `npm-cache-write` 时 npm cache 进入可写根；去掉能力后只保留基础可写根。
-5. npm cache 缺失时可安全创建；异常 junction/越界解析失败关闭。
-6. runner 能读取真实 Profile 文件但不能写入未授权 Profile 位置。
-7. runner 能写入显式 npm cache，但不能写入 `LOCALAPPDATA` 其他子目录。
-8. task workspace、Agent workspace、Skills 只读、protected path、进程树和 ACL cleanup 原有测试继续通过。
-9. 相关 Vitest、Rust test、Rust Clippy、Electron compile、变更文件 lint、扩展预编译和打包核验通过。
+3. tool call 不能覆盖 Profile、TEMP/TMP、PATH、代理、可信语义环境和敏感 KEY/SECRET/TOKEN 环境变量。
+4. Node/npm、Skill、Python 与时区变量只从 Gateway 可信环境注入；OpenClaw entry、代理/CA 和 token 不注入。
+5. 有 `npm-cache-write` 时 npm cache 进入可写根；去掉能力后只保留基础可写根。
+6. npm cache 缺失时可安全创建；异常 junction/越界解析失败关闭。
+7. runner 能读取真实 Profile 文件但不能写入未授权 Profile 位置。
+8. runner 能写入显式 npm cache，但不能写入 `LOCALAPPDATA` 其他子目录。
+9. task workspace、Agent workspace、Skills 只读、protected path、进程树和 ACL cleanup 原有测试继续通过。
+10. 相关 Vitest、Rust test、Rust Clippy、Electron compile、变更文件 lint、扩展预编译和打包核验通过。
 
 ### 7.2 用户侧
 

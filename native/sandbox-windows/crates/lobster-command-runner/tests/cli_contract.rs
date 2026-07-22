@@ -22,6 +22,7 @@ fn malformed_request_returns_a_machine_readable_error() {
 
     let output = must(
         Command::new(env!("CARGO_BIN_EXE_lobster-command-runner"))
+            .env("LOBSTER_NATIVE_SANDBOX_DEV_DIRECT", "1")
             .arg("verify")
             .arg(&request)
             .output(),
@@ -149,6 +150,7 @@ fn run_can_write_the_machine_report_to_a_sidecar_without_polluting_stderr() {
 
     let output = must(
         Command::new(env!("CARGO_BIN_EXE_lobster-command-runner"))
+            .env("LOBSTER_NATIVE_SANDBOX_DEV_DIRECT", "1")
             .arg("run")
             .arg(&request_path)
             .arg("--report-file")
@@ -174,6 +176,7 @@ fn run_can_write_the_machine_report_to_a_sidecar_without_polluting_stderr() {
 fn invoke(command: &str, request: &std::path::Path) -> std::process::Output {
     must(
         Command::new(env!("CARGO_BIN_EXE_lobster-command-runner"))
+            .env("LOBSTER_NATIVE_SANDBOX_DEV_DIRECT", "1")
             .arg(command)
             .arg(request)
             .output(),

@@ -24,8 +24,8 @@ type CapturedRunnerRequest = {
 };
 
 const verificationReport = Buffer.from(JSON.stringify({
-  protocolVersion: 3,
-  policyVersion: 'workspace-write-v3',
+  protocolVersion: 4,
+  policyVersion: 'workspace-write-v4',
   capabilitySids: ['S-1-5-21-test'],
   writableRoots: [],
   readableRoots: [],
@@ -34,13 +34,15 @@ const verificationReport = Buffer.from(JSON.stringify({
   restrictedToken: true,
   writeRestricted: true,
   ownerPreserved: true,
+  dedicatedIdentity: true,
+  runtimeIntegrityVerified: true,
   networkIsolated: false,
   readIsolated: false,
   productionReady: false,
 }));
 
 const executionReport = JSON.stringify({
-  protocolVersion: 3,
+  protocolVersion: 4,
   outcome: 'completed',
   exitCode: 0,
   durationMs: 10,
@@ -109,8 +111,8 @@ const createFixture = (options: { trustedEnvironment?: NodeJS.ProcessEnv } = {})
     runnerPath: path.join(root, 'lobster-command-runner.exe'),
     runtimeEnabled: true,
     audit: new SandboxAuditRecorder({
-      policyVersion: 'workspace-write-v3',
-      runtimeVersion: '0.3.1',
+      policyVersion: 'workspace-write-v4',
+      runtimeVersion: '0.4.0',
     }),
     platform: 'win32',
     pathExists: () => true,
@@ -203,7 +205,7 @@ describe('WindowsNativeSandboxExecutor', () => {
       wrapped.token.reportPath,
     ]);
     expect(request.policy).toMatchObject({
-      policyVersion: 'workspace-write-v3',
+      policyVersion: 'workspace-write-v4',
       agentId: 'main',
       cwd: fs.realpathSync.native(workspace),
       writableRoots: [

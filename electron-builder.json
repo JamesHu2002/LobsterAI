@@ -181,6 +181,18 @@
       {
         "from": "native/sandbox-windows/target/release/lobster-command-runner.exe",
         "to": "sandbox-runtime/lobster-command-runner.exe"
+      },
+      {
+        "from": "native/sandbox-windows/target/release/lobster-sandbox-setup.exe",
+        "to": "sandbox-runtime/lobster-sandbox-setup.exe"
+      },
+      {
+        "from": "native/sandbox-windows/target/release/lobster-sandbox-manifest.json",
+        "to": "sandbox-runtime/lobster-sandbox-manifest.json"
+      },
+      {
+        "from": "native/sandbox-windows/target/release/THIRD_PARTY_NOTICES.txt",
+        "to": "sandbox-runtime/THIRD_PARTY_NOTICES.txt"
       }
     ]
   },

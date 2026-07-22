@@ -6,7 +6,7 @@
 >
 > 实施更新：2026-07-21（宿主 Profile 与语义化权限方案）
 >
-> 当前状态：M0、M1、M2 已完成；M2.x 最新迭代已实施，待端侧验收；Windows 优先，macOS 预留
+> 当前状态：M0、M1、M2、M2.x 已完成；M3 已实施，待端侧验收与专项安全评审；Windows 优先，macOS 预留
 >
 > 适用范围：LobsterAI、内置 OpenClaw runtime、Windows 原生执行后端
 >
@@ -1083,7 +1083,7 @@ rollback-failed
 | M1 | Windows runner 技术原型 | CLI 可证明进程树和 workspace 写边界 | 已完成；生产级安全加固归 M3 | 10-18 | 是 |
 | M2 | 单 workspace 内部联调版 | 内部测试用户可在已有工程中验证真实任务的写边界 | 已完成 | 7-12 | 是 |
 | M2.x | 固定产品权限根兼容层 | Agent 记忆、缓存和已安装 Skills 可在沙箱任务中按声明权限工作 | 已实施，待端侧验收 | 5-9 | 是 |
-| M3 | 安装态与系统安全加固 | setup、网络、签名、修复和失败关闭完整 | 未开始 | 12-22 | 是 |
+| M3 | 安装态与系统安全加固 | setup、网络、签名、修复和失败关闭完整 | 已实施，待端侧验收与专项安全评审 | 12-22 | 是 |
 | M4 | 多 workspace 权限并集、审计与企业能力 | 并发工程可用，授权并集和关键事件可追溯 | 未开始 | 5-10 | 是 |
 | M5 | 打包、升级、回滚与发布门禁 | 可随 Windows 安装包发布的 Beta | 未开始 | 10-18 | 是 |
 | M6 | macOS 原生后端 | 与 Windows 使用同一产品接口 | 后续规划 | 15-30 | 否 |
@@ -1444,6 +1444,8 @@ extension 从 `CreateSandboxBackendParams` 取得 `agentWorkspaceDir`、`taskWor
 ### 20.1 目标
 
 把开发可用的 runner 变成可安全安装、修复和升级的 Windows runtime，并完成网络和供应链加固。
+
+当前实现细节、已选技术路径、验收项和剩余风险见 `2026-07-22-windows-native-sandbox-m3-installation-hardening-design.md`。
 
 ### 20.2 主要工作
 

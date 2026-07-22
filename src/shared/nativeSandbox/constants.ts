@@ -1,13 +1,13 @@
-export const NATIVE_SANDBOX_PROTOCOL_VERSION = 3;
-export const NATIVE_SANDBOX_POLICY_VERSION = 'workspace-write-v3';
-export const NATIVE_SANDBOX_WINDOWS_RUNTIME_VERSION = '0.3.1';
+export const NATIVE_SANDBOX_PROTOCOL_VERSION = 4;
+export const NATIVE_SANDBOX_POLICY_VERSION = 'workspace-write-v4';
+export const NATIVE_SANDBOX_WINDOWS_RUNTIME_VERSION = '0.4.0';
 export const NATIVE_SANDBOX_OPENCLAW_BACKEND_ID = 'lobster-native';
 export const NATIVE_SANDBOX_OPENCLAW_PLUGIN_ID = 'lobster-native-sandbox';
 export const NATIVE_SANDBOX_RETIRED_OPENCLAW_PLUGIN_IDS = [
   'lobster-srt-sandbox',
 ] as const;
 
-/** M2 exposes the native executor only through the explicitly labelled test UI. */
+/** M3 exposes the native executor only through the explicitly labelled test UI. */
 export const NATIVE_SANDBOX_ACTIVATION_AVAILABLE = true;
 
 export const NativeSandboxIpcChannel = {
@@ -77,6 +77,15 @@ export const NativeSandboxErrorCode = {
   RuntimeExecutableUnavailable: 'runtime-executable-unavailable',
   RuntimeUnavailable: 'runtime-unavailable',
   RuntimeVersionIncompatible: 'runtime-version-incompatible',
+  RuntimeManifestInvalid: 'runtime-manifest-invalid',
+  RuntimeHashInvalid: 'runtime-hash-invalid',
+  RuntimeSignatureInvalid: 'runtime-signature-invalid',
+  RuntimeProtectionInvalid: 'runtime-protection-invalid',
+  SetupUnavailable: 'setup-unavailable',
+  SetupUacCancelled: 'setup-uac-cancelled',
+  SetupPartialFailure: 'setup-partial-failure',
+  SandboxIdentityInvalid: 'sandbox-identity-invalid',
+  NetworkIsolationUnavailable: 'network-isolation-unavailable',
   StatusCheckFailed: 'status-check-failed',
   InstallFailed: 'install-failed',
   RepairFailed: 'repair-failed',

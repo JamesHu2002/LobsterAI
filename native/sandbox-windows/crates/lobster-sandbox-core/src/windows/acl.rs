@@ -43,6 +43,7 @@ pub fn apply_policy_acl(
     policy: &PreparedPolicy,
     writable_capabilities: &[CapabilitySid],
     readable_capabilities: &[CapabilitySid],
+    sandbox_identity: Option<&CapabilitySid>,
 ) -> SandboxResult<()> {
     if policy.writable_roots.len() != writable_capabilities.len()
         || policy.readable_roots.len() != readable_capabilities.len()
@@ -62,6 +63,15 @@ pub fn apply_policy_acl(
             WORKSPACE_ACCESS_MASK,
             SUB_CONTAINERS_AND_OBJECTS_INHERIT,
         )?;
+        if let Some(identity) = sandbox_identity {
+            mutate_acl(
+                root,
+                identity,
+                SET_ACCESS,
+                WORKSPACE_ACCESS_MASK,
+                SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+            )?;
+        }
     }
     for (root, capability) in policy.readable_roots.iter().zip(readable_capabilities) {
         mutate_acl(
@@ -71,6 +81,15 @@ pub fn apply_policy_acl(
             READ_ROOT_ACCESS_MASK,
             SUB_CONTAINERS_AND_OBJECTS_INHERIT,
         )?;
+        if let Some(identity) = sandbox_identity {
+            mutate_acl(
+                root,
+                identity,
+                SET_ACCESS,
+                READ_ROOT_ACCESS_MASK,
+                SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+            )?;
+        }
     }
     for protected_path in &policy.protected_paths {
         for capability in writable_capabilities.iter().chain(readable_capabilities) {
@@ -85,6 +104,16 @@ pub fn apply_policy_acl(
                 SUB_CONTAINERS_AND_OBJECTS_INHERIT,
             )?;
         }
+        if let Some(identity) = sandbox_identity {
+            mutate_acl(protected_path, identity, REVOKE_ACCESS, 0, 0)?;
+            mutate_acl(
+                protected_path,
+                identity,
+                DENY_ACCESS,
+                PROTECTED_WRITE_MASK,
+                SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+            )?;
+        }
     }
     Ok(())
 }
@@ -93,17 +122,27 @@ pub fn revoke_policy_acl(
     policy: &PreparedPolicy,
     writable_capabilities: &[CapabilitySid],
     readable_capabilities: &[CapabilitySid],
+    sandbox_identity: Option<&CapabilitySid>,
 ) -> SandboxResult<()> {
     for protected_path in &policy.protected_paths {
         for capability in writable_capabilities.iter().chain(readable_capabilities) {
             mutate_acl(protected_path, capability, REVOKE_ACCESS, 0, 0)?;
         }
+        if let Some(identity) = sandbox_identity {
+            mutate_acl(protected_path, identity, REVOKE_ACCESS, 0, 0)?;
+        }
     }
     for (root, capability) in policy.readable_roots.iter().zip(readable_capabilities) {
         mutate_acl(root, capability, REVOKE_ACCESS, 0, 0)?;
+        if let Some(identity) = sandbox_identity {
+            mutate_acl(root, identity, REVOKE_ACCESS, 0, 0)?;
+        }
     }
     for (root, capability) in policy.writable_roots.iter().zip(writable_capabilities) {
         mutate_acl(root, capability, REVOKE_ACCESS, 0, 0)?;
+        if let Some(identity) = sandbox_identity {
+            mutate_acl(root, identity, REVOKE_ACCESS, 0, 0)?;
+        }
     }
     Ok(())
 }

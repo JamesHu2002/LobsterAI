@@ -146,6 +146,58 @@ const NativeSandboxStatusCard: React.FC<NativeSandboxStatusCardProps> = ({
             : 'text-secondary'}
         />
         <StatusRow
+          label={i18nService.t('sandboxIdentityStatusLabel')}
+          value={status
+            ? status.identityReady
+              ? i18nService.t('sandboxIdentityReady')
+              : i18nService.t('sandboxIdentityUnavailable')
+            : pendingValue}
+          valueClassName={status?.identityReady
+            ? 'text-emerald-600 dark:text-emerald-400'
+            : 'text-amber-700 dark:text-amber-400'}
+        />
+        <StatusRow
+          label={i18nService.t('sandboxIntegrityStatusLabel')}
+          value={status
+            ? status.integrityVerified
+              ? i18nService.t('sandboxIntegrityVerified')
+              : i18nService.t('sandboxIntegrityUnverified')
+            : pendingValue}
+          valueClassName={status?.integrityVerified
+            ? 'text-emerald-600 dark:text-emerald-400'
+            : 'text-amber-700 dark:text-amber-400'}
+        />
+        <StatusRow
+          label={i18nService.t('sandboxInstallProtectionLabel')}
+          value={status
+            ? status.protectedInstallation
+              ? i18nService.t('sandboxInstallProtected')
+              : i18nService.t('sandboxInstallUnprotected')
+            : pendingValue}
+          valueClassName={status?.protectedInstallation
+            ? 'text-emerald-600 dark:text-emerald-400'
+            : 'text-amber-700 dark:text-amber-400'}
+        />
+        <StatusRow
+          label={i18nService.t('sandboxSignatureStatusLabel')}
+          value={status
+            ? status.signatureRequired
+              ? status.signatureVerified
+                ? i18nService.t('sandboxSignatureVerified')
+                : i18nService.t('sandboxSignatureUnverified')
+              : i18nService.t('sandboxSignatureDevelopment')
+            : pendingValue}
+          valueClassName={status?.signatureRequired && !status.signatureVerified
+            ? 'text-amber-700 dark:text-amber-400'
+            : status?.signatureVerified
+              ? 'text-emerald-600 dark:text-emerald-400'
+              : 'text-secondary'}
+        />
+        <StatusRow
+          label={i18nService.t('sandboxInstallRootLabel')}
+          value={status?.installationRoot || pendingValue}
+        />
+        <StatusRow
           label={i18nService.t('sandboxNetworkIsolationLabel')}
           value={status
             ? status.networkIsolated

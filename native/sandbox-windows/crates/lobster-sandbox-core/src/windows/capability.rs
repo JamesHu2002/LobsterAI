@@ -50,7 +50,7 @@ impl CapabilitySid {
         Self::from_text(text)
     }
 
-    fn from_text(text: String) -> SandboxResult<Self> {
+    pub fn from_text(text: String) -> SandboxResult<Self> {
         let wide = to_wide(&text);
         let mut pointer = std::ptr::null_mut();
         let converted = unsafe { ConvertStringSidToSidW(wide.as_ptr(), &mut pointer) };

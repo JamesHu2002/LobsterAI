@@ -10,14 +10,14 @@ import { WindowsNativeSandboxExecutor } from './windowsNativeSandboxExecutor.js'
 import { createWindowsSandboxPolicyContext } from './windowsSandboxPolicyContext.js';
 
 const runnerPath = path.join(
-  process.cwd(),
-  'native',
-  'sandbox-windows',
-  'target',
-  'release',
+  process.env.ProgramData ?? 'C:\\ProgramData',
+  'LobsterAI-SandboxRuntime',
+  'current',
   'lobster-command-runner.exe',
 );
-const canRun = process.platform === 'win32' && fs.existsSync(runnerPath);
+const canRun = process.platform === 'win32'
+  && process.env.LOBSTER_NATIVE_SANDBOX_RUN_INSTALLED_SMOKE === '1'
+  && fs.existsSync(runnerPath);
 
 describe.skipIf(!canRun)('WindowsNativeSandboxExecutor smoke', () => {
   test('enforces the same write boundary for shell and file bridge operations', async () => {
@@ -50,8 +50,8 @@ describe.skipIf(!canRun)('WindowsNativeSandboxExecutor smoke', () => {
       runnerPath,
       runtimeEnabled: true,
       audit: new SandboxAuditRecorder({
-        policyVersion: 'workspace-write-v3',
-        runtimeVersion: '0.3.1',
+        policyVersion: 'workspace-write-v4',
+        runtimeVersion: '0.4.0',
       }),
       trustedEnvironment: {
         LOBSTERAI_ELECTRON_PATH: process.execPath,

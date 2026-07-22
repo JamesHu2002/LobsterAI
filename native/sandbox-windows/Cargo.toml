@@ -2,7 +2,9 @@
 members = [
   "crates/lobster-command-runner",
   "crates/lobster-sandbox-core",
+  "crates/lobster-sandbox-installation",
   "crates/lobster-sandbox-protocol",
+  "crates/lobster-sandbox-setup",
 ]
 resolver = "2"
 
@@ -10,7 +12,7 @@ resolver = "2"
 edition = "2024"
 license = "MIT"
 rust-version = "1.85"
-version = "0.3.1"
+version = "0.4.0"
 
 [workspace.dependencies]
 clap = { version = "4.5", features = ["derive"] }
@@ -20,15 +22,31 @@ serde_json = "1.0"
 sha2 = "0.10"
 tempfile = "3.23"
 thiserror = "2.0"
+windows = { version = "0.58", features = [
+  "Win32_Foundation",
+  "Win32_NetworkManagement_WindowsFirewall",
+  "Win32_System_Com",
+  "Win32_System_Variant",
+] }
 windows-sys = { version = "0.52", features = [
   "Win32_Foundation",
+  "Win32_NetworkManagement_NetManagement",
   "Win32_Security",
   "Win32_Security_Authorization",
+  "Win32_Security_Cryptography",
+  "Win32_Security_WinTrust",
   "Win32_Storage_FileSystem",
   "Win32_System_Console",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_EventLog",
   "Win32_System_JobObjects",
+  "Win32_System_LibraryLoader",
   "Win32_System_Pipes",
+  "Win32_System_Registry",
+  "Win32_System_StationsAndDesktops",
   "Win32_System_Threading",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
 ] }
 
 [workspace.lints.rust]

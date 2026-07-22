@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const NATIVE_SANDBOX_PROTOCOL_VERSION: u32 = 3;
-pub const NATIVE_SANDBOX_POLICY_VERSION: &str = "workspace-write-v3";
+pub const NATIVE_SANDBOX_PROTOCOL_VERSION: u32 = 4;
+pub const NATIVE_SANDBOX_POLICY_VERSION: &str = "workspace-write-v4";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -132,6 +132,8 @@ pub struct VerificationReport {
     pub restricted_token: bool,
     pub write_restricted: bool,
     pub owner_preserved: bool,
+    pub dedicated_identity: bool,
+    pub runtime_integrity_verified: bool,
     pub network_isolated: bool,
     pub read_isolated: bool,
     pub production_ready: bool,
@@ -323,7 +325,7 @@ mod tests {
     }
 
     #[test]
-    fn validates_the_v3_contract() {
+    fn validates_the_v4_contract() {
         assert_eq!(request().validate(), Ok(()));
     }
 

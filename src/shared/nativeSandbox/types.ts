@@ -66,6 +66,13 @@ export interface NativeSandboxStatus {
   networkIsolated?: boolean;
   readIsolated?: boolean;
   productionReady?: boolean;
+  identityReady?: boolean;
+  integrityVerified?: boolean;
+  protectedInstallation?: boolean;
+  signatureRequired?: boolean;
+  signatureVerified?: boolean;
+  installationRoot?: string;
+  rebootRequired?: boolean;
   managedByEnterprise?: boolean;
   busy: boolean;
   operation?: NativeSandboxOperation;

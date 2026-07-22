@@ -211,7 +211,7 @@ describe('OpenClawConfigSync runtime config output', () => {
     });
   });
 
-  test('selects the M2 native backend when the internal test flag is enabled', async () => {
+  test('selects the installed M3 native backend when the internal test flag is enabled', async () => {
     const sync = await createSync({
       getCoworkConfig: () => ({
         workingDirectory: tmpDir,
@@ -240,10 +240,10 @@ describe('OpenClawConfigSync runtime config output', () => {
     expect(config.plugins.entries['lobster-native-sandbox']).toMatchObject({
       enabled: true,
       config: {
-        protocolVersion: 3,
+        protocolVersion: 4,
         runtimeEnabled: true,
         runtimeKind: 'native-windows',
-        runtimeVersion: '0.3.1',
+        runtimeVersion: '0.4.0',
         filesystemCapabilities: ['npm-cache-write'],
       },
     });
@@ -252,7 +252,12 @@ describe('OpenClawConfigSync runtime config output', () => {
         ? path.join(os.tmpdir(), 'SKILLs')
         : '');
     expect(config.plugins.entries['lobster-native-sandbox'].config.runtimeExecutablePath)
-      .toMatch(/[\\/]native[\\/]sandbox-windows[\\/]target[\\/]release[\\/]lobster-command-runner\.exe$/);
+      .toBe(path.join(
+        process.env.ProgramData?.trim() || 'C:\\ProgramData',
+        'LobsterAI-SandboxRuntime',
+        'current',
+        'lobster-command-runner.exe',
+      ));
     expect(config.plugins.allow).toContain('lobster-native-sandbox');
   });
 

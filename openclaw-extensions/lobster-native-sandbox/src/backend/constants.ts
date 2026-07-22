@@ -1,8 +1,8 @@
 export const LOBSTER_NATIVE_SANDBOX_BACKEND_ID = 'lobster-native';
 export const LOBSTER_NATIVE_WORKSPACE_PATH_SEMANTICS = 'host';
-export const LOBSTER_NATIVE_PROTOCOL_VERSION = 3;
-export const LOBSTER_NATIVE_POLICY_VERSION = 'workspace-write-v3';
-export const LOBSTER_NATIVE_WINDOWS_RUNTIME_VERSION = '0.3.1';
+export const LOBSTER_NATIVE_PROTOCOL_VERSION = 4;
+export const LOBSTER_NATIVE_POLICY_VERSION = 'workspace-write-v4';
+export const LOBSTER_NATIVE_WINDOWS_RUNTIME_VERSION = '0.4.0';
 export const LOBSTER_NATIVE_WINDOWS_RUNTIME_KIND = 'native-windows';
 export const LEGACY_SRT_RUNTIME_VERSION = '0.0.65';
 export const LEGACY_SRT_RUNTIME_KIND = 'legacy-windows-adapter';

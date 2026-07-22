@@ -57,6 +57,8 @@ interface WindowsNativeVerificationReport {
   restrictedToken: boolean;
   writeRestricted: boolean;
   ownerPreserved: boolean;
+  dedicatedIdentity: boolean;
+  runtimeIntegrityVerified: boolean;
   networkIsolated: boolean;
   readIsolated: boolean;
   productionReady: boolean;
@@ -404,6 +406,8 @@ export class WindowsNativeSandboxExecutor implements NativeSandboxExecutor {
         !verification.restrictedToken
         || !verification.writeRestricted
         || !verification.ownerPreserved
+        || !verification.dedicatedIdentity
+        || !verification.runtimeIntegrityVerified
       ) {
         throw new LobsterNativeSandboxBackendError(
           LobsterNativeSandboxBackendErrorCode.RuntimeProtocolInvalid,
@@ -887,6 +891,8 @@ export class WindowsNativeSandboxExecutor implements NativeSandboxExecutor {
       || !Array.isArray(report.readableRoots)
       || !Array.isArray(report.protectedPaths)
       || report.profileMode !== LobsterNativeSandboxProfileMode.InheritHost
+      || report.dedicatedIdentity !== true
+      || report.runtimeIntegrityVerified !== true
       || typeof report.networkIsolated !== 'boolean'
       || typeof report.readIsolated !== 'boolean'
       || typeof report.productionReady !== 'boolean'

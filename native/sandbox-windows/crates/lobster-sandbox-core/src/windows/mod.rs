@@ -53,7 +53,7 @@ fn resolve(request: &RunRequest) -> SandboxResult<PreparedSandbox> {
     })
 }
 
-pub fn verify(request: &RunRequest) -> SandboxResult<VerificationReport> {
+pub fn prepare(request: &RunRequest, sandbox_identity_sid: Option<&str>) -> SandboxResult<()> {
     let prepared = resolve(request)?;
     let (writable_capabilities, readable_capabilities) = prepared
         .capabilities
@@ -61,11 +61,28 @@ pub fn verify(request: &RunRequest) -> SandboxResult<VerificationReport> {
     // ACL mutation belongs to policy preparation. The ACEs persist for the runtime cycle and
     // are revoked by cleanup(), so command execution must not propagate the same inherited ACEs
     // through large roots (for example npm-cache) on every exec call.
+    let sandbox_identity = sandbox_identity_sid
+        .map(|sid| CapabilitySid::from_text(sid.to_string()))
+        .transpose()?;
     apply_policy_acl(
         &prepared.policy,
         writable_capabilities,
         readable_capabilities,
+        sandbox_identity.as_ref(),
     )?;
+    Ok(())
+}
+
+pub fn verify_prepared(
+    request: &RunRequest,
+    dedicated_identity: bool,
+    network_isolated: bool,
+    runtime_integrity_verified: bool,
+) -> SandboxResult<VerificationReport> {
+    let prepared = resolve(request)?;
+    let (writable_capabilities, readable_capabilities) = prepared
+        .capabilities
+        .split_at(prepared.writable_capability_count);
     let token = RestrictedToken::create(writable_capabilities, readable_capabilities)?;
     let diagnostics = token.diagnostics(writable_capabilities, readable_capabilities)?;
     Ok(VerificationReport {
@@ -98,10 +115,19 @@ pub fn verify(request: &RunRequest) -> SandboxResult<VerificationReport> {
         restricted_token: diagnostics.restricted_sid_count >= prepared.capabilities.len() as u32,
         write_restricted: true,
         owner_preserved: true,
-        network_isolated: false,
+        dedicated_identity,
+        runtime_integrity_verified,
+        network_isolated,
         read_isolated: false,
+        // M3 proves the hardened runtime boundary. Product release readiness still depends on
+        // the M4/M5 audit, upgrade, packaging, and security-review gates.
         production_ready: false,
     })
+}
+
+pub fn verify(request: &RunRequest) -> SandboxResult<VerificationReport> {
+    prepare(request, None)?;
+    verify_prepared(request, false, false, false)
 }
 
 pub fn execute(request: &RunRequest) -> SandboxResult<ExecutionReport> {
@@ -135,7 +161,10 @@ pub fn execute(request: &RunRequest) -> SandboxResult<ExecutionReport> {
     })
 }
 
-pub fn cleanup(request: &RunRequest) -> SandboxResult<()> {
+pub fn cleanup_with_identity(
+    request: &RunRequest,
+    sandbox_identity_sid: Option<&str>,
+) -> SandboxResult<()> {
     request.validate().map_err(|error| {
         SandboxError::new("protocol-invalid", "validate-request", error.to_string())
     })?;
@@ -150,5 +179,17 @@ pub fn cleanup(request: &RunRequest) -> SandboxResult<()> {
         .iter()
         .map(|root| CapabilitySid::for_path(root))
         .collect::<SandboxResult<Vec<_>>>()?;
-    revoke_policy_acl(&policy, &writable_capabilities, &readable_capabilities)
+    let sandbox_identity = sandbox_identity_sid
+        .map(|sid| CapabilitySid::from_text(sid.to_string()))
+        .transpose()?;
+    revoke_policy_acl(
+        &policy,
+        &writable_capabilities,
+        &readable_capabilities,
+        sandbox_identity.as_ref(),
+    )
+}
+
+pub fn cleanup(request: &RunRequest) -> SandboxResult<()> {
+    cleanup_with_identity(request, None)
 }

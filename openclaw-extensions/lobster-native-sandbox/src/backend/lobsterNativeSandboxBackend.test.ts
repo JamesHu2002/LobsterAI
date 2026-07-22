@@ -47,8 +47,8 @@ const createHarness = () => {
   const factory = createLobsterNativeSandboxBackendFactory({
     executor,
     audit: new SandboxAuditRecorder({
-      policyVersion: 'workspace-write-v3',
-      runtimeVersion: '0.3.1',
+      policyVersion: 'workspace-write-v4',
+      runtimeVersion: '0.4.0',
     }),
     runtimeEnabled: true,
     platform: 'win32',

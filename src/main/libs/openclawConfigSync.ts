@@ -564,6 +564,14 @@ type OpenClawProviderSelection = {
       api: OpenClawProviderApi;
       input: string[];
       reasoning?: boolean;
+      thinkingLevelMap?: Record<string, string | null>;
+      compat?: {
+        maxTokensField: 'max_tokens';
+        supportsUsageInStreaming: boolean;
+        requiresStringContent: boolean;
+        supportsReasoningEffort: boolean;
+        supportedReasoningEfforts: string[];
+      };
       cost?: {
         input: number;
         output: number;
@@ -695,6 +703,39 @@ type ProviderDescriptor = {
 
 const DEEPSEEK_REASONING_MODEL_IDS = new Set(['deepseek-reasoner', 'deepseek-r1']);
 const DEEPSEEK_V4_MODEL_PATTERN = /^deepseek-v4(?:[-_.]|$)/;
+const KIMI_K3_MODEL_ID = 'kimi-k3';
+const KIMI_K3_CONTEXT_WINDOW = 1_048_576;
+const KIMI_K3_MAX_TOKENS = 8192;
+const KIMI_K3_INPUT = ['text', 'image', 'video'] as const;
+const KIMI_K3_THINKING_LEVEL_MAP: Readonly<Record<string, string | null>> = {
+  off: null,
+  minimal: 'max',
+  low: 'max',
+  medium: 'max',
+  high: 'max',
+  xhigh: 'max',
+  max: 'max',
+};
+const KIMI_K3_SUPPORTED_REASONING_EFFORTS = [
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+] as const;
+
+const normalizeMoonshotModelId = (modelId: string): string => {
+  const normalized = modelId.trim();
+  return normalized.toLowerCase().startsWith(`${OpenClawProviderId.Moonshot}/`)
+    ? normalized.slice(`${OpenClawProviderId.Moonshot}/`.length)
+    : normalized;
+};
+
+const isMoonshotKimiK3Model = (providerName: string, modelId: string): boolean => (
+  providerName === ProviderName.Moonshot
+  && normalizeMoonshotModelId(modelId).toLowerCase() === KIMI_K3_MODEL_ID
+);
 
 const resolveDeepSeekModelReasoning = (modelId: string): boolean | undefined => {
   const normalized = modelId.trim().toLowerCase();
@@ -997,11 +1038,17 @@ export const buildProviderSelection = (options: {
   const apiKey = descriptor.resolveApiKey
     ? descriptor.resolveApiKey({ apiKey: options.apiKey, providerName })
     : `\${${providerApiKeyEnvVar(providerName)}}`;
-  const sessionModelId = descriptor.resolveSessionModelId
+  const resolvedSessionModelId = descriptor.resolveSessionModelId
     ? descriptor.resolveSessionModelId(options.modelId)
     : options.modelId;
+  const isKimiK3 = isMoonshotKimiK3Model(providerName, resolvedSessionModelId);
+  const sessionModelId = isKimiK3
+    ? normalizeMoonshotModelId(resolvedSessionModelId)
+    : resolvedSessionModelId;
 
-  const providerModelName = resolveModelDisplayName(sessionModelId, options.modelName);
+  const providerModelName = isKimiK3
+    ? 'Kimi K3'
+    : resolveModelDisplayName(sessionModelId, options.modelName);
   const supportsImage = ProviderRegistry.resolveModelSupportsImage(
     providerName,
     options.modelId,
@@ -1012,7 +1059,11 @@ export const buildProviderSelection = (options: {
     options.modelId,
     options.supportsThinking,
   );
-  const modelInput: string[] = supportsImage ? ['text', 'image'] : ['text'];
+  const modelInput: string[] = isKimiK3
+    ? [...KIMI_K3_INPUT]
+    : supportsImage
+      ? ['text', 'image']
+      : ['text'];
   const auth = (
     (
       options.providerName === ProviderName.Minimax
@@ -1028,19 +1079,23 @@ export const buildProviderSelection = (options: {
   const descriptorReasoning = descriptor.resolveModelReasoning
     ? descriptor.resolveModelReasoning(options.modelId, !!options.codingPlanEnabled)
     : descriptor.modelDefaults?.reasoning;
-  const reasoning = supportsThinking ? true : descriptorReasoning;
-  const contextWindow = ProviderRegistry.resolveModelContextWindow(
-    providerName,
-    options.modelId,
-    options.contextWindow,
-  ) ?? descriptor.modelDefaults?.contextWindow;
-  const modelMaxTokens = resolveModelMaxTokensForOpenClaw({
-    api,
-    modelId: options.modelId,
-    sessionModelId,
-    descriptor,
-    contextWindow,
-  });
+  const reasoning = isKimiK3 || supportsThinking ? true : descriptorReasoning;
+  const contextWindow = isKimiK3
+    ? KIMI_K3_CONTEXT_WINDOW
+    : ProviderRegistry.resolveModelContextWindow(
+      providerName,
+      options.modelId,
+      options.contextWindow,
+    ) ?? descriptor.modelDefaults?.contextWindow;
+  const modelMaxTokens = isKimiK3
+    ? KIMI_K3_MAX_TOKENS
+    : resolveModelMaxTokensForOpenClaw({
+      api,
+      modelId: options.modelId,
+      sessionModelId,
+      descriptor,
+      contextWindow,
+    });
   const request = shouldUseEnvProxyForProviderBaseUrl(baseUrl)
     ? { proxy: { mode: 'env-proxy' as const } }
     : undefined;
@@ -1062,6 +1117,18 @@ export const buildProviderSelection = (options: {
           api,
           input: modelInput,
           ...(reasoning !== undefined ? { reasoning } : {}),
+          ...(isKimiK3
+            ? {
+              thinkingLevelMap: { ...KIMI_K3_THINKING_LEVEL_MAP },
+              compat: {
+                maxTokensField: 'max_tokens' as const,
+                supportsUsageInStreaming: false,
+                requiresStringContent: true,
+                supportsReasoningEffort: true,
+                supportedReasoningEfforts: [...KIMI_K3_SUPPORTED_REASONING_EFFORTS],
+              },
+            }
+            : {}),
           ...(descriptor.modelDefaults?.cost ? { cost: descriptor.modelDefaults.cost } : {}),
           ...(contextWindow !== undefined ? { contextWindow } : {}),
           ...(modelMaxTokens !== undefined

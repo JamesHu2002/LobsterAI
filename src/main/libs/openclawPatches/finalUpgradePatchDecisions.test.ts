@@ -1,6 +1,6 @@
 import { describe, test } from 'vitest';
 
-import { expectCurrentOpenClawPatchMissing, expectPatchContains } from './patchTestUtils';
+import { expectPatchContains } from './patchTestUtils';
 
 describe('final OpenClaw 6.1 patch decisions', () => {
   test('carries aborted tool loop breaker because upstream generic loop detection is not enough', () => {
@@ -28,7 +28,14 @@ describe('final OpenClaw 6.1 patch decisions', () => {
     ]);
   });
 
-  test('does not carry widened incomplete-turn retry guard because OpenClaw 6.1 has guarded upstream coverage', () => {
-    expectCurrentOpenClawPatchMissing('openclaw-widen-incomplete-turn-retry-guard.patch');
+  test('carries Kimi K3 length-limited continuation because OpenClaw 6.1 lacks 7.1 terminal handling', () => {
+    expectPatchContains('openclaw-kimi-k3-length-continuation.patch', [
+      'DEFAULT_LENGTH_LIMITED_RETRY_LIMIT',
+      'resolveLengthLimitedRetryInstruction',
+      'length-limited assistant turn detected',
+      'retries length-limited turns only when replay remains safe',
+      'thinkingLevelMap: ThinkingLevelMapSchema.optional()',
+      'accepts the official Kimi K3 model entry carrying thinkingLevelMap',
+    ]);
   });
 });

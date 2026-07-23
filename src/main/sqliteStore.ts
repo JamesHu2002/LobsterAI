@@ -840,4 +840,5 @@ export class SqliteStore {
       console.warn('Failed to migrate electron-store data:', error);
     }
   }
+
 }

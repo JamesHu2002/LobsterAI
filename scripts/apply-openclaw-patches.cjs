@@ -63,6 +63,47 @@ if (patchFiles.length === 0) {
 console.log(`[apply-openclaw-patches] Applying patches for openclaw ${openclawVersion} (${patchFiles.length} file(s))`);
 
 const strongPatchValidators = {
+  'openclaw-kimi-k3-length-continuation.patch': [
+    {
+      file: 'src/agents/embedded-agent-runner/run/incomplete-turn.ts',
+      snippets: [
+        'DEFAULT_LENGTH_LIMITED_RETRY_LIMIT = 1',
+        'stopReason === "length" && !params.hasTerminalOutput',
+        'resolveLengthLimitedRetryInstruction',
+        'hasAttemptTerminalState(params.attempt)',
+      ],
+    },
+    {
+      file: 'src/agents/embedded-agent-runner/run.ts',
+      snippets: [
+        'lengthLimitedRetryAttempts < maxLengthLimitedRetryAttempts',
+        'length-limited assistant turn detected',
+        'with task-completion continuation',
+      ],
+    },
+    {
+      file: 'src/agents/embedded-agent-runner/run.incomplete-turn.test.ts',
+      snippets: [
+        'continues a replay-safe length-limited turn and completes the task',
+        'retries length-limited turns only when replay remains safe',
+        'surfaces token-limited partial text as an incomplete turn after retries',
+      ],
+    },
+    {
+      file: 'src/config/zod-schema.core.ts',
+      snippets: [
+        'const ThinkingLevelMapValueSchema = z.string().nullable()',
+        'thinkingLevelMap: ThinkingLevelMapSchema.optional()',
+      ],
+    },
+    {
+      file: 'src/config/config.schema-regressions.test.ts',
+      snippets: [
+        'accepts the official Kimi K3 model entry carrying thinkingLevelMap',
+        'rejects thinkingLevelMap keys outside the model thinking levels',
+      ],
+    },
+  ],
   'openclaw-terminate-run-on-critical-tool-loop.patch': [
     {
       file: 'packages/agent-core/src/agent.ts',

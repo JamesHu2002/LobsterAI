@@ -1429,6 +1429,84 @@ describe('OpenClawConfigSync runtime config output', () => {
     });
   });
 
+  test.each(['kimi-k3', 'moonshot/kimi-k3'])(
+    'writes the official Kimi K3 OpenClaw profile for model id %s',
+    async modelId => {
+      const { OpenClawProviderId, ProviderName } = await import('../../shared/providers');
+      const { buildProviderSelection } = await import('./openclawConfigSync');
+
+      const selection = buildProviderSelection({
+        apiKey: 'sk-moonshot',
+        baseURL: 'https://api.moonshot.cn/v1',
+        modelId,
+        apiType: 'openai',
+        providerName: ProviderName.Moonshot,
+        authType: 'apikey',
+        codingPlanEnabled: false,
+        supportsImage: false,
+        supportsThinking: false,
+        modelName: 'Legacy K3 Name',
+        contextWindow: 262_144,
+      });
+
+      expect(selection.primaryModel).toBe(`${OpenClawProviderId.Moonshot}/kimi-k3`);
+      expect(selection.providerConfig.models[0]).toMatchObject({
+        id: 'kimi-k3',
+        name: 'Kimi K3',
+        api: 'openai-completions',
+        input: ['text', 'image', 'video'],
+        reasoning: true,
+        contextWindow: 1_048_576,
+        maxTokens: 8192,
+        thinkingLevelMap: {
+          off: null,
+          minimal: 'max',
+          low: 'max',
+          medium: 'max',
+          high: 'max',
+          xhigh: 'max',
+          max: 'max',
+        },
+        compat: {
+          maxTokensField: 'max_tokens',
+          supportsUsageInStreaming: false,
+          requiresStringContent: true,
+          supportsReasoningEffort: true,
+          supportedReasoningEfforts: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+        },
+      });
+      expect(JSON.stringify(selection.providerConfig.models[0])).not.toContain('max_completion_tokens');
+    },
+  );
+
+  test('does not apply the Kimi K3 compatibility profile to other Moonshot models', async () => {
+    const { ProviderName } = await import('../../shared/providers');
+    const { buildProviderSelection } = await import('./openclawConfigSync');
+
+    const selection = buildProviderSelection({
+      apiKey: 'sk-moonshot',
+      baseURL: 'https://api.moonshot.cn/v1',
+      modelId: 'kimi-k2.6',
+      apiType: 'openai',
+      providerName: ProviderName.Moonshot,
+      authType: 'apikey',
+      codingPlanEnabled: false,
+      supportsImage: true,
+      supportsThinking: true,
+      modelName: 'Kimi K2.6',
+      contextWindow: 262_144,
+    });
+
+    expect(selection.providerConfig.models[0]).toMatchObject({
+      id: 'kimi-k2.6',
+      input: ['text', 'image'],
+      contextWindow: 262_144,
+      maxTokens: 8192,
+    });
+    expect(selection.providerConfig.models[0].thinkingLevelMap).toBeUndefined();
+    expect(selection.providerConfig.models[0].compat).toBeUndefined();
+  });
+
   test('keeps MiniMax API key mode on the standard MiniMax provider', async () => {
     const { AuthType, OpenClawApi, OpenClawProviderId, ProviderName } = await import('../../shared/providers');
     const { buildProviderSelection } = await import('./openclawConfigSync');

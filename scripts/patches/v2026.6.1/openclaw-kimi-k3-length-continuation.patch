@@ -1,0 +1,522 @@
+diff --git a/src/agents/embedded-agent-runner/run.incomplete-turn.test.ts b/src/agents/embedded-agent-runner/run.incomplete-turn.test.ts
+index b23eb979..0c75171a 100644
+--- a/src/agents/embedded-agent-runner/run.incomplete-turn.test.ts
++++ b/src/agents/embedded-agent-runner/run.incomplete-turn.test.ts
+@@ -23,6 +23,7 @@ import {
+   EMPTY_RESPONSE_RETRY_INSTRUCTION,
+   extractPlanningOnlyPlanDetails,
+   isLikelyExecutionAckPrompt,
++  LENGTH_LIMITED_RETRY_INSTRUCTION,
+   PLANNING_ONLY_RETRY_INSTRUCTION,
+   REASONING_ONLY_RETRY_INSTRUCTION,
+   resolveAckExecutionFastPathInstruction,
+@@ -31,6 +32,7 @@ import {
+   resolvePlanningOnlyRetryInstruction,
+   isIncompleteTerminalAssistantTurn,
+   resolveIncompleteTurnPayloadText as resolveIncompleteTurnPayloadTextCore,
++  resolveLengthLimitedRetryInstruction,
+   resolveReasoningOnlyRetryInstruction,
+   STRICT_AGENTIC_BLOCKED_TEXT,
+   resolveReplayInvalidFlag,
+@@ -582,6 +584,47 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
+     expect(result.meta.livenessState).toBe("working");
+   });
+ 
++  it("continues a replay-safe length-limited turn and completes the task", async () => {
++    mockedClassifyFailoverReason.mockReturnValue(null);
++    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
++      makeAttemptResult({
++        assistantTexts: ["I will build the HTML file next."],
++        toolMetas: [{ toolName: "read", meta: "frontend-design/SKILL.md" }],
++        lastAssistant: {
++          role: "assistant",
++          stopReason: "length",
++          provider: "moonshot",
++          model: "kimi-k3",
++          content: [{ type: "text", text: "I will build the HTML file next." }],
++        } as unknown as EmbeddedRunAttemptResult["lastAssistant"],
++      }),
++    );
++    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
++      makeAttemptResult({
++        assistantTexts: ["Created index.html."],
++        toolMetas: [{ toolName: "write", meta: "index.html" }],
++        lastAssistant: {
++          role: "assistant",
++          stopReason: "stop",
++          provider: "moonshot",
++          model: "kimi-k3",
++          content: [{ type: "text", text: "Created index.html." }],
++        } as unknown as EmbeddedRunAttemptResult["lastAssistant"],
++      }),
++    );
++
++    await runEmbeddedAgent({
++      ...overflowBaseRunParams,
++      provider: "moonshot",
++      model: "kimi-k3",
++      runId: "run-kimi-k3-length-limited-continuation",
++    });
++
++    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
++    expect(runAttemptCall(1).prompt).toContain(LENGTH_LIMITED_RETRY_INSTRUCTION);
++    expectWarnMessageWith("length-limited assistant turn detected");
++  });
++
+   it("does not retry or warn on reasoning-only turns when a messaging tool already delivered", async () => {
+     mockedClassifyFailoverReason.mockReturnValue(null);
+     mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+@@ -1311,6 +1354,85 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
+         lastAssistant: { stopReason: "end_turn" },
+       }),
+     ).toBe(false);
++    expect(
++      isIncompleteTerminalAssistantTurn({
++        hasAssistantVisibleText: true,
++        lastAssistant: { stopReason: "length" },
++      }),
++    ).toBe(true);
++    expect(
++      isIncompleteTerminalAssistantTurn({
++        hasAssistantVisibleText: true,
++        hasTerminalOutput: true,
++        lastAssistant: { stopReason: "length" },
++      }),
++    ).toBe(false);
++  });
++
++  it("retries length-limited turns only when replay remains safe", () => {
++    const safeAttempt = makeAttemptResult({
++      assistantTexts: ["Partial plan"],
++      toolMetas: [{ toolName: "read", meta: "SKILL.md" }],
++      lastAssistant: {
++        role: "assistant",
++        stopReason: "length",
++        provider: "moonshot",
++        model: "kimi-k3",
++        content: [{ type: "text", text: "Partial plan" }],
++      } as unknown as EmbeddedRunAttemptResult["lastAssistant"],
++    });
++    expect(
++      resolveLengthLimitedRetryInstruction({
++        aborted: false,
++        timedOut: false,
++        attempt: safeAttempt,
++      }),
++    ).toBe(LENGTH_LIMITED_RETRY_INSTRUCTION);
++
++    const mutatingAttempt = makeAttemptResult({
++      ...safeAttempt,
++      toolMetas: [{ toolName: "write", meta: "index.html" }],
++      replayMetadata: undefined,
++    });
++    expect(
++      resolveLengthLimitedRetryInstruction({
++        aborted: false,
++        timedOut: false,
++        attempt: mutatingAttempt,
++      }),
++    ).toBeNull();
++
++    const terminalMediaAttempt = makeAttemptResult({
++      ...safeAttempt,
++      toolMediaUrls: ["file:///tmp/render.png"],
++    });
++    expect(
++      resolveLengthLimitedRetryInstruction({
++        aborted: false,
++        timedOut: false,
++        attempt: terminalMediaAttempt,
++      }),
++    ).toBeNull();
++  });
++
++  it("surfaces token-limited partial text as an incomplete turn after retries", () => {
++    const incompleteTurnText = resolveIncompleteTurnPayloadText({
++      payloadCount: 1,
++      aborted: false,
++      timedOut: false,
++      attempt: makeAttemptResult({
++        assistantTexts: ["Partial plan"],
++        lastAssistant: {
++          role: "assistant",
++          stopReason: "length",
++          provider: "moonshot",
++          model: "kimi-k3",
++          content: [{ type: "text", text: "Partial plan" }],
++        } as unknown as EmbeddedRunAttemptResult["lastAssistant"],
++      }),
++    });
++
++    expect(incompleteTurnText).toContain("couldn't generate a response");
+   });
+ 
+   it("surfaces no-visible-answer recovery for app-server interrupted tool-only output", () => {
+diff --git a/src/agents/embedded-agent-runner/run.ts b/src/agents/embedded-agent-runner/run.ts
+index ebdf0f90..a8837dda 100644
+--- a/src/agents/embedded-agent-runner/run.ts
++++ b/src/agents/embedded-agent-runner/run.ts
+@@ -161,12 +161,14 @@ import {
+ } from "./run/idle-timeout-breaker.js";
+ import {
+   DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT,
++  DEFAULT_LENGTH_LIMITED_RETRY_LIMIT,
+   DEFAULT_REASONING_ONLY_RETRY_LIMIT,
+   resolveAckExecutionFastPathInstruction,
+   resolveAttemptReplayMetadata,
+   extractPlanningOnlyPlanDetails,
+   resolveEmptyResponseRetryInstruction,
+   resolveIncompleteTurnPayloadText,
++  resolveLengthLimitedRetryInstruction,
+   resolvePlanningOnlyRetryLimit,
+   resolvePlanningOnlyRetryInstruction,
+   resolveReasoningOnlyRetryInstruction,
+@@ -1155,6 +1157,7 @@ export async function runEmbeddedAgent(
+       const maxPlanningOnlyRetryAttempts = resolvePlanningOnlyRetryLimit(executionContract);
+       const maxReasoningOnlyRetryAttempts = DEFAULT_REASONING_ONLY_RETRY_LIMIT;
+       const maxEmptyResponseRetryAttempts = DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT;
++      const maxLengthLimitedRetryAttempts = DEFAULT_LENGTH_LIMITED_RETRY_LIMIT;
+ 
+       const MAX_TIMEOUT_COMPACTION_ATTEMPTS = 2;
+       const MAX_OVERFLOW_COMPACTION_ATTEMPTS = 3;
+@@ -1178,6 +1181,7 @@ export async function runEmbeddedAgent(
+       let planningOnlyRetryAttempts = 0;
+       let reasoningOnlyRetryAttempts = 0;
+       let emptyResponseRetryAttempts = 0;
++      let lengthLimitedRetryAttempts = 0;
+       let compactionContinuationRetryAttempts = 0;
+       let beforeAgentFinalizeRevisionAttempts = 0;
+       let sameModelIdleTimeoutRetries = 0;
+@@ -1214,6 +1218,7 @@ export async function runEmbeddedAgent(
+       let planningOnlyRetryInstruction: string | null = null;
+       let reasoningOnlyRetryInstruction: string | null = null;
+       let emptyResponseRetryInstruction: string | null = null;
++      let lengthLimitedRetryInstruction: string | null = null;
+       let compactionContinuationRetryInstruction: string | null = null;
+       let nextAttemptPromptOverride: string | null = null;
+       const ackExecutionFastPathInstruction = resolveAckExecutionFastPathInstruction({
+@@ -1487,6 +1492,7 @@ export async function runEmbeddedAgent(
+             planningOnlyRetryInstruction,
+             reasoningOnlyRetryInstruction,
+             emptyResponseRetryInstruction,
++            lengthLimitedRetryInstruction,
+             compactionContinuationRetryInstruction,
+           ].filter(
+             (value): value is string => typeof value === "string" && value.trim().length > 0,
+@@ -3128,6 +3134,26 @@ export async function runEmbeddedAgent(
+                 timedOut,
+                 attempt,
+               });
++          const nextLengthLimitedRetryInstruction = emptyAssistantReplyIsSilent
++            ? null
++            : resolveLengthLimitedRetryInstruction({
++                aborted,
++                timedOut,
++                attempt,
++              });
++          if (
++            nextLengthLimitedRetryInstruction &&
++            lengthLimitedRetryAttempts < maxLengthLimitedRetryAttempts
++          ) {
++            lengthLimitedRetryAttempts += 1;
++            lengthLimitedRetryInstruction = nextLengthLimitedRetryInstruction;
++            log.warn(
++              `length-limited assistant turn detected: runId=${params.runId} sessionId=${params.sessionId} ` +
++                `provider=${activeErrorContext.provider}/${activeErrorContext.model} — retrying ${lengthLimitedRetryAttempts}/${maxLengthLimitedRetryAttempts} ` +
++                `with task-completion continuation`,
++            );
++            continue;
++          }
+           if (
+             nextPlanningOnlyRetryInstruction &&
+             planningOnlyRetryAttempts < maxPlanningOnlyRetryAttempts
+diff --git a/src/agents/embedded-agent-runner/run/incomplete-turn.ts b/src/agents/embedded-agent-runner/run/incomplete-turn.ts
+index cebb5376..bbf56f4d 100644
+--- a/src/agents/embedded-agent-runner/run/incomplete-turn.ts
++++ b/src/agents/embedded-agent-runner/run/incomplete-turn.ts
+@@ -41,6 +41,10 @@ type IncompleteTurnAttempt = Pick<
+   | "currentAttemptAssistant"
+   | "yieldDetected"
+   | "didSendDeterministicApprovalPrompt"
++  | "heartbeatToolResponse"
++  | "toolMediaUrls"
++  | "toolAudioAsVoice"
++  | "toolTrustedLocalMedia"
+   | "didSendViaMessagingTool"
+   | "messagingToolSentTexts"
+   | "messagingToolSentMediaUrls"
+@@ -52,6 +56,7 @@ type IncompleteTurnAttempt = Pick<
+   | "promptErrorSource"
+   | "timedOutDuringCompaction"
+   | "toolMetas"
++  | "successfulCronAdds"
+ > &
+   Partial<Pick<EmbeddedRunAttemptResult, "acceptedSessionSpawns">>;
+ 
+@@ -106,14 +111,13 @@ const REPLAY_UNSAFE_FALLBACK_METADATA: EmbeddedRunAttemptResult["replayMetadata"
+ 
+ export function isIncompleteTerminalAssistantTurn(params: {
+   hasAssistantVisibleText: boolean;
++  hasTerminalOutput?: boolean;
+   lastAssistant?: { stopReason?: string } | null;
+ }): boolean {
+-  // A tool-use stop reason means the model issued a tool call and expected
+-  // to continue after tool results. If the session ended before the
+-  // post-tool assistant message arrived, the turn is incomplete regardless
+-  // of whether pre-tool text exists — that text is preliminary analysis,
+-  // not the final answer. (#76477)
+-  return params.lastAssistant?.stopReason === "toolUse";
++  const stopReason = params.lastAssistant?.stopReason;
++  // Tool-use expects a post-tool continuation; length means the output budget
++  // ended before a complete final answer. Partial visible text completes neither.
++  return stopReason === "toolUse" || (stopReason === "length" && !params.hasTerminalOutput);
+ }
+ 
+ const PLANNING_ONLY_PROMISE_RE =
+@@ -168,6 +172,7 @@ const STRICT_AGENTIC_PLANNING_ONLY_RETRY_LIMIT = 2;
+ // surfacing the existing incomplete-turn error path.
+ export const DEFAULT_REASONING_ONLY_RETRY_LIMIT = 2;
+ export const DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT = 1;
++export const DEFAULT_LENGTH_LIMITED_RETRY_LIMIT = 1;
+ const ACK_EXECUTION_NORMALIZED_SET = new Set([
+   "ok",
+   "okay",
+@@ -220,6 +225,8 @@ export const REASONING_ONLY_RETRY_INSTRUCTION =
+   "The previous assistant turn recorded reasoning but did not produce a user-visible answer. Continue from that partial turn and produce the visible answer now. Do not restate the reasoning or restart from scratch.";
+ export const EMPTY_RESPONSE_RETRY_INSTRUCTION =
+   "The previous attempt did not produce a user-visible answer. Continue from the current state and produce the visible answer now. Do not restart from scratch.";
++export const LENGTH_LIMITED_RETRY_INSTRUCTION =
++  "The previous assistant turn reached the output token limit before completing the task. Continue from the current state now. Do not restart or repeat the plan. Use the required tools to finish the task, and only provide a final answer after completion.";
+ export const ACK_EXECUTION_FAST_PATH_INSTRUCTION =
+   "The latest user message is a short approval to proceed. Do not recap or restate the plan. Start with the first concrete tool action immediately. Keep any user-facing follow-up brief and natural.";
+ export const STRICT_AGENTIC_BLOCKED_TEXT =
+@@ -253,6 +260,51 @@ export function resolveAttemptReplayMetadata(attempt: {
+   return attempt.replayMetadata ?? REPLAY_UNSAFE_FALLBACK_METADATA;
+ }
+ 
++type TerminalAttemptState = Pick<
++  EmbeddedRunAttemptResult,
++  | "clientToolCalls"
++  | "yieldDetected"
++  | "didSendDeterministicApprovalPrompt"
++  | "heartbeatToolResponse"
++  | "lastToolError"
++  | "toolMediaUrls"
++  | "toolAudioAsVoice"
++  | "toolTrustedLocalMedia"
++  | "successfulCronAdds"
++> &
++  Partial<
++    Pick<
++      EmbeddedRunAttemptResult,
++      | "acceptedSessionSpawns"
++      | "messagingToolSentTexts"
++      | "messagingToolSentMediaUrls"
++      | "messagingToolSentTargets"
++    >
++  > & {
++    toolMetas?: readonly { asyncStarted?: boolean }[];
++  };
++
++export function hasAttemptTerminalState(attempt: TerminalAttemptState): boolean {
++  return Boolean(
++    attempt.clientToolCalls ||
++    attempt.yieldDetected ||
++    attempt.didSendDeterministicApprovalPrompt ||
++    attempt.heartbeatToolResponse ||
++    attempt.lastToolError ||
++    attempt.toolMediaUrls?.some((url) => url.trim().length > 0) ||
++    attempt.toolAudioAsVoice ||
++    attempt.toolTrustedLocalMedia ||
++    hasCommittedMessagingToolDeliveryEvidence({
++      messagingToolSentTexts: attempt.messagingToolSentTexts ?? [],
++      messagingToolSentMediaUrls: attempt.messagingToolSentMediaUrls ?? [],
++      messagingToolSentTargets: attempt.messagingToolSentTargets ?? [],
++    }) ||
++    hasAcceptedSessionSpawn(attempt.acceptedSessionSpawns) ||
++    hasAsyncStartedToolActivity(attempt.toolMetas) ||
++    (attempt.successfulCronAdds ?? 0) > 0
++  );
++}
++
+ export function resolveIncompleteTurnPayloadText(params: {
+   payloadCount: number;
+   aborted: boolean;
+@@ -260,15 +312,15 @@ export function resolveIncompleteTurnPayloadText(params: {
+   timedOut: boolean;
+   attempt: IncompleteTurnAttempt;
+ }): string | null {
+-  // Tool-use terminal guard: when the last assistant message ended with a
+-  // tool-call stop reason, the model expected to continue after tool results.
+-  // Pre-tool text alone (payloadCount > 0) must not suppress the incomplete-
+-  // turn check in that case — the final post-tool response was never
+-  // produced. (#76477)
+-  const toolUseTerminal = params.attempt.lastAssistant?.stopReason === "toolUse";
++  const assistant = params.attempt.currentAttemptAssistant ?? params.attempt.lastAssistant;
++  const incompleteTerminalAssistant = isIncompleteTerminalAssistantTurn({
++    hasAssistantVisibleText: params.payloadCount > 0,
++    hasTerminalOutput: hasAttemptTerminalState(params.attempt),
++    lastAssistant: assistant,
++  });
+ 
+   if (
+-    (params.payloadCount !== 0 && !toolUseTerminal) ||
++    (params.payloadCount !== 0 && !incompleteTerminalAssistant) ||
+     (params.aborted && params.externalAbort) ||
+     params.timedOut ||
+     params.attempt.clientToolCalls ||
+@@ -295,14 +347,8 @@ export function resolveIncompleteTurnPayloadText(params: {
+     return null;
+   }
+ 
+-  const stopReason = params.attempt.lastAssistant?.stopReason;
+-  const incompleteTerminalAssistant = isIncompleteTerminalAssistantTurn({
+-    hasAssistantVisibleText: params.payloadCount > 0,
+-    lastAssistant: params.attempt.lastAssistant,
+-  });
+-  const reasoningOnlyAssistant = isReasoningOnlyAssistantTurn(
+-    params.attempt.currentAttemptAssistant ?? params.attempt.lastAssistant,
+-  );
++  const stopReason = assistant?.stopReason;
++  const reasoningOnlyAssistant = isReasoningOnlyAssistantTurn(assistant);
+   const emptyResponseAssistant = isEmptyResponseAssistantTurn({
+     payloadCount: params.payloadCount,
+     attempt: params.attempt,
+@@ -373,6 +419,26 @@ export function shouldRetryMissingAssistantTurn(params: {
+   return !resolveAttemptReplayMetadata(params.attempt).hadPotentialSideEffects;
+ }
+ 
++export function resolveLengthLimitedRetryInstruction(params: {
++  aborted: boolean;
++  timedOut: boolean;
++  attempt: IncompleteTurnAttempt;
++}): string | null {
++  const assistant = params.attempt.currentAttemptAssistant ?? params.attempt.lastAssistant;
++  if (
++    assistant?.stopReason !== "length" ||
++    params.aborted ||
++    params.timedOut ||
++    hasAttemptTerminalState(params.attempt) ||
++    (params.attempt.itemLifecycle?.activeCount ?? 0) > 0 ||
++    resolveAttemptReplayMetadata(params.attempt).hadPotentialSideEffects
++  ) {
++    return null;
++  }
++
++  return LENGTH_LIMITED_RETRY_INSTRUCTION;
++}
++
+ function joinAssistantTexts(assistantTexts?: readonly string[]): string {
+   return (assistantTexts ?? []).join("\n\n").trim();
+ }
+diff --git a/src/config/config.schema-regressions.test.ts b/src/config/config.schema-regressions.test.ts
+index 86f16bdf..e3f8c689 100644
+--- a/src/config/config.schema-regressions.test.ts
++++ b/src/config/config.schema-regressions.test.ts
+@@ -487,4 +487,72 @@ describe("config schema regressions", () => {
+ 
+     expect(res.ok).toBe(true);
+   });
++
++  it("accepts the official Kimi K3 model entry carrying thinkingLevelMap", () => {
++    const res = validateConfigObject({
++      models: {
++        providers: {
++          moonshot: {
++            baseUrl: "https://api.moonshot.cn/v1",
++            api: "openai-completions",
++            models: [
++              {
++                id: "kimi-k3",
++                name: "Kimi K3",
++                reasoning: true,
++                input: ["text", "image", "video"],
++                contextWindow: 1_048_576,
++                maxTokens: 8192,
++                thinkingLevelMap: {
++                  off: null,
++                  minimal: "max",
++                  low: "max",
++                  medium: "max",
++                  high: "max",
++                  xhigh: "max",
++                  max: "max",
++                },
++                compat: {
++                  maxTokensField: "max_tokens",
++                  supportsUsageInStreaming: false,
++                  requiresStringContent: true,
++                  supportsReasoningEffort: true,
++                  supportedReasoningEfforts: [
++                    "minimal",
++                    "low",
++                    "medium",
++                    "high",
++                    "xhigh",
++                    "max",
++                  ],
++                },
++              },
++            ],
++          },
++        },
++      },
++    });
++
++    expect(res.ok).toBe(true);
++  });
++
++  it("rejects thinkingLevelMap keys outside the model thinking levels", () => {
++    const res = validateConfigObject({
++      models: {
++        providers: {
++          moonshot: {
++            models: [
++              {
++                id: "kimi-k3",
++                name: "Kimi K3",
++                thinkingLevelMap: { adaptive: "max" },
++              },
++            ],
++          },
++        },
++      },
++    });
++
++    expect(res.ok).toBe(false);
++  });
+ });
+diff --git a/src/config/zod-schema.core.ts b/src/config/zod-schema.core.ts
+index 73fd3826..b4e5821c 100644
+--- a/src/config/zod-schema.core.ts
++++ b/src/config/zod-schema.core.ts
+@@ -340,6 +340,21 @@ const ModelMediaInputSchema = z
+   })
+   .strict();
+ 
++// Mirrors the runtime ThinkingLevelMap contract (model-registry TypeBox schema). Persisted model
++// entries carry thinkingLevelMap, so the strict config schema must accept it or updateConfig rolls back.
++const ThinkingLevelMapValueSchema = z.string().nullable();
++const ThinkingLevelMapSchema = z
++  .object({
++    off: ThinkingLevelMapValueSchema.optional(),
++    minimal: ThinkingLevelMapValueSchema.optional(),
++    low: ThinkingLevelMapValueSchema.optional(),
++    medium: ThinkingLevelMapValueSchema.optional(),
++    high: ThinkingLevelMapValueSchema.optional(),
++    xhigh: ThinkingLevelMapValueSchema.optional(),
++    max: ThinkingLevelMapValueSchema.optional(),
++  })
++  .strict();
++
+ const ModelDefinitionSchema = z
+   .object({
+     id: z.string().min(1),
+@@ -377,6 +392,7 @@ const ModelDefinitionSchema = z
+     contextWindow: z.number().positive().optional(),
+     contextTokens: z.number().int().positive().optional(),
+     maxTokens: z.number().positive().optional(),
++    thinkingLevelMap: ThinkingLevelMapSchema.optional(),
+     params: z.record(z.string(), z.unknown()).optional(),
+     agentRuntime: ModelAgentRuntimePolicySchema,
+     headers: z.record(z.string(), z.string()).optional(),

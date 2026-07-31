@@ -318,15 +318,17 @@ const strongPatchValidators = {
     {
       file: 'src/agents/embedded-agent-runner/run/attempt.ts',
       snippets: [
-        'const PROMPT_TOOL_RESULT_AGGREGATE_CAP_MULTIPLIER = 4',
+        'truncateOversizedToolResultsInMessages(\n            activeSession.messages,',
+        'promptToolResultMaxChars,\n            null,',
+        'truncateOversizedToolResultsInMessages(\n                    messages,\n                    contextTokenBudget,\n                    promptToolResultMaxChars,\n                    null,',
+      ],
+      forbiddenSnippets: [
         'promptToolResultMaxChars * PROMPT_TOOL_RESULT_AGGREGATE_CAP_MULTIPLIER',
       ],
-      forbiddenSnippets: ['promptToolResultMaxChars,\n            null,'],
     },
     {
       file: 'src/agents/embedded-agent-runner/tool-result-truncation.ts',
-      snippets: ['aggregateMaxCharsOverride?: number'],
-      forbiddenSnippets: [
+      snippets: [
         'aggregateMaxCharsOverride?: number | null',
         'aggregateMaxCharsOverride === null',
         'Number.POSITIVE_INFINITY',
@@ -334,7 +336,7 @@ const strongPatchValidators = {
     },
     {
       file: 'src/agents/embedded-agent-runner/tool-result-truncation.test.ts',
-      snippets: ['keeps aggregate-bounded prompt projections byte-stable across retry and fallback'],
+      snippets: ['keeps prompt projections byte-stable as history grows'],
     },
   ],
   'zz-openclaw-task-cwd-system-prompt.patch': [

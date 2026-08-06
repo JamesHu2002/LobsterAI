@@ -25,6 +25,7 @@ import { CoworkUiEvent } from './cowork/constants';
 import CoworkSearchModal from './cowork/CoworkSearchModal';
 import Cog6ToothIcon from './icons/Cog6ToothIcon';
 import ComposeIcon from './icons/ComposeIcon';
+import ChartBarIcon from './icons/ChartBarIcon';
 import SidebarAutomationIcon from './icons/SidebarAutomationIcon';
 import SidebarKitsIcon from './icons/SidebarKitsIcon';
 import SidebarMcpIcon from './icons/SidebarMcpIcon';
@@ -33,19 +34,17 @@ import SidebarSitesIcon from './icons/SidebarSitesIcon';
 import SidebarToggleIcon from './icons/SidebarToggleIcon';
 import SkillIcon from './icons/SkillIcon';
 import TrashIcon from './icons/TrashIcon';
-import LoginButton from './LoginButton';
-import SidebarExperienceSlot from './SidebarExperienceSlot';
 
 interface SidebarProps {
   onShowSettings: () => void;
-  onShowLogin?: () => void;
-  activeView: 'cowork' | 'skills' | 'scheduledTasks' | 'kits' | 'mcp' | 'sites';
+  activeView: 'cowork' | 'skills' | 'scheduledTasks' | 'kits' | 'mcp' | 'sites' | 'benchmark';
   onShowSkills: () => void;
   onShowCowork: () => void;
   onShowScheduledTasks: () => void;
   onShowKits: () => void;
   onShowMcp: () => void;
   onShowSites: () => void;
+  onShowBenchmark: () => void;
   onNewChat: () => void;
   isCollapsed: boolean;
   onToggleCollapse: () => void;
@@ -53,8 +52,6 @@ interface SidebarProps {
   updateNotice?: React.ReactNode;
   /** The expanded update card owns the sidebar bottom; temporarily hide the
    * promo banner while preserving it for a smooth return after collapse. */
-  hideAdBanner?: boolean;
-  hideLogin?: boolean;
   hideSites?: boolean;
 }
 
@@ -139,13 +136,12 @@ const Sidebar: React.FC<SidebarProps> = ({
   onShowKits,
   onShowMcp,
   onShowSites,
+  onShowBenchmark,
   onNewChat,
   isCollapsed,
   onToggleCollapse,
   onWidthChange,
   updateNotice,
-  hideAdBanner,
-  hideLogin,
   hideSites,
 }) => {
   const currentAgentId = useSelector((state: RootState) => state.agent.currentAgentId);
@@ -162,7 +158,6 @@ const Sidebar: React.FC<SidebarProps> = ({
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
   const [isResizing, setIsResizing] = useState(false);
   const [agentScrollEdges, setAgentScrollEdges] = useState({ top: false, bottom: false });
-  const [isSidebarBannerVisible, setIsSidebarBannerVisible] = useState(false);
   const [showKitsNewBadge, setShowKitsNewBadge] = useState(false);
   const isResizingRef = useRef(false);
   const resizeStartXRef = useRef(0);
@@ -582,6 +577,19 @@ const Sidebar: React.FC<SidebarProps> = ({
           <button
             type="button"
             onClick={() => {
+              reportSidebarAction('open_benchmark', { activeView, isCollapsed });
+              setIsSearchOpen(false);
+              onShowBenchmark();
+            }}
+            className={activeView === 'benchmark' ? activeSidebarNavItemClassName : sidebarNavItemClassName}
+            aria-current={activeView === 'benchmark' ? 'page' : undefined}
+          >
+            <ChartBarIcon className="h-4 w-4 shrink-0" />
+            {i18nService.t('benchmark')}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
               reportSidebarAction('open_kits', { activeView, isCollapsed });
               setIsSearchOpen(false);
               dismissKitsNewBadge();
@@ -644,9 +652,7 @@ const Sidebar: React.FC<SidebarProps> = ({
       <div className="relative min-h-0 flex-1">
         <div
           ref={agentScrollContainerRef}
-          className={`scrollbar-hidden h-full overflow-y-auto px-2.5 ${
-            isSidebarBannerVisible && !isBatchMode ? 'pb-[128px]' : 'pb-10'
-          }`}
+          className="scrollbar-hidden h-full overflow-y-auto px-2.5 pb-10"
           onScroll={handleAgentScroll}
         >
           <MyAgentSidebarTree
@@ -676,12 +682,6 @@ const Sidebar: React.FC<SidebarProps> = ({
             onBatchSelectableItemsChange={handleBatchSelectableItemsChange}
           />
         </div>
-        {!isBatchMode && (
-          <SidebarExperienceSlot
-            hidden={hideAdBanner}
-            onVisibleChange={setIsSidebarBannerVisible}
-          />
-        )}
         <div
           className={`pointer-events-none absolute inset-x-0 top-0 z-10 h-24 bg-gradient-to-b from-surface-raised to-transparent transition-opacity duration-150 ${
             agentScrollEdges.top ? 'opacity-100' : 'opacity-0'
@@ -755,15 +755,10 @@ const Sidebar: React.FC<SidebarProps> = ({
       ) : (
         <div className="pb-2 pt-2">
           <div className="flex items-center gap-1 pl-3 pr-2 pt-1">
-            {!hideLogin && (
-              <div className="flex-1 min-w-0">
-                <LoginButton contentLeftOffset={isCollapsed ? 0 : sidebarWidth} />
-              </div>
-            )}
             <button
               type="button"
               onClick={() => onShowSettings()}
-              className={`inline-flex h-7 items-center justify-start gap-1.5 rounded-md px-1.5 text-sm font-normal text-foreground transition-colors hover:bg-black/[0.03] dark:hover:bg-white/[0.04] ${hideLogin ? 'w-full' : 'shrink-0'}`}
+              className="inline-flex h-7 w-full items-center justify-start gap-1.5 rounded-md px-1.5 text-sm font-normal text-foreground transition-colors hover:bg-black/[0.03] dark:hover:bg-white/[0.04]"
               aria-label={i18nService.t('settings')}
             >
               <Cog6ToothIcon className="h-4 w-4 shrink-0" />

@@ -317,6 +317,47 @@ export class SqliteStore {
       // Migration not needed
     }
 
+    // Benchmark (model evaluation) tables
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS benchmark_runs (
+        id TEXT PRIMARY KEY,
+        dataset_id TEXT NOT NULL,
+        dataset_label TEXT NOT NULL,
+        model_ref TEXT NOT NULL,
+        model_label TEXT NOT NULL,
+        config TEXT NOT NULL,
+        status TEXT NOT NULL,
+        total INTEGER NOT NULL DEFAULT 0,
+        done INTEGER NOT NULL DEFAULT 0,
+        passed INTEGER NOT NULL DEFAULT 0,
+        failed INTEGER NOT NULL DEFAULT 0,
+        started_at INTEGER NOT NULL,
+        finished_at INTEGER,
+        error TEXT
+      );
+    `);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS benchmark_task_results (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        task_data TEXT NOT NULL,
+        status TEXT NOT NULL,
+        session_key TEXT,
+        started_at INTEGER NOT NULL,
+        finished_at INTEGER,
+        duration_ms INTEGER,
+        metrics TEXT,
+        match TEXT,
+        error TEXT,
+        UNIQUE(run_id, task_id)
+      );
+    `);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_benchmark_task_results_run
+      ON benchmark_task_results(run_id);
+    `);
+
     // Migration: add config column to user_plugins
     try {
       const pluginCols = this.db.pragma('table_info(user_plugins)') as Array<{ name: string }>;

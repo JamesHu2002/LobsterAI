@@ -1733,6 +1733,68 @@ interface IElectronAPI {
     ) => () => void;
     onRefresh: (callback: () => void) => () => void;
   };
+  benchmark: {
+    listRuns: () => Promise<{
+      success: boolean;
+      runs?: import('../../benchmark/types').BenchmarkRun[];
+      error?: string;
+    }>;
+    getRun: (id: string) => Promise<{
+      success: boolean;
+      run?: import('../../benchmark/types').BenchmarkRun | null;
+      error?: string;
+    }>;
+    startRun: (
+      config: import('../../benchmark/types').BenchmarkRunConfig,
+      modelLabels?: string[],
+    ) => Promise<{
+      success: boolean;
+      runIds?: string[];
+      error?: string;
+    }>;
+    cancelRun: (id: string) => Promise<{ success: boolean; error?: string }>;
+    deleteRun: (id: string) => Promise<{ success: boolean; error?: string }>;
+    listTaskResults: (
+      runId: string,
+      limit?: number,
+      offset?: number,
+    ) => Promise<{
+      success: boolean;
+      results?: import('../../benchmark/types').BenchmarkTaskResult[];
+      total?: number;
+      hasMore?: boolean;
+      error?: string;
+    }>;
+    getReport: (runId: string) => Promise<{
+      success: boolean;
+      report?: import('../../benchmark/types').BenchmarkReport | null;
+      error?: string;
+    }>;
+    datasetList: () => Promise<{
+      success: boolean;
+      datasets?: import('../../benchmark/types').BenchmarkDatasetInfo[];
+      error?: string;
+    }>;
+    datasetGetStatus: (datasetId: string) => Promise<{
+      success: boolean;
+      status?: import('../../benchmark/types').DatasetStatus;
+      error?: string;
+    }>;
+    datasetLoad: (
+      datasetId: string,
+      opts?: { forceRefresh?: boolean },
+    ) => Promise<{
+      success: boolean;
+      tasks?: import('../../benchmark/types').BenchmarkTask[];
+      size?: number;
+      error?: string;
+    }>;
+    setHfToken: (token: string) => Promise<{ success: boolean; error?: string }>;
+    onProgressUpdate: (callback: (data: import('../../benchmark/types').BenchmarkProgressUpdateEvent) => void) => () => void;
+    onTaskCompleted: (callback: (data: import('../../benchmark/types').BenchmarkTaskResult) => void) => () => void;
+    onRunStatusChange: (callback: (data: import('../../benchmark/types').BenchmarkRun) => void) => () => void;
+    onDatasetLoadProgress: (callback: (data: import('../../benchmark/types').DatasetLoadProgressEvent) => void) => () => void;
+  };
   permissions: {
     checkCalendar: () => Promise<{
       success: boolean;

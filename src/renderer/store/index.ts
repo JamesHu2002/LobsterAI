@@ -2,6 +2,7 @@ import { configureStore } from '@reduxjs/toolkit';
 
 import agentReducer from './slices/agentSlice';
 import artifactReducer from './slices/artifactSlice';
+import benchmarkReducer from './slices/benchmarkSlice';
 import asrQuotaReducer from './slices/asrQuotaSlice';
 import authReducer from './slices/authSlice';
 import coworkReducer from './slices/coworkSlice';
@@ -27,6 +28,7 @@ export const store = configureStore({
     auth: authReducer,
     artifact: artifactReducer,
     kit: kitReducer,
+    benchmark: benchmarkReducer,
   },
 });
 

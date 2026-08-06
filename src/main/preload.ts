@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 
+import { IpcChannel as BenchmarkIpc } from '../benchmark/constants';
 import { IpcChannel as ScheduledTaskIpc } from '../scheduledTask/constants';
 import {
   type ActivityHostExecuteActionInput,
@@ -1132,6 +1133,43 @@ contextBridge.exposeInMainWorld('electron', {
       const handler = () => callback();
       ipcRenderer.on(ScheduledTaskIpc.Refresh, handler);
       return () => ipcRenderer.removeListener(ScheduledTaskIpc.Refresh, handler);
+    },
+  },
+  benchmark: {
+    listRuns: () => ipcRenderer.invoke(BenchmarkIpc.ListRuns),
+    getRun: (id: string) => ipcRenderer.invoke(BenchmarkIpc.GetRun, id),
+    startRun: (config: any, modelLabels?: string[]) =>
+      ipcRenderer.invoke(BenchmarkIpc.StartRun, config, modelLabels),
+    cancelRun: (id: string) => ipcRenderer.invoke(BenchmarkIpc.CancelRun, id),
+    deleteRun: (id: string) => ipcRenderer.invoke(BenchmarkIpc.DeleteRun, id),
+    listTaskResults: (runId: string, limit?: number, offset?: number) =>
+      ipcRenderer.invoke(BenchmarkIpc.ListTaskResults, runId, limit, offset),
+    getReport: (runId: string) => ipcRenderer.invoke(BenchmarkIpc.GetReport, runId),
+    datasetList: () => ipcRenderer.invoke(BenchmarkIpc.DatasetList),
+    datasetGetStatus: (datasetId: string) =>
+      ipcRenderer.invoke(BenchmarkIpc.DatasetGetStatus, datasetId),
+    datasetLoad: (datasetId: string, opts?: { forceRefresh?: boolean }) =>
+      ipcRenderer.invoke(BenchmarkIpc.DatasetLoad, datasetId, opts),
+    setHfToken: (token: string) => ipcRenderer.invoke(BenchmarkIpc.SetHfToken, token),
+    onProgressUpdate: (callback: (data: any) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on(BenchmarkIpc.ProgressUpdate, handler);
+      return () => ipcRenderer.removeListener(BenchmarkIpc.ProgressUpdate, handler);
+    },
+    onTaskCompleted: (callback: (data: any) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on(BenchmarkIpc.TaskCompleted, handler);
+      return () => ipcRenderer.removeListener(BenchmarkIpc.TaskCompleted, handler);
+    },
+    onRunStatusChange: (callback: (data: any) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on(BenchmarkIpc.RunStatusChange, handler);
+      return () => ipcRenderer.removeListener(BenchmarkIpc.RunStatusChange, handler);
+    },
+    onDatasetLoadProgress: (callback: (data: any) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on(BenchmarkIpc.DatasetLoadProgress, handler);
+      return () => ipcRenderer.removeListener(BenchmarkIpc.DatasetLoadProgress, handler);
     },
   },
   networkStatus: {

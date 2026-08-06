@@ -194,6 +194,13 @@ import { registerKitHandlers } from './ipcHandlers/kits';
 import { registerMcpHandlers } from './ipcHandlers/mcp';
 import { registerNimQrLoginHandlers } from './ipcHandlers/nimQrLogin';
 import { registerPermissionIpcHandlers } from './ipcHandlers/permissions/handlers';
+import {
+  registerBenchmarkHandlers,
+  benchmarkEventChannel,
+} from './ipcHandlers/benchmark';
+import { BenchmarkRunner } from './benchmark/benchmarkRunner';
+import { DatasetLoader } from './benchmark/datasetLoader';
+import { BenchmarkStore } from './benchmarkStore';
 import { registerPluginHandlers } from './ipcHandlers/plugins';
 import {
   getCronJobService,
@@ -9054,6 +9061,45 @@ if (!gotTheLock) {
       getCoworkStore().getSession(sessionId, 0)?.title ?? null,
   };
   registerScheduledTaskHandlers(scheduledTaskHandlerDeps);
+
+  // ==================== Benchmark (model evaluation) ====================
+  const benchmarkBroadcast = (event: unknown): void => {
+    const { channel, payload } = benchmarkEventChannel(event as never);
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) {
+        win.webContents.send(channel, payload);
+      }
+    }
+  };
+  let benchmarkStoreInstance: BenchmarkStore | null = null;
+  const getBenchmarkStore = (): BenchmarkStore => {
+    benchmarkStoreInstance ??= new BenchmarkStore(getStore().getDatabase());
+    return benchmarkStoreInstance;
+  };
+  let benchmarkDatasetLoaderInstance: DatasetLoader | null = null;
+  const getBenchmarkDatasetLoader = (): DatasetLoader => {
+    benchmarkDatasetLoaderInstance ??= new DatasetLoader({
+      getHfToken: () => getStore().get<{ hfToken?: string }>('benchmark_config')?.hfToken ?? null,
+      emitProgress: (event) => benchmarkBroadcast(event),
+    });
+    return benchmarkDatasetLoaderInstance;
+  };
+  let benchmarkRunnerInstance: BenchmarkRunner | null = null;
+  const getBenchmarkRunner = (): BenchmarkRunner => {
+    benchmarkRunnerInstance ??= new BenchmarkRunner({
+      getBenchmarkStore,
+      getDatasetLoader: getBenchmarkDatasetLoader,
+      getOpenClawEngineManager,
+      emit: (event) => benchmarkBroadcast(event),
+    });
+    return benchmarkRunnerInstance;
+  };
+  registerBenchmarkHandlers({
+    getBenchmarkStore,
+    getBenchmarkRunner,
+    getDatasetLoader: getBenchmarkDatasetLoader,
+    getStore,
+  });
 
   registerNimQrLoginHandlers({
     startNimQrLogin,

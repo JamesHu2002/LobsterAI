@@ -1,20 +1,17 @@
 import { CheckIcon } from '@heroicons/react/24/outline';
 import { canonicalizeMediaModelId, GPT_IMAGE_2_MODEL_ID, mediaModelDisplayName } from '@shared/mediaModelAliases';
 import { ProviderName } from '@shared/providers';
-import Lottie from 'lottie-react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useDispatch, useSelector } from 'react-redux';
 
 import { getProviderIcon, ProviderIconId } from '../../providers/uiRegistry';
-import { authService } from '../../services/auth';
 import { i18nService } from '../../services/i18n';
 import { localStore } from '../../services/store';
 import { RootState } from '../../store';
 import { setMediaModels, setMediaSelection } from '../../store/slices/coworkSlice';
 import type { MediaGenerationMode, MediaModel } from '../../types/mediaGeneration';
 import MagicIcon from '../icons/MagicIcon';
-import mediaGenAnimation from '../icons/MediaGenIcon.json';
 
 interface SavedMediaSelection {
   image?: { modelId: string; modelName: string };
@@ -562,10 +559,6 @@ const MediaModelPicker: React.FC<MediaModelPickerProps> = ({ draftKey, disabled 
   const [hoverCardStyle, setHoverCardStyle] = useState<React.CSSProperties>({});
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const isLoggedIn = useSelector((state: RootState) => state.auth.isLoggedIn);
-  const authQuota = useSelector((state: RootState) => state.auth.quota);
-  const canUseMediaGeneration = isLoggedIn && (authQuota?.subscriptionStatus === 'active' || authQuota?.hasPaidCredits === true);
-
   const mediaModels = useSelector((state: RootState) => state.cowork.mediaModels);
   const selection = useSelector((state: RootState) => state.cowork.mediaSelection[draftKey]);
 
@@ -634,10 +627,10 @@ const MediaModelPicker: React.FC<MediaModelPickerProps> = ({ draftKey, disabled 
   }, [dispatch, draftKey, mediaModels.image.length, mediaModels.video.length]);
 
   useEffect(() => {
-    if (isOpen && canUseMediaGeneration) {
+    if (isOpen) {
       fetchModels();
     }
-  }, [isOpen, canUseMediaGeneration, fetchModels]);
+  }, [isOpen, fetchModels]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -734,17 +727,6 @@ const MediaModelPicker: React.FC<MediaModelPickerProps> = ({ draftKey, disabled 
     } else {
       dispatch(setMediaSelection({ draftKey, selection: { mode: 'none' } }));
     }
-  };
-
-  const handleLogin = async () => {
-    setIsOpen(false);
-    await authService.login();
-  };
-
-  const handleSubscribe = async () => {
-    setIsOpen(false);
-    const { getPortalPricingUrl } = await import('../../services/endpoints');
-    await window.electron.shell.openExternal(getPortalPricingUrl());
   };
 
   const handleModelHover = (model: MediaModel, event: React.MouseEvent<HTMLButtonElement>) => {
@@ -969,59 +951,10 @@ const MediaModelPicker: React.FC<MediaModelPickerProps> = ({ draftKey, disabled 
     <MagicIcon className="h-5 w-5" />
   );
 
-  const renderPromptPanel = (title: string, desc: string, btnLabel: string, onBtn: () => void, secondaryLabel?: string, onSecondary?: () => void) => (
-    <div className="px-4 py-5">
-      <div className="flex justify-center mb-3">
-        <Lottie
-          animationData={mediaGenAnimation}
-          loop={false}
-          autoplay={true}
-          style={{ width: 80, height: 80 }}
-          key={Date.now()}
-        />
-      </div>
-      <div className="text-[13px] font-medium text-foreground text-center">{title}</div>
-      <div className="text-[12px] text-secondary mt-1 text-center">{desc}</div>
-      <button
-        type="button"
-        onClick={onBtn}
-        className="mt-3 w-full rounded-lg bg-primary px-3 py-1.5 text-[12px] font-medium text-white hover:bg-primary/90 transition-colors"
-      >
-        {btnLabel}
-      </button>
-      {secondaryLabel && onSecondary && (
-        <div
-          onClick={onSecondary}
-          className="mt-2 text-center text-[12px] text-secondary hover:text-foreground cursor-pointer transition-colors"
-        >
-          {secondaryLabel}
-        </div>
-      )}
-    </div>
-  );
-
   const renderDropdownContent = () => {
-    if (!isLoggedIn) {
-      return renderPromptPanel(
-        i18nService.t('mediaLoginTitle'),
-        i18nService.t('mediaLoginDesc'),
-        i18nService.t('mediaLoginBtn'),
-        handleLogin,
-        i18nService.t('mediaLearnMore'),
-        handleSubscribe,
-      );
-    }
-
-    if (!canUseMediaGeneration) {
-      return renderPromptPanel(
-        i18nService.t('mediaSubscribeTitle'),
-        i18nService.t('mediaSubscribeDesc'),
-        i18nService.t('mediaSubscribeBtn'),
-        handleSubscribe,
-      );
-    }
-
-  const handleTabSwitch = (tab: 'image' | 'video') => {
+    // NetEase login/subscribe gating is removed; media models come from the
+    // user's own configured providers.
+    const handleTabSwitch = (tab: 'image' | 'video') => {
     setActiveTab(tab);
   };
 

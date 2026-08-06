@@ -18,6 +18,7 @@ import CoworkQuestionWizard from './components/cowork/CoworkQuestionWizard';
 import EngineFailureOverlay from './components/cowork/EngineFailureOverlay';
 import EngineStartupOverlay from './components/cowork/EngineStartupOverlay';
 import KitsView from './components/kits/KitsView';
+import { BenchmarkView } from './components/benchmark';
 import { McpView } from './components/mcp';
 import { ScheduledTasksView } from './components/scheduledTasks';
 import Settings, { type SettingsOpenOptions } from './components/Settings';
@@ -26,7 +27,6 @@ import { SitesView } from './components/sites';
 import { SkillsView } from './components/skills';
 import SkinBackdrop, { SkinBackdropVariant } from './components/skin/SkinBackdrop';
 import SkinPresentationScope from './components/skin/SkinPresentationScope';
-import StartupCreditCampaign from './components/StartupCreditCampaign';
 import Toast from './components/Toast';
 import AppUpdateBadge from './components/update/AppUpdateBadge';
 import AppUpdateBlockingPanel from './components/update/AppUpdateBlockingPanel';
@@ -38,9 +38,7 @@ import {
   shouldBlockAppInteractionForUpdate,
 } from './components/update/appUpdateInteractionState';
 import AppUpdateModal from './components/update/AppUpdateModal';
-import WelcomeDialog from './components/WelcomeDialog';
 import WindowsAppTitleBar from './components/window/WindowsAppTitleBar';
-import WindowTitleBar from './components/window/WindowTitleBar';
 import { defaultConfig, getProviderDisplayName, ShortcutAction } from './config';
 import { SkinProvider } from './providers/SkinProvider';
 import type { ApiConfig } from './services/api';
@@ -49,6 +47,7 @@ import { authService } from './services/auth';
 import { configService } from './services/config';
 import { coworkService } from './services/cowork';
 import { isTestModeEnabled } from './services/endpoints';
+import { benchmarkService } from './services/benchmark';
 import { i18nService } from './services/i18n';
 import { LogReporterAction, reportYdAnalyzer } from './services/logReporter';
 import { scheduledTaskService } from './services/scheduledTask';
@@ -126,7 +125,7 @@ const logAppUpdateRendererLifecycle = (
 const App: React.FC = () => {
   const [showSettings, setShowSettings] = useState(false);
   const [settingsOptions, setSettingsOptions] = useState<SettingsOpenOptions & { requestId: number }>({ requestId: 0 });
-  const [mainView, setMainView] = useState<'cowork' | 'skills' | 'scheduledTasks' | 'kits' | 'mcp' | 'sites'>('cowork');
+  const [mainView, setMainView] = useState<'cowork' | 'skills' | 'scheduledTasks' | 'kits' | 'mcp' | 'sites' | 'benchmark'>('cowork');
   const [isInitialized, setIsInitialized] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -143,10 +142,7 @@ const App: React.FC = () => {
     errorMessage: null,
   });
   const [showUpdateModal, setShowUpdateModal] = useState(false);
-  const [isUpdateCardExpanded, setIsUpdateCardExpanded] = useState(false);
   const [isUserInitiatedUpdateFlowActive, setIsUserInitiatedUpdateFlowActive] = useState(false);
-  const [privacyAgreed, setPrivacyAgreed] = useState<boolean | null>(null);
-  const [welcomeLoginPending, setWelcomeLoginPending] = useState(false);
   const [enterpriseConfig, setEnterpriseConfig] = useState<{
     ui?: Record<string, 'hide' | 'disable' | 'readonly'>;
     disableUpdate?: boolean;
@@ -280,10 +276,8 @@ const App: React.FC = () => {
         }
         mark('model resolution done');
 
-        const agreed = await window.electron.store.get('privacy_agreed');
-        setPrivacyAgreed(agreed === true);
-        mark('privacy check done');
-
+        // NetEase login bypass: the app always runs on the user's own API-key
+        // providers (the "custom model" path) with no welcome/login gate.
         setIsInitialized(true);
         mark('shell ready');
         if (!hasReportedAppStartedRef.current) {
@@ -297,6 +291,9 @@ const App: React.FC = () => {
 
         void waitWithTimeout(scheduledTaskService.init(), 5000, 'scheduledTaskService.init').catch((error) => {
           console.error('[App] initializeApp: scheduledTaskService.init failed:', error);
+        });
+        void waitWithTimeout(benchmarkService.init(), 5000, 'benchmarkService.init').catch((error) => {
+          console.error('[App] initializeApp: benchmarkService.init failed:', error);
         });
 
       } catch (error) {
@@ -400,6 +397,10 @@ const App: React.FC = () => {
 
   const handleShowScheduledTasks = useCallback(() => {
     setMainView('scheduledTasks');
+  }, []);
+
+  const handleShowBenchmark = useCallback(() => {
+    setMainView('benchmark');
   }, []);
 
   const handleShowMcp = useCallback(() => {
@@ -620,10 +621,6 @@ const App: React.FC = () => {
     };
   }, [showToast, stopUserInitiatedUpdateFlow]);
 
-  const handleShowLogin = useCallback(() => {
-    showToast(i18nService.t('featureInDevelopment'));
-  }, [showToast]);
-
   const runUpdateCheck = useCallback(async () => {
     try {
       const result = await window.electron.appUpdate.checkNow({ userId: authUser?.yid });
@@ -752,40 +749,8 @@ const App: React.FC = () => {
     await handleConfirmUpdate();
   }, [handleConfirmUpdate]);
 
-  // Continuing from the welcome screen (login or custom model) counts as accepting the agreement.
-  const acceptPrivacyAgreement = useCallback(async () => {
-    await window.electron.store.set('privacy_agreed', true);
-    setPrivacyAgreed(true);
-  }, []);
-
-  // Login keeps the welcome gate on screen while the browser flow runs; the
-  // effect below releases the gate only once the user is actually logged in.
-  const handleWelcomeLogin = useCallback(async () => {
-    setWelcomeLoginPending(true);
-    try {
-      await authService.login();
-    } catch (error) {
-      console.error('[App] welcome login failed before browser handoff:', error);
-      setWelcomeLoginPending(false);
-      showToast(i18nService.t('welcomeLoginFailed'));
-    }
-  }, [showToast]);
-  const handleWelcomeCancelLogin = useCallback(() => {
-    setWelcomeLoginPending(false);
-  }, []);
-  const handleWelcomeCustomModel = useCallback(async () => {
-    await acceptPrivacyAgreement();
-    handleShowSettings({ initialTab: 'model' });
-  }, [acceptPrivacyAgreement, handleShowSettings]);
-
-  // Release the first-launch gate once login completes — including when the
-  // browser callback lands after the user tapped back on the welcome screen.
-  useEffect(() => {
-    if (privacyAgreed === false && authUser) {
-      void acceptPrivacyAgreement();
-    }
-  }, [privacyAgreed, authUser, acceptPrivacyAgreement]);
-
+  // NetEase account login is intentionally removed. The app always runs on the
+  // user's own API-key providers (the "custom model" path).
   const handlePermissionResponse = useCallback(async (result: CoworkPermissionResult) => {
     if (!pendingPermission) return;
     await coworkService.respondToPermission(pendingPermission.requestId, result);
@@ -1248,7 +1213,6 @@ const App: React.FC = () => {
       onUpdate={handleConfirmUpdate}
       onShowDetails={handleOpenUpdateModal}
       onCancelDownload={handleCancelDownload}
-      onExpandedChange={setIsUpdateCardExpanded}
     />
   ) : null;
   const canUseWindowsTopBarActions = isInitialized && !initError && !isUpdateInteractionBlocked;
@@ -1322,35 +1286,8 @@ const App: React.FC = () => {
     );
   }
 
-  if (privacyAgreed === false) {
-    // First-launch gate: render only the welcome screen — no app chrome (title
-    // bar/sidebar) until the agreement is accepted. An invisible drag strip
-    // keeps the frameless window movable; Windows caption buttons stay on top.
-    return (
-      <div className="relative h-screen overflow-hidden">
-        {toastMessage && (
-          <Toast
-            message={toastMessage}
-            closeLabel={i18nService.t('close')}
-            onClose={() => setToastMessage(null)}
-          />
-        )}
-        <WelcomeDialog
-          onLogin={handleWelcomeLogin}
-          loginPending={welcomeLoginPending}
-          onCancelLogin={handleWelcomeCancelLogin}
-          onCustomModel={handleWelcomeCustomModel}
-        />
-        <div className="draggable absolute inset-x-0 top-0 z-[70] h-9" />
-        {isWindows && (
-          <div className="absolute right-0 top-0 z-[80] h-9">
-            <WindowTitleBar inline />
-          </div>
-        )}
-      </div>
-    );
-  }
-
+  // The NetEase welcome/login gate is removed (privacy is always accepted), so
+  // the app always boots straight into the shell.
   return (
     <SkinProvider>
       <SkinPresentationScope
@@ -1364,23 +1301,18 @@ const App: React.FC = () => {
           onClose={() => setToastMessage(null)}
         />
       )}
-      {/* The welcome screen renders via the early return above, so agreement
-          alone gates the campaign here (no separate showWelcome flag). */}
-      <StartupCreditCampaign
-        enabled={privacyAgreed === true}
-      />
       {windowsStandaloneTitleBar}
       <div
         className="relative flex flex-1 min-h-0 overflow-hidden"
         aria-busy={isUpdateInteractionBlocked}
       >
         <Sidebar
-          onShowLogin={handleShowLogin}
           onShowSettings={handleShowSettings}
           activeView={mainView}
           onShowSkills={handleShowSkills}
           onShowCowork={handleShowCowork}
           onShowScheduledTasks={handleShowScheduledTasks}
+          onShowBenchmark={handleShowBenchmark}
           onShowKits={handleShowKits}
           onShowMcp={handleShowMcp}
           onShowSites={handleShowSites}
@@ -1389,8 +1321,6 @@ const App: React.FC = () => {
           onToggleCollapse={handleToggleSidebar}
           onWidthChange={setSidebarWidth}
           updateNotice={!isSidebarCollapsed && !isUpdateInteractionBlocked ? updateCard : null}
-          hideAdBanner={isUpdateCardExpanded}
-          hideLogin={enterpriseConfig?.ui?.login === 'hide'}
           hideSites={!isTestModeEnabled() || enterpriseConfig?.ui?.sites === 'hide'}
         />
         <div className={`flex-1 min-w-0 transition-[padding] duration-200 ease-out ${isSidebarCollapsed ? 'pl-1.5' : ''}`}>
@@ -1414,6 +1344,13 @@ const App: React.FC = () => {
               />
             ) : mainView === 'scheduledTasks' ? (
               <ScheduledTasksView
+                isSidebarCollapsed={isSidebarCollapsed}
+                onToggleSidebar={handleToggleSidebar}
+                onNewChat={handleNewChat}
+                updateBadge={collapsedHeaderUpdateBadge}
+              />
+            ) : mainView === 'benchmark' ? (
+              <BenchmarkView
                 isSidebarCollapsed={isSidebarCollapsed}
                 onToggleSidebar={handleToggleSidebar}
                 onNewChat={handleNewChat}

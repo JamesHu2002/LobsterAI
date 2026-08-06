@@ -12,7 +12,6 @@ import { createPortal } from 'react-dom';
 import { useDispatch, useSelector } from 'react-redux';
 
 import { getProviderIcon, ProviderIconId } from '../providers/uiRegistry';
-import { authService } from '../services/auth';
 import { i18nService } from '../services/i18n';
 import { RootState } from '../store';
 import type { Model } from '../store/slices/modelSlice';
@@ -117,8 +116,8 @@ export const ModelAccessPromptModal: React.FC<ModelAccessPromptModalProps> = ({
 
   const handlePrimary = async () => {
     if (promptKind === ModelAccessPromptKind.Login) {
+      // NetEase login is removed; just dismiss so the user can pick a custom model.
       onClose();
-      await authService.login();
       return;
     }
     if (promptKind === ModelAccessPromptKind.AgenticNotReady) {
@@ -244,7 +243,6 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
   const controlled = onChange !== undefined;
   const globalSelectedModel = useSelector((state: RootState) => state.model.defaultSelectedModel);
   const currentAgentId = useSelector((state: RootState) => state.agent.currentAgentId);
-  const isLoggedIn = useSelector((state: RootState) => state.auth.isLoggedIn);
   const selectedModel = controlled ? value ?? null : globalSelectedModel;
   const selectedModelKey = selectedModel ? getModelIdentityKey(selectedModel) : '';
   const availableModels = useSelector((state: RootState) => state.model.availableModels);
@@ -421,7 +419,8 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
       return;
     }
     if (model && model.accessible === false) {
-      setRestrictedPrompt(isLoggedIn ? ModelAccessPromptKind.Subscribe : ModelAccessPromptKind.Login);
+      // NetEase login/subscribe is removed; block selection without a login prompt.
+      setRestrictedPrompt(ModelAccessPromptKind.AgenticNotReady);
       setHoveredModel(null);
       setIsOpen(false);
       return;

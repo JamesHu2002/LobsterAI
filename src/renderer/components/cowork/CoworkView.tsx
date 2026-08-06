@@ -7,7 +7,6 @@ import { buildGoalSettingMessageMetadata } from '../../../common/goalCommandDisp
 import { buildSessionTitleFromInput } from '../../../common/sessionTitle';
 import { buildCoworkImageAttachmentPreviews } from '../../../shared/cowork/imageAttachments';
 import type { CoworkSelectedTextSnippet } from '../../../shared/cowork/selectedText';
-import startupCreditEntryGiftUrl from '../../assets/startup-credit-entry-gift.svg';
 import { agentService } from '../../services/agent';
 import { coworkService } from '../../services/cowork';
 import { buildCoworkCapabilitySelection } from '../../services/coworkCapabilitySelection';
@@ -36,19 +35,13 @@ import {
 import type { MediaAttachmentRef } from '../../types/mediaGeneration';
 import { applyOptimisticGoalCommand } from '../../utils/goalCommand';
 import { toOpenClawModelRef } from '../../utils/openclawModelRef';
-import CreditsResetCampaignFloat from '../CreditsResetCampaignFloat';
 import ComposeIcon from '../icons/ComposeIcon';
 import SidebarToggleIcon from '../icons/SidebarToggleIcon';
-import { ModelAccessPromptKind, ModelAccessPromptModal } from '../ModelSelector';
 import { PromptPanel, QuickActionBar } from '../quick-actions';
 import type { SettingsOpenOptions } from '../Settings';
 import HomeSkinEmblem from '../skin/HomeSkinEmblem';
 import SkinAmbientEffects from '../skin/SkinAmbientEffects';
 import SkinBackdrop, { SkinBackdropVariant } from '../skin/SkinBackdrop';
-import {
-  openStartupCreditCampaign,
-  useStartupCreditCampaignEntry,
-} from '../startupCreditCampaignBridge';
 import { useAgentSelectedModel } from './agentModelSelection';
 import { CoworkUiEvent } from './constants';
 import CoworkPromptInput, { type CoworkPromptInputRef } from './CoworkPromptInput';
@@ -102,9 +95,6 @@ const CoworkView: React.FC<CoworkViewProps> = ({
   const [isInitialized, setIsInitialized] = useState(false);
   const [openClawStatus, setOpenClawStatus] = useState<OpenClawEngineStatus | null>(null);
   const [isRestartingGateway, setIsRestartingGateway] = useState(false);
-  // Shown when a session start is blocked because no usable model config exists;
-  // guides the user to plan models instead of pushing them into custom-model settings.
-  const [modelAccessPrompt, setModelAccessPrompt] = useState<ModelAccessPromptKind | null>(null);
   // Track if we're starting/continuing a session to prevent duplicate submissions
   const isStartingRef = useRef(false);
   const isContinuingRef = useRef(false);
@@ -121,7 +111,6 @@ const CoworkView: React.FC<CoworkViewProps> = ({
   const currentSession = useSelector(selectCurrentSession);
   const sessionNavigationTargetId = useSelector(selectSessionNavigationTargetId);
   const isStreaming = useSelector(selectIsStreaming);
-  const isLoggedIn = useSelector((state: RootState) => state.auth.isLoggedIn);
   const currentSessionIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -137,7 +126,6 @@ const CoworkView: React.FC<CoworkViewProps> = ({
   const quickActions = useSelector((state: RootState) => state.quickAction.actions);
   const selectedActionId = useSelector((state: RootState) => state.quickAction.selectedActionId);
   const currentAgentId = useSelector((state: RootState) => state.agent.currentAgentId);
-  const startupCreditEntry = useStartupCreditCampaignEntry();
   const agents = useSelector((state: RootState) => state.agent.agents);
   const currentAgent = agents.find((agent) => agent.id === currentAgentId);
   const shouldPresentConversation = Boolean(currentSession || sessionNavigationTargetId);
@@ -277,11 +265,9 @@ const CoworkView: React.FC<CoworkViewProps> = ({
       try {
         const apiConfig = await coworkService.checkApiConfig();
         if (apiConfig && !apiConfig.hasConfig) {
-          // No usable model config: steer toward plan models (login/subscribe)
-          // rather than opening the custom-model settings page uninvited.
-          setModelAccessPrompt(
-            isLoggedIn ? ModelAccessPromptKind.Subscribe : ModelAccessPromptKind.Login,
-          );
+          // No usable model config: steer the user to configure their own
+          // API-key providers (login/subscribe is removed).
+          onRequestAppSettings?.({ initialTab: 'model' });
           isStartingRef.current = false;
           return false;
         }
@@ -731,25 +717,6 @@ const CoworkView: React.FC<CoworkViewProps> = ({
           </div>
         )}
       </div>
-      <div className="non-draggable flex items-center">
-        {startupCreditEntry.available && (
-          <button
-            type="button"
-            onClick={() => openStartupCreditCampaign()}
-            className="mr-2 inline-flex h-8 max-w-[240px] items-center gap-1.5 rounded-full border border-border bg-surface/90 px-3 text-xs font-medium text-foreground shadow-subtle transition-colors hover:bg-surface-raised"
-          >
-            <img
-              src={startupCreditEntryGiftUrl}
-              alt=""
-              aria-hidden="true"
-              className="h-4 w-4 shrink-0"
-            />
-            <span className="truncate">
-              {startupCreditEntry.label || i18nService.t('startupCreditMenuEntry')}
-            </span>
-          </button>
-        )}
-      </div>
     </div>
   );
 
@@ -903,19 +870,12 @@ const CoworkView: React.FC<CoworkViewProps> = ({
                     />
                   </div>
                 )}
-                <CreditsResetCampaignFloat />
               </div>
 
               <div aria-hidden="true" className="w-full min-h-[24px] flex-[3_0_0px]" />
             </div>
           </div>
         </>
-      )}
-      {modelAccessPrompt && (
-        <ModelAccessPromptModal
-          promptKind={modelAccessPrompt}
-          onClose={() => setModelAccessPrompt(null)}
-        />
       )}
     </div>
   );

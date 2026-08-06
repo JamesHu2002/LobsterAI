@@ -71,6 +71,7 @@ Electron 生命周期、IPC、SQLite 持久化、登录鉴权、日志、OpenCla
 | **IM 远程控制** | 支持微信、企业微信、钉钉、飞书/Lark、QQ、Telegram、Discord、网易云信 IM、网易小蜜蜂、POPO 和邮件等渠道；多实例平台可将不同账号/渠道绑定到不同 Agent |
 | **丰富 Artifacts** | 桌面端预览和管理生成的 HTML、SVG、图片、视频、Mermaid 图表、代码、Markdown、文本、文档和本地服务类 Artifacts |
 | **本地记忆与数据** | 会话与应用数据保存在本地 SQLite；OpenClaw 工作区记忆使用 `MEMORY.md`、`USER.md`、`SOUL.md` 和每日笔记等文件，让偏好和上下文跨会话延续 |
+| **模型评测** | 侧边栏「模型评测」入口：加载开源评测集（GAIA 2023 验证集、AgentBench 横向思维谜题），通过 OpenClaw Agent 跑题，输出性能报告（成功率、工具选择准确率、参数准确率、无效调用率、平均调用次数、成本、耗时、中间步骤可恢复性等） |
 
 **典型使用场景**：搭建本地系统（如进销存）、分析本地数据（可视化看板）、生成汇报 PPT、自动检查网页后台、批量筛选简历、定时收集新闻摘要等。
 
@@ -97,6 +98,12 @@ Electron 生命周期、IPC、SQLite 持久化、登录鉴权、日志、OpenCla
 │   │   └── services/         # i18n.ts 等
 │   ├── common/ shared/       # 共享类型与工具
 │   └── scheduledTask/        # 定时任务逻辑
+├── src/
+│   └── benchmark/            # 模型评测共享类型与常量
+├── src/main/benchmark/       # 评测主进程：数据集加载、网关客户端、评测 runner、指标计算、定价
+├── src/main/benchmarkStore.ts# 评测 run/结果 SQLite 存储
+├── src/main/ipcHandlers/benchmark/  # 评测 IPC handlers
+├── src/renderer/components/benchmark/  # 评测 UI（列表/新建/进度/报告）
 ├── SKILLs/                   # 内置技能（skills.config.json + 各技能实现）
 ├── build/                    # 构建配置
 ├── resources/                # 打包资源（含 Windows 便携 Python）

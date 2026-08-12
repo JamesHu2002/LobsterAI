@@ -13,6 +13,8 @@ export interface CronJobServiceDeps {
     getGatewayClient: () => GatewayClientLike | null;
     ensureReady: () => Promise<void>;
   } | null;
+  /** Resolve the task id to fire after `jobId` completes successfully. */
+  getNextTaskId?: (jobId: string) => string | null;
 }
 
 let cronJobService: CronJobService | null = null;
@@ -34,6 +36,7 @@ export function getCronJobService(): CronJobService {
     cronJobService = new CronJobService({
       getGatewayClient: () => adapter.getGatewayClient(),
       ensureGatewayReady: () => adapter.ensureReady(),
+      ...(deps.getNextTaskId ? { getNextTaskId: deps.getNextTaskId } : {}),
     });
   }
   return cronJobService;

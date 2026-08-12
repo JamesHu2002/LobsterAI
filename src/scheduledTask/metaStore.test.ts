@@ -1,7 +1,8 @@
-import { test, expect } from 'vitest';
 import Database from 'better-sqlite3';
+import { expect,test } from 'vitest';
+
+import { BindingKind,OriginKind } from './constants';
 import { ScheduledTaskMetaStore } from './metaStore';
-import { OriginKind, BindingKind } from './constants';
 
 function createMetaStore() {
   const db = new Database(':memory:');
@@ -82,4 +83,46 @@ test('metaStore: origin/binding with special characters survives JSON roundtrip'
   expect(meta).toBeTruthy();
   expect(JSON.parse(meta!.origin)).toEqual(origin);
   expect(JSON.parse(meta!.binding)).toEqual(binding);
+});
+
+test('metaStore: setNextTaskId + getNextTaskId roundtrip (creates row when absent)', () => {
+  const store = createMetaStore();
+  expect(store.getNextTaskId('task-1')).toBe(null);
+
+  store.setNextTaskId('task-1', 'task-2');
+  expect(store.getNextTaskId('task-1')).toBe('task-2');
+});
+
+test('metaStore: setNextTaskId(null) clears the chain target', () => {
+  const store = createMetaStore();
+  store.setNextTaskId('task-1', 'task-2');
+  store.setNextTaskId('task-1', null);
+  expect(store.getNextTaskId('task-1')).toBe(null);
+});
+
+test('metaStore: setNextTaskId preserves existing origin/binding', () => {
+  const store = createMetaStore();
+  const origin = { kind: OriginKind.Manual };
+  const binding = { kind: BindingKind.NewSession };
+  store.set('task-1', origin, binding);
+  store.setNextTaskId('task-1', 'task-2');
+
+  const meta = store.get('task-1');
+  expect(JSON.parse(meta!.origin)).toEqual(origin);
+  expect(JSON.parse(meta!.binding)).toEqual(binding);
+  expect(store.getNextTaskId('task-1')).toBe('task-2');
+});
+
+test('metaStore: clearReferencesTo clears any task pointing at the removed task', () => {
+  const store = createMetaStore();
+  store.setNextTaskId('a', 'target');
+  store.setNextTaskId('b', 'target');
+  store.setNextTaskId('c', 'other');
+
+  store.clearReferencesTo('target');
+
+  expect(store.getNextTaskId('a')).toBe(null);
+  expect(store.getNextTaskId('b')).toBe(null);
+  expect(store.getNextTaskId('c')).toBe('other');
+  expect(store.getNextTaskId('target')).toBe(null);
 });

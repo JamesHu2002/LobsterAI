@@ -26,10 +26,12 @@ import { buildGoalSettingMessageMetadata } from '../common/goalCommandDisplay';
 import type { OpenClawSessionPatch } from '../common/openclawSession';
 import { buildSessionTitleFromInput } from '../common/sessionTitle';
 import { buildScheduledTaskEnginePrompt } from '../scheduledTask/enginePrompt';
+import { ScheduledTaskMetaStore } from '../scheduledTask/metaStore';
 import {
   migrateScheduledTaskRunsToOpenclaw,
   migrateScheduledTasksToOpenclaw,
 } from '../scheduledTask/migrate';
+import { AgentAvatarSvg, encodeAgentAvatarIcon } from '../shared/agent/avatar';
 import {
   AgentId,
 } from '../shared/agent/constants';
@@ -164,6 +166,9 @@ import { APP_NAME, APP_USER_MODEL_ID, DB_FILENAME } from './appConstants';
 import { createLocalFileProtocolResponse } from './artifactLocalFileProtocol';
 import { authQuotaGateStateFromQuota, AuthSubscriptionStatus, createDefaultAuthQuotaGateState, normalizeAuthQuota } from './authQuota';
 import { type AutoLaunchStatus, getAutoLaunchStatus, isAutoLaunched, setAutoLaunchEnabled } from './autoLaunchManager';
+import { BenchmarkRunner } from './benchmark/benchmarkRunner';
+import { DatasetLoader } from './benchmark/datasetLoader';
+import { BenchmarkStore } from './benchmarkStore';
 import { getRecentComputerUseLogEntries } from './computerUse/computerUseLogs';
 import { type CoworkForkContextMessage, type CoworkMessage, CoworkStore } from './coworkStore';
 import { setLanguage, t } from './i18n';
@@ -189,18 +194,19 @@ import type {
 import { registerActivityIpcHandlers } from './ipcHandlers/activity';
 import { registerAgentHandlers } from './ipcHandlers/agents';
 import { registerAsrIpcHandlers } from './ipcHandlers/asr';
+import {
+  benchmarkEventChannel,
+  registerBenchmarkHandlers,
+} from './ipcHandlers/benchmark';
 import { registerCoworkSubagentHandlers } from './ipcHandlers/coworkSubagent';
 import { registerKitHandlers } from './ipcHandlers/kits';
 import { registerMcpHandlers } from './ipcHandlers/mcp';
+import {
+  modelEvalEventChannel,
+  registerModelEvalHandlers,
+} from './ipcHandlers/modelEval';
 import { registerNimQrLoginHandlers } from './ipcHandlers/nimQrLogin';
 import { registerPermissionIpcHandlers } from './ipcHandlers/permissions/handlers';
-import {
-  registerBenchmarkHandlers,
-  benchmarkEventChannel,
-} from './ipcHandlers/benchmark';
-import { BenchmarkRunner } from './benchmark/benchmarkRunner';
-import { DatasetLoader } from './benchmark/datasetLoader';
-import { BenchmarkStore } from './benchmarkStore';
 import { registerPluginHandlers } from './ipcHandlers/plugins';
 import {
   getCronJobService,
@@ -211,7 +217,22 @@ import {
 } from './ipcHandlers/scheduledTask';
 import { registerSessionDiagnosticsHandlers } from './ipcHandlers/sessionDiagnostics';
 import { registerSiteIpcHandlers } from './ipcHandlers/site';
+import {
+  registerSkillFactoryHandlers,
+  skillFactoryEventChannel,
+} from './ipcHandlers/skillFactory';
 import { registerSkillHandlers } from './ipcHandlers/skills';
+import { installBundledSkillKit } from './kits/bundledSkillKit';
+import {
+  PaperResearchKitId,
+  paperResearchKitMetadata,
+  PaperResearchKitSkillIds,
+} from './kits/paperResearchKit';
+import {
+  SkillFactoryKitId,
+  skillFactoryKitMetadata,
+  SkillFactoryKitSkillIds,
+} from './kits/skillFactoryKit';
 import {
   type CoworkAgentEngine,
   CoworkEngineRouter,
@@ -404,6 +425,7 @@ import {
   restoreOriginalProxyEnv,
   setSystemProxyEnabled,
 } from './libs/systemProxy';
+import { ensureTechBriefingForwarderTask } from './libs/techBriefingChain';
 import { getLogFilePath, getRecentMainLogEntries, initLogger } from './logger';
 import { type AskUserResponse, McpRuntime } from './mcp/mcpRuntime';
 import {
@@ -418,6 +440,9 @@ import {
   MediaGenerationRequestType,
   summarizeMediaGenerationParamsForLog,
 } from './mediaGenerationReferences';
+import { LmEvalInstaller } from './modelEval/lmEvalInstaller';
+import { LmEvalRunner } from './modelEval/lmEvalRunner';
+import { ModelEvalStore } from './modelEval/modelEvalStore';
 import { OpenClawSessionIpc } from './openclawSession/constants';
 import { OpenClawSessionPolicyIpc } from './openclawSessionPolicy/constants';
 import {
@@ -426,6 +451,9 @@ import {
 } from './openclawSessionPolicy/store';
 import { registerVoiceInputPermissionHandler } from './permissions/voiceInputPermission';
 import { isHiddenUserPluginId } from './plugins/pluginManager';
+import { PRESET_AGENTS, presetToCreateRequest } from './presetAgents';
+import { SkillFactoryRunner } from './skillFactory/skillFactoryRunner';
+import { SkillFactoryStore } from './skillFactory/skillFactoryStore';
 import { SkillManager } from './skills/skillManager';
 import { getSkillServiceManager } from './skills/skillServices';
 import {
@@ -2079,6 +2107,29 @@ const getCoworkStore = () => {
   return coworkStore;
 };
 
+let scheduledTaskMetaStore: ScheduledTaskMetaStore | null = null;
+/** Lazy store for local-only scheduled-task chain metadata (next_task_id). */
+const getScheduledTaskMetaStore = () => {
+  if (!scheduledTaskMetaStore) {
+    scheduledTaskMetaStore = new ScheduledTaskMetaStore(getStore().getDatabase());
+  }
+  return scheduledTaskMetaStore;
+};
+
+let subagentRunStoreInstance: SubagentRunStore | null = null;
+/** Lazy singleton for subagent run history (used by skill-factory workflow mining). */
+const getSubagentRunStore = () => {
+  subagentRunStoreInstance ??= new SubagentRunStore(getStore().getDatabase());
+  return subagentRunStoreInstance;
+};
+
+let subagentMessageStoreInstance: SubagentMessageStore | null = null;
+/** Lazy singleton for subagent run messages (used by skill-factory workflow mining). */
+const getSubagentMessageStore = () => {
+  subagentMessageStoreInstance ??= new SubagentMessageStore(getStore().getDatabase());
+  return subagentMessageStoreInstance;
+};
+
 let agentManager: AgentManager | null = null;
 const getAgentManager = () => {
   if (!agentManager) {
@@ -2086,6 +2137,181 @@ const getAgentManager = () => {
   }
   return agentManager;
 };
+
+/** Paper research multi-agent structure to auto-provision on first startup. */
+const PAPER_RESEARCH_COORDINATOR_ID = 'paper-coordinator';
+const PAPER_RESEARCH_AGENT_IDS = [
+  PAPER_RESEARCH_COORDINATOR_ID,
+  'paper-searcher',
+  'paper-fetcher',
+  'paper-analyzer',
+  'paper-summarizer',
+  'paper-evaluator',
+];
+/** Agents the coordinator is allowed to delegate to as sub-agents. */
+const PAPER_RESEARCH_SUBAGENT_IDS = PAPER_RESEARCH_AGENT_IDS.filter(
+  (id) => id !== PAPER_RESEARCH_COORDINATOR_ID,
+);
+
+/**
+ * Create the paper research multi-agent structure. Idempotent: ensures every
+ * pipeline agent (searcher / fetcher / analyzer / summarizer / evaluator /
+ * coordinator) exists, installs the paper-research kit once, and keeps the
+ * coordinator's prompt + delegation allowlist in sync with the code.
+ */
+function provisionPaperResearchAgents(): void {
+  try {
+    // Ensure all pipeline agents exist (addPresetAgent is idempotent; creates
+    // new agents such as paper-evaluator on upgrade).
+    for (const presetId of PAPER_RESEARCH_AGENT_IDS) {
+      getAgentManager().addPresetAgent(presetId);
+    }
+    const store = getStore();
+    const installedMap = store.get<Record<string, unknown>>(KitStoreKey.Installed) ?? {};
+    if (!installedMap[PaperResearchKitId]) {
+      // Enable the paper skills and record the kit as installed (once).
+      const record = installBundledSkillKit(store, {
+        id: PaperResearchKitId,
+        version: '1.0.0',
+        skillIds: [...PaperResearchKitSkillIds],
+        metadata: paperResearchKitMetadata(),
+      });
+      installedMap[PaperResearchKitId] = record;
+      store.set(KitStoreKey.Installed, installedMap);
+      console.log('[Main] provisioned paper research multi-agent structure');
+    }
+    // Always ensure the coordination relationship: the coordinator may delegate
+    // to the specialist agents (incl. evaluator). Merge so user additions survive.
+    const existingCoordinator = getAgentManager().getAgent(PAPER_RESEARCH_COORDINATOR_ID);
+    const merged = [
+      ...new Set([
+        ...(existingCoordinator?.subagentAllowAgentIds ?? []),
+        ...PAPER_RESEARCH_SUBAGENT_IDS,
+      ]),
+    ];
+    // Keep every pipeline agent's identity/system prompt in sync with its preset
+    // (auto-provisioned components; behaviour defined by code).
+    for (const preset of PRESET_AGENTS) {
+      if (!PAPER_RESEARCH_AGENT_IDS.includes(preset.id)) continue;
+      const presetReq = presetToCreateRequest(preset);
+      getAgentManager().updateAgent(preset.id, {
+        systemPrompt: presetReq.systemPrompt,
+        identity: presetReq.identity,
+        ...(preset.id === PAPER_RESEARCH_COORDINATOR_ID ? { subagentAllowAgentIds: merged } : {}),
+      });
+    }
+  } catch (error) {
+    console.warn('[Main] failed to provision paper research agents:', error);
+  }
+}
+
+/** Skill-factory multi-agent structure to auto-provision on first startup. */
+const SKILL_FACTORY_COORDINATOR_ID = 'skill-coordinator';
+const SKILL_FACTORY_AGENT_IDS = [
+  SKILL_FACTORY_COORDINATOR_ID,
+  'skill-requirements-analyst',
+  'skill-content-maker',
+  'skill-evaluator',
+];
+/** Agents the coordinator is allowed to delegate to as sub-agents. */
+const SKILL_FACTORY_SUBAGENT_IDS = SKILL_FACTORY_AGENT_IDS.filter(
+  (id) => id !== SKILL_FACTORY_COORDINATOR_ID,
+);
+
+/**
+ * Create the skill-factory multi-agent structure. Idempotent: ensures every
+ * pipeline agent (requirements analyst / content maker / evaluator /
+ * coordinator) exists, installs the skill-factory kit once, and keeps the
+ * coordinator's prompt + delegation allowlist in sync with the code.
+ */
+function provisionSkillFactoryAgents(): void {
+  try {
+    for (const presetId of SKILL_FACTORY_AGENT_IDS) {
+      getAgentManager().addPresetAgent(presetId);
+    }
+    const store = getStore();
+    const installedMap = store.get<Record<string, unknown>>(KitStoreKey.Installed) ?? {};
+    if (!installedMap[SkillFactoryKitId]) {
+      const record = installBundledSkillKit(store, {
+        id: SkillFactoryKitId,
+        version: '1.0.0',
+        skillIds: [...SkillFactoryKitSkillIds],
+        metadata: skillFactoryKitMetadata(),
+      });
+      installedMap[SkillFactoryKitId] = record;
+      store.set(KitStoreKey.Installed, installedMap);
+      console.log('[Main] provisioned skill factory multi-agent structure');
+    }
+    const existingCoordinator = getAgentManager().getAgent(SKILL_FACTORY_COORDINATOR_ID);
+    const merged = [
+      ...new Set([
+        ...(existingCoordinator?.subagentAllowAgentIds ?? []),
+        ...SKILL_FACTORY_SUBAGENT_IDS,
+      ]),
+    ];
+    for (const preset of PRESET_AGENTS) {
+      if (!SKILL_FACTORY_AGENT_IDS.includes(preset.id)) continue;
+      const presetReq = presetToCreateRequest(preset);
+      getAgentManager().updateAgent(preset.id, {
+        systemPrompt: presetReq.systemPrompt,
+        identity: presetReq.identity,
+        ...(preset.id === SKILL_FACTORY_COORDINATOR_ID ? { subagentAllowAgentIds: merged } : {}),
+      });
+    }
+  } catch (error) {
+    console.warn('[Main] failed to provision skill factory agents:', error);
+  }
+}
+
+/** Tech-briefing → paper-research bridge agent (created directly, not a template). */
+const TECH_BRIEFING_DISPATCHER_ID = 'tech-briefing-dispatcher';
+
+/**
+ * Create the dispatcher agent that forwards papers from the weekday 8:30 tech
+ * briefing to the paper research coordinator. It reads the briefing, extracts
+ * the papers it mentions, builds prompts, and delegates to the coordinator.
+ */
+function createTechBriefingDispatcherAgent(): void {
+  try {
+    const dispatcherData: Parameters<AgentManager['createAgent']>[0] = {
+      id: TECH_BRIEFING_DISPATCHER_ID,
+      name: '科技早报论文加工',
+      description:
+        '读取科技早报，提取其中提到的论文（标题 + arXiv ID），构建提示词并交付给论文研究协调者（顶层会话）总结成文章。',
+      identity:
+        '你是一名科技早报论文加工助手。你的职责是：读取最新科技早报，识别其中提到的学术论文（尤其是算法与大模型相关），为每篇论文构建简洁的总结提示词，然后交付给「论文研究协调者」的顶层会话完成检索、抓取、解析、总结与质量评估。',
+      systemPrompt:
+        '## 职责\n' +
+        '1. **读取早报** — 读取提供的科技早报内容（若未直接提供，读取默认早报文件：`C:/Users/Administrator/AppData/Roaming/LobsterAI/openclaw/state/workspace-main/reports/科技早报-<日期>.md`）\n' +
+        '2. **提取论文** — 找出早报中提到的论文：标题、arXiv ID（如 arXiv:2608.05872）、所属方向\n' +
+        '3. **构建提示词** — 为每篇论文生成一句总结要求（"总结论文 X（arXiv:ID）：背景、所用算法、模型结构与设计、实验与结论"）\n' +
+        '4. **交付给协调者（顶层会话）** — 用 **sessions_send** 工具，参数 `agentId: "paper-coordinator"`，发送整理好的论文研究任务。sessions_send 会自动创建协调者的顶层主会话并投递消息（不要用 sessionKey 参数，也不要用 sessions_spawn——spawn 创建的是子代理会话，协调者将无法再委派子 Agent）。协调者作为顶层编排者，会自行调用子 Agent（paper-searcher / fetcher / analyzer / summarizer / evaluator）完成检索、抓取、解析、总结与质量评估。\n' +
+        '   - **任务中必须显式要求**：最终输出 **Word（.docx）格式**的文章，并保存到协调者工作区。\n' +
+        '5. **交付** — 向用户说明已识别 N 篇论文并已交付协调者（顶层会话），协调者完成后产出最终文章。\n\n' +
+        '## 协作原则\n' +
+        '- **只做提取与转发**，不亲自检索/解析论文；研究交给协调者及其子 Agent\n' +
+        '- 保留 arXiv ID，便于抓取\n' +
+        '- 早报中无论文时，明确告知用户',
+      icon: encodeAgentAvatarIcon({ svg: AgentAvatarSvg.Lightning }),
+      skillIds: ['web-search'],
+      source: 'custom',
+      presetId: '',
+      subagentAllowAgentIds: [PAPER_RESEARCH_COORDINATOR_ID],
+    };
+    // Ensure the dispatcher exists, then keep its prompt/identity in sync with code.
+    if (!getAgentManager().getAgent(TECH_BRIEFING_DISPATCHER_ID)) {
+      getAgentManager().createAgent(dispatcherData);
+      console.log('[Main] created tech briefing dispatcher agent');
+    } else {
+      getAgentManager().updateAgent(TECH_BRIEFING_DISPATCHER_ID, {
+        systemPrompt: dispatcherData.systemPrompt,
+        identity: dispatcherData.identity,
+      });
+    }
+  } catch (error) {
+    console.warn('[Main] failed to create tech briefing dispatcher:', error);
+  }
+}
 
 const resolveAgentDefaultWorkingDirectory = (agentId?: string): string => {
   const resolvedAgentId = agentId?.trim() || 'main';
@@ -3038,11 +3264,16 @@ const getCoworkEngineRouter = () => {
           normalizeModelRef: normalizeOpenClawModelRef,
           onGatewayClientReady: () => {
             getCronJobService().notifyGatewayReady();
+            // Provision the tech-briefing → paper-research forwarding task
+            // (idempotent) once the gateway client is usable for cron.add.
+            void ensureTechBriefingForwarderTask(getCronJobService).catch(error => {
+              console.warn('[Main] failed to provision tech-briefing forwarding task:', error);
+            });
             handleGatewaySelfRestartSettled();
           },
         },
-        new SubagentRunStore(getStore().getDatabase()),
-        new SubagentMessageStore(getStore().getDatabase()),
+        getSubagentRunStore(),
+        getSubagentMessageStore(),
       );
       // Wire up channel session sync for IM conversations via OpenClaw
       try {
@@ -9021,6 +9252,7 @@ if (!gotTheLock) {
 
   initCronJobServiceManager({
     getOpenClawRuntimeAdapter: () => openClawRuntimeAdapter,
+    getNextTaskId: jobId => getScheduledTaskMetaStore().getNextTaskId(jobId),
   });
   initScheduledTaskHelpers({
     getIMGatewayManager: () => ({
@@ -9059,6 +9291,7 @@ if (!gotTheLock) {
     getOpenClawRuntimeAdapter: () => openClawRuntimeAdapter,
     getCoworkSessionTitle: (sessionId: string) =>
       getCoworkStore().getSession(sessionId, 0)?.title ?? null,
+    getScheduledTaskMetaStore,
   };
   registerScheduledTaskHandlers(scheduledTaskHandlerDeps);
 
@@ -9076,6 +9309,12 @@ if (!gotTheLock) {
     benchmarkStoreInstance ??= new BenchmarkStore(getStore().getDatabase());
     return benchmarkStoreInstance;
   };
+  // Mark runs left running by a previous app session as interrupted.
+  try {
+    getBenchmarkStore().reconcileStaleRuns();
+  } catch (error) {
+    console.warn('[Benchmark] failed to reconcile stale runs:', error);
+  }
   let benchmarkDatasetLoaderInstance: DatasetLoader | null = null;
   const getBenchmarkDatasetLoader = (): DatasetLoader => {
     benchmarkDatasetLoaderInstance ??= new DatasetLoader({
@@ -9099,6 +9338,100 @@ if (!gotTheLock) {
     getBenchmarkRunner,
     getDatasetLoader: getBenchmarkDatasetLoader,
     getStore,
+  });
+
+  // ==================== Skill Factory (multi-agent skill authoring) ====================
+  const skillFactoryBroadcast = (event: unknown): void => {
+    const { channel, payload } = skillFactoryEventChannel(event as never);
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) {
+        win.webContents.send(channel, payload);
+      }
+    }
+  };
+  let skillFactoryStoreInstance: SkillFactoryStore | null = null;
+  const getSkillFactoryStore = (): SkillFactoryStore => {
+    skillFactoryStoreInstance ??= new SkillFactoryStore(getStore().getDatabase());
+    return skillFactoryStoreInstance;
+  };
+  try {
+    getSkillFactoryStore().reconcileStaleRuns();
+  } catch (error) {
+    console.warn('[SkillFactory] failed to reconcile stale runs:', error);
+  }
+  let skillFactoryRunnerInstance: SkillFactoryRunner | null = null;
+  const getSkillFactoryRunner = (): SkillFactoryRunner => {
+    skillFactoryRunnerInstance ??= new SkillFactoryRunner({
+      getSkillFactoryStore,
+      getOpenClawEngineManager,
+      getAgentManager,
+      emit: (event) => skillFactoryBroadcast(event),
+      getCoworkStore,
+      getSubagentRunStore,
+      getSubagentMessageStore,
+      getIMStore: () => getIMGatewayManager()?.getIMStore() ?? null,
+      getOpenClawRuntimeAdapter: () => openClawRuntimeAdapter,
+    });
+    return skillFactoryRunnerInstance;
+  };
+  registerSkillFactoryHandlers({
+    getSkillFactoryStore,
+    getSkillFactoryRunner,
+    getStore,
+    getSkillManager,
+    syncOpenClawConfig,
+    getCoworkStore,
+    getSubagentRunStore,
+    getIMStore: () => getIMGatewayManager()?.getIMStore() ?? null,
+  });
+
+  // ==================== Model Eval (lm-evaluation-harness) ====================
+  const modelEvalBroadcast = (event: unknown): void => {
+    const { channel, payload } = modelEvalEventChannel(event as never);
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) {
+        win.webContents.send(channel, payload);
+      }
+    }
+  };
+  let modelEvalStoreInstance: ModelEvalStore | null = null;
+  const getModelEvalStore = (): ModelEvalStore => {
+    modelEvalStoreInstance ??= new ModelEvalStore(getStore().getDatabase());
+    return modelEvalStoreInstance;
+  };
+  try {
+    getModelEvalStore().reconcileStaleRuns();
+  } catch (error) {
+    console.warn('[ModelEval] failed to reconcile stale runs:', error);
+  }
+  const getModelEvalTasksRoot = (): string => path.join(app.getPath('userData'), 'model-eval', 'tasks');
+  const getModelEvalRunOutputDir = (runId: string): string =>
+    path.join(app.getPath('userData'), 'model-eval', 'runs', runId);
+  let modelEvalRunnerInstance: LmEvalRunner | null = null;
+  const getModelEvalRunner = (): LmEvalRunner => {
+    modelEvalRunnerInstance ??= new LmEvalRunner({
+      getModelEvalStore,
+      getDatasetLoader: getBenchmarkDatasetLoader,
+      getStore,
+      getTasksRoot: getModelEvalTasksRoot,
+      getRunOutputDir: getModelEvalRunOutputDir,
+      emit: (event) => modelEvalBroadcast(event),
+    });
+    return modelEvalRunnerInstance;
+  };
+  let lmEvalInstallerInstance: LmEvalInstaller | null = null;
+  const getLmEvalInstaller = (): LmEvalInstaller => {
+    lmEvalInstallerInstance ??= new LmEvalInstaller({
+      getStore,
+      emit: (event) => modelEvalBroadcast({ type: 'installProgress', payload: event }),
+    });
+    return lmEvalInstallerInstance;
+  };
+  registerModelEvalHandlers({
+    getModelEvalStore,
+    getModelEvalRunner,
+    getLmEvalInstaller,
+    getRunOutputDir: getModelEvalRunOutputDir,
   });
 
   registerNimQrLoginHandlers({
@@ -12062,6 +12395,9 @@ if (!gotTheLock) {
     store = await initStore();
     profiler.measure('initStore');
     console.log('[Main] initApp: store initialized');
+    provisionPaperResearchAgents();
+    provisionSkillFactoryAgents();
+    createTechBriefingDispatcherAgent();
     initializeKeyfromAttribution(store);
     refreshEndpointsTestMode(store);
     sqliteBackupManager = new SqliteBackupManager(app.getPath('userData'));

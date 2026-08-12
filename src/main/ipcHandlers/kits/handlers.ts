@@ -29,6 +29,28 @@ import {
   installComputerUseRuntime,
   uninstallComputerUseRuntime,
 } from '../../computerUse/computerUseRuntime';
+import {
+  agentDevKitMetadata,
+  AgentDevKitId,
+  AgentDevKitSkillIds,
+  buildAgentDevMarketplaceKit,
+} from '../../kits/agentDevKit';
+import {
+  installBundledSkillKit,
+  uninstallBundledSkillKit,
+} from '../../kits/bundledSkillKit';
+import {
+  buildPaperResearchMarketplaceKit,
+  PaperResearchKitId,
+  PaperResearchKitSkillIds,
+  paperResearchKitMetadata,
+} from '../../kits/paperResearchKit';
+import {
+  buildSoftwareDevTestMarketplaceKit,
+  SoftwareDevTestKitId,
+  SoftwareDevTestKitSkillIds,
+  softwareDevTestKitMetadata,
+} from '../../kits/softwareDevTestKit';
 import { cpRecursiveSync } from '../../fsCompat';
 import { OpenClawConfigImpact } from '../../libs/openclawConfigImpact';
 import type { SkillManager } from '../../skills/skillManager';
@@ -210,9 +232,26 @@ export function registerKitHandlers(deps: KitHandlerDeps): void {
     notifySkillsChanged,
     syncOpenClawConfig,
   });
-  const getAdditionalBuiltInKits = (): Record<string, unknown>[] => (
-    isComputerUseKitSupportedPlatform() ? [buildComputerUseMarketplaceKit()] : []
-  );
+  // Registry of built-in kits whose skills ship bundled with the app; install
+  // just enables them, uninstall disables them. No remote bundle download.
+  const bundledSkillKits: Array<{ id: string; version: string; skillIds: string[]; metadata: Record<string, KitSkillMetadata> }> = [
+    { id: SoftwareDevTestKitId, version: '1.0.0', skillIds: [...SoftwareDevTestKitSkillIds], metadata: softwareDevTestKitMetadata() },
+    { id: AgentDevKitId, version: '1.0.0', skillIds: [...AgentDevKitSkillIds], metadata: agentDevKitMetadata() },
+    { id: PaperResearchKitId, version: '1.0.0', skillIds: [...PaperResearchKitSkillIds], metadata: paperResearchKitMetadata() },
+  ];
+  const bundledSkillKitById = new Map(bundledSkillKits.map((k) => [k.id, k]));
+
+  const getAdditionalBuiltInKits = (): Record<string, unknown>[] => {
+    const kits: Record<string, unknown>[] = [
+      buildSoftwareDevTestMarketplaceKit(),
+      buildAgentDevMarketplaceKit(),
+      buildPaperResearchMarketplaceKit(),
+    ];
+    if (isComputerUseKitSupportedPlatform()) {
+      kits.push(buildComputerUseMarketplaceKit());
+    }
+    return kits;
+  };
 
   // Fetch kit store catalog from overmind
   ipcMain.handle('kits:fetchStore', async () => {
@@ -287,6 +326,24 @@ export function registerKitHandlers(deps: KitHandlerDeps): void {
       const skinPackInstallResult = await skinPackKitLifecycle.installIfHandled({ kitId, bundleUrl });
       if (skinPackInstallResult !== undefined) {
         return skinPackInstallResult;
+      }
+
+      // Built-in bundled-skill kits: skills ship with the app, so "installing"
+      // just enables them and records the kit.
+      const bundledDef = bundledSkillKitById.get(kitId);
+      if (bundledDef) {
+        const record = installBundledSkillKit(getStore(), {
+          id: bundledDef.id,
+          version: bundledDef.version,
+          skillIds: bundledDef.skillIds,
+          metadata: bundledDef.metadata,
+        });
+        const installedMap = getInstalledKitsMap(getStore());
+        installedMap[kitId] = record;
+        getStore().set(KITS_INSTALLED_KEY, installedMap);
+        notifySkillsChanged();
+        console.log(`[KitStore] Kit "${kitId}" installed: enabled ${bundledDef.skillIds.length} bundled skills`);
+        return { success: true, skillIds: [...bundledDef.skillIds] };
       }
 
       // 1. Download zip
@@ -446,6 +503,17 @@ export function registerKitHandlers(deps: KitHandlerDeps): void {
       const kitRecord = installedMap[kitId];
       if (!kitRecord) {
         return { success: false, error: `Kit "${kitId}" is not installed` };
+      }
+
+      // Built-in bundled-skill kit: disable the bundled skills, remove record.
+      const bundledDef = bundledSkillKitById.get(kitId);
+      if (bundledDef) {
+        uninstallBundledSkillKit(getStore(), bundledDef.skillIds);
+        delete installedMap[kitId];
+        getStore().set(KITS_INSTALLED_KEY, installedMap);
+        notifySkillsChanged();
+        console.log(`[KitStore] Kit "${kitId}" uninstalled`);
+        return { success: true };
       }
 
       const skillManager = getSkillManager();

@@ -22,6 +22,8 @@ export interface BenchmarkRunConfig {
   modelRefs: string[];
   maxSteps?: number;
   timeoutMsPerTask?: number;
+  /** Run only the first N tasks (0/undefined = full dataset). */
+  maxTasks?: number;
   /** Optional task subset; defaults to the full dataset. */
   taskIds?: string[];
 }

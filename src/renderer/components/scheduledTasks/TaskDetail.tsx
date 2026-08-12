@@ -52,6 +52,7 @@ const TaskDetail: React.FC<TaskDetailProps> = ({ task, onRequestDelete }) => {
   const dispatch = useDispatch();
   const runs = useSelector((state: RootState) => state.scheduledTask.runs[task.id] ?? []);
   const availableModels = useSelector((state: RootState) => state.model.availableModels);
+  const scheduledTasks = useSelector((state: RootState) => state.scheduledTask.tasks);
 
   const displayStatus = getTaskDisplayStatus(task);
   const isRunning = displayStatus === 'running';
@@ -297,6 +298,18 @@ const TaskDetail: React.FC<TaskDetailProps> = ({ task, onRequestDelete }) => {
               {deliveryLabel}
             </div>
           </div>
+          {task.nextTaskId &&
+            (() => {
+              const nextTask = scheduledTasks.find(t => t.id === task.nextTaskId);
+              return (
+                <div className="min-w-0">
+                  <div className={labelClass}>{i18nService.t('scheduledTasksTriggersNext')}</div>
+                  <div className={`${valueClass} truncate`} title={task.nextTaskId ?? undefined}>
+                    {nextTask ? `→ ${nextTask.name}` : task.nextTaskId}
+                  </div>
+                </div>
+              );
+            })()}
           {task.sessionKey && (
             <div className="col-span-full">
               <div className={labelClass}>{i18nService.t('scheduledTasksSessionKey')}</div>

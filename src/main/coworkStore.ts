@@ -1554,6 +1554,34 @@ export class CoworkStore {
     return rows.map(row => this.mapSessionSummaryRow(row));
   }
 
+  /**
+   * List sessions whose `active_skill_ids` (JSON array of skill ids) contains
+   * the given skill id. Used by the skill-factory to find real-usage samples
+   * for optimizing an installed skill. `instr` with literal quotes gives an
+   * exact element match without LIKE escaping issues.
+   */
+  listSessionsUsingSkill(
+    skillId: string,
+    limit = COWORK_SESSION_PAGE_SIZE,
+    offset = 0,
+  ): CoworkSessionSummary[] {
+    const rows = this.getAll<CoworkSessionSummaryRow>(
+      `
+      SELECT id, title, status, pinned, pin_order, agent_id,
+             parent_session_id, forked_at, fork_mode,
+             goal_json,
+             created_at, updated_at
+      FROM cowork_sessions
+      WHERE active_skill_ids IS NOT NULL
+        AND instr(active_skill_ids, '"' || ? || '"') > 0
+      ORDER BY updated_at DESC
+      LIMIT ? OFFSET ?
+    `,
+      [skillId, limit, offset],
+    );
+    return rows.map(row => this.mapSessionSummaryRow(row));
+  }
+
   countSearchSessions(options: CoworkSessionSearchOptions): number {
     const query = options.query.trim();
     if (!query) return this.countSessions(options.agentId);

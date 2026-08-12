@@ -129,6 +129,8 @@ interface GatewayRunLogEntry {
 interface CronJobServiceDeps {
   getGatewayClient: () => GatewayClientLike | null;
   ensureGatewayReady: () => Promise<void>;
+  /** Resolve the task id to fire (cron.run) after `jobId` completes successfully. */
+  getNextTaskId?: (jobId: string) => string | null;
 }
 
 /** Delivery routing summary cached per job for synchronous lookups. */
@@ -490,9 +492,12 @@ function extractRunTitle(summary?: string): string | undefined {
 export class CronJobService {
   private readonly getGatewayClient: () => GatewayClientLike | null;
   private readonly ensureGatewayReady: () => Promise<void>;
+  private readonly getNextTaskId?: (jobId: string) => string | null;
   private pollingTimer: ReturnType<typeof setTimeout> | null = null;
   private lastKnownStates: Map<string, string> = new Map();
   private lastKnownRunAtMs: Map<string, number> = new Map();
+  /** Last polled `runningAtMs` per job, used to detect a run finishing. */
+  private lastObservedRunningAtMs: Map<string, number | null> = new Map();
   private polling = false;
   private firstPollDone = false;
   /** Synchronous jobId → name cache, populated during polling. */
@@ -516,6 +521,13 @@ export class CronJobService {
   constructor(deps: CronJobServiceDeps) {
     this.getGatewayClient = deps.getGatewayClient;
     this.ensureGatewayReady = deps.ensureGatewayReady;
+    this.getNextTaskId = deps.getNextTaskId;
+  }
+
+  /** Attach the locally-stored chain target to a mapped task (read paths only). */
+  private decorateWithNextTask(task: ScheduledTask): ScheduledTask {
+    const nextTaskId = this.getNextTaskId?.(task.id) ?? null;
+    return { ...task, nextTaskId };
   }
 
   /**
@@ -660,19 +672,22 @@ export class CronJobService {
     await client.request('cron.remove', { id });
     this.lastKnownStates.delete(id);
     this.lastKnownRunAtMs.delete(id);
+    this.lastObservedRunningAtMs.delete(id);
     this.jobNameCache.delete(id);
     this.jobDeliveryCache.delete(id);
   }
 
   async listJobs(): Promise<ScheduledTask[]> {
     const jobs = await this.listGatewayJobs();
-    return jobs.filter(job => !isInternalScheduledTaskJob(job)).map(mapGatewayJob);
+    return jobs
+      .filter(job => !isInternalScheduledTaskJob(job))
+      .map(job => this.decorateWithNextTask(mapGatewayJob(job)));
   }
 
   async getJob(id: string): Promise<ScheduledTask | null> {
     const raw = await this.getJobRaw(id);
     if (raw && isInternalScheduledTaskJob(raw)) return null;
-    return raw ? mapGatewayJob(raw) : null;
+    return raw ? this.decorateWithNextTask(mapGatewayJob(raw)) : null;
   }
 
   private async getJobRaw(id: string): Promise<GatewayJob | null> {
@@ -690,17 +705,74 @@ export class CronJobService {
   async toggleJob(id: string, enabled: boolean): Promise<ScheduledTask> {
     const client = await this.client();
     const job = await client.request<GatewayJob>('cron.update', { id, patch: { enabled } });
-    return mapGatewayJob(job);
+    return this.decorateWithNextTask(mapGatewayJob(job));
+  }
+
+  /**
+   * Fire a job via `cron.run` (force mode) without nesting a poll. Keeps a
+   * fast poll cadence so the triggered run's state lands quickly. Used by both
+   * manual runs and the completion-triggered task chain.
+   */
+  private async requestCronRun(id: string): Promise<void> {
+    const client = await this.client();
+    const result = await client.request<{ ok?: boolean; ran?: boolean; reason?: string }>(
+      'cron.run',
+      { id },
+    );
+    if (result && result.ran === false) {
+      console.warn('[CronJobService] cron.run returned ran:false', { id, reason: result.reason });
+    }
+    this.fastPollUntilMs = Date.now() + CronJobService.MANUAL_RUN_BOOST_MS;
   }
 
   async runJob(id: string): Promise<void> {
-    const client = await this.client();
-    await client.request('cron.run', { id });
+    await this.requestCronRun(id);
     // The gateway enqueues the run and returns immediately. Poll right away
-    // and keep a fast cadence briefly so renderers see the running state and
-    // the finished run without waiting for the regular poll interval.
-    this.fastPollUntilMs = Date.now() + CronJobService.MANUAL_RUN_BOOST_MS;
+    // so renderers see the running state and the finished run without waiting
+    // for the regular poll interval.
     void this.pollOnce().finally(() => this.scheduleNextPoll());
+  }
+
+  /**
+   * Fire the chain target of `job` after its run finished successfully.
+   * Best-effort: failures only warn, and the target is skipped while already
+   * running or when the run was not successful.
+   */
+  private maybeTriggerNextTask(job: GatewayJob): void {
+    const nextTaskId = this.getNextTaskId?.(job.id);
+    if (!nextTaskId) return;
+
+    const task = mapGatewayJob(job);
+    if (task.state.lastStatus !== TaskStatus.Success) {
+      console.log('[CronJobService] chain: run finished but not successful, skip trigger', {
+        from: job.id,
+        to: nextTaskId,
+        lastStatus: task.state.lastStatus,
+      });
+      return;
+    }
+    if (this.runningJobIds.has(nextTaskId)) {
+      console.log('[CronJobService] chain: next task already running, skip trigger', {
+        from: job.id,
+        to: nextTaskId,
+      });
+      return;
+    }
+
+    void this.requestCronRun(nextTaskId)
+      .then(() => {
+        console.log('[CronJobService] chain: triggered next task after successful run', {
+          from: job.id,
+          to: nextTaskId,
+        });
+      })
+      .catch(error => {
+        console.warn('[CronJobService] chain: failed to trigger next task', {
+          from: job.id,
+          to: nextTaskId,
+          error: String(error),
+        });
+      });
   }
 
   async listRuns(
@@ -849,6 +921,7 @@ export class CronJobService {
     }
     this.lastKnownStates.clear();
     this.lastKnownRunAtMs.clear();
+    this.lastObservedRunningAtMs.clear();
     this.jobNameCache.clear();
     this.jobDeliveryCache.clear();
     this.runningJobIds.clear();
@@ -927,6 +1000,16 @@ export class CronJobService {
           }
         }
         this.lastKnownRunAtMs.set(job.id, lastRunAtMs);
+
+        // Completion-triggered task chain: when a run we observed in progress
+        // finishes successfully, fire the configured next task (cron.run force).
+        const runningAtMs: number | null =
+          typeof job.state.runningAtMs === 'number' ? job.state.runningAtMs : null;
+        const prevRunningAtMs = this.lastObservedRunningAtMs.get(job.id) ?? null;
+        this.lastObservedRunningAtMs.set(job.id, runningAtMs);
+        if (prevRunningAtMs !== null && runningAtMs === null) {
+          this.maybeTriggerNextTask(job);
+        }
       }
 
       const currentIds = new Set(visibleJobs.map(job => job.id));
@@ -934,6 +1017,7 @@ export class CronJobService {
         if (!currentIds.has(knownId)) {
           this.lastKnownStates.delete(knownId);
           this.lastKnownRunAtMs.delete(knownId);
+          this.lastObservedRunningAtMs.delete(knownId);
         }
       }
 

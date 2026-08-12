@@ -105,6 +105,23 @@ export class BenchmarkService {
     }
   }
 
+  async importCustomDataset(filePath: string): Promise<boolean> {
+    const api = window.electron?.benchmark;
+    if (!api) return false;
+    try {
+      const res = await api.importCustomDataset(filePath);
+      if (res.success) {
+        await this.loadDatasets();
+        return true;
+      }
+      if (res.error) showToast(res.error);
+      return false;
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '自定义数据集导入失败');
+      return false;
+    }
+  }
+
   async setHfToken(token: string): Promise<void> {
     const api = window.electron?.benchmark;
     if (!api) return;

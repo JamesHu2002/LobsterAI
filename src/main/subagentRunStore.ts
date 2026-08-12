@@ -21,6 +21,34 @@ export interface SubagentRunWithParent extends SubagentRun {
   parentUpdatedAt: number | null;
 }
 
+interface SubagentRunRow {
+  id: string;
+  parent_session_id: string;
+  session_key: string | null;
+  child_cowork_session_id: string | null;
+  agent_id: string | null;
+  task: string | null;
+  label: string | null;
+  status: string;
+  created_at: number;
+  ended_at: number | null;
+}
+
+function mapRun(row: SubagentRunRow): SubagentRun {
+  return {
+    id: row.id,
+    parentSessionId: row.parent_session_id,
+    sessionKey: row.session_key,
+    childCoworkSessionId: row.child_cowork_session_id,
+    agentId: row.agent_id,
+    task: row.task,
+    label: row.label,
+    status: row.status as SubagentRunStatus,
+    createdAt: row.created_at,
+    endedAt: row.ended_at,
+  };
+}
+
 export class SubagentRunStore {
   private db: Database.Database;
 
@@ -80,36 +108,20 @@ export class SubagentRunStore {
       .run(childCoworkSessionId);
   }
 
-  listSubagentRuns(parentSessionId: string): SubagentRun[] {
-    interface Row {
-      id: string;
-      parent_session_id: string;
-      session_key: string | null;
-      child_cowork_session_id: string | null;
-      agent_id: string | null;
-      task: string | null;
-      label: string | null;
-      status: string;
-      created_at: number;
-      ended_at: number | null;
-    }
+  /** Recent subagent workflow runs (any parent), newest first — used by the
+   *  skill-factory to pick workflow samples for skill mining. */
+  listRecentSubagentRuns(limit = 50, offset = 0): SubagentRun[] {
+    const rows = this.db
+      .prepare('SELECT * FROM subagent_runs ORDER BY created_at DESC LIMIT ? OFFSET ?')
+      .all(limit, offset) as SubagentRunRow[];
+    return rows.map((row) => mapRun(row));
+  }
 
+  listSubagentRuns(parentSessionId: string): SubagentRun[] {
     const rows = this.db
       .prepare(`SELECT * FROM subagent_runs WHERE parent_session_id = ? ORDER BY created_at ASC`)
-      .all(parentSessionId) as Row[];
-
-    return rows.map((row) => ({
-      id: row.id,
-      parentSessionId: row.parent_session_id,
-      sessionKey: row.session_key,
-      childCoworkSessionId: row.child_cowork_session_id,
-      agentId: row.agent_id,
-      task: row.task,
-      label: row.label,
-      status: row.status as SubagentRunStatus,
-      createdAt: row.created_at,
-      endedAt: row.ended_at,
-    }));
+      .all(parentSessionId) as SubagentRunRow[];
+    return rows.map(mapRun);
   }
 
   listSubagentRunsByAgent(agentId: string, limit: number, offset: number): SubagentRunWithParent[] {

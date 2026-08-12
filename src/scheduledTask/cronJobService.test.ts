@@ -516,3 +516,100 @@ describe('mapGatewayTaskState', () => {
     expect(state.lastError).toBe('agent timeout');
   });
 });
+
+describe('CronJobService completion-triggered task chain', () => {
+  function makeChainClient() {
+    let currentState: Record<string, unknown> = { runningAtMs: 1000 };
+    const request = vi.fn(async <T>(method: string) => {
+      if (method === 'cron.list') {
+        return { jobs: [makeGatewayJob({ id: 'job-1', state: currentState })] } as T;
+      }
+      if (method === 'cron.runs') return { entries: [] } as T;
+      if (method === 'cron.run') return { ok: true, ran: true } as T;
+      return {} as T;
+    });
+    return { request, setState: (state: Record<string, unknown>) => { currentState = state; } };
+  }
+
+  function startChainService(request: ReturnType<typeof vi.fn>, getNextTaskId?: (jobId: string) => string | null) {
+    return new CronJobService({
+      getGatewayClient: () => ({ request }),
+      ensureGatewayReady: async () => {},
+      ...(getNextTaskId ? { getNextTaskId } : {}),
+    });
+  }
+
+  test('fires cron.run on the next task after a run we observed finishes successfully', async () => {
+    const { request, setState } = makeChainClient();
+    const service = startChainService(request, () => 'job-2');
+
+    service.startPolling();
+    service.notifyGatewayReady();
+    // Let the first poll (observing the run in progress) complete.
+    await new Promise(resolve => setTimeout(resolve, 0));
+    setState({ lastRunAtMs: 1000, lastRunStatus: GatewayStatus.Ok });
+    service.notifyGatewayReady();
+
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith('cron.run', { id: 'job-2' }));
+    service.stopPolling();
+  });
+
+  test('does not trigger when the finished run was not successful', async () => {
+    const { request, setState } = makeChainClient();
+    const service = startChainService(request, () => 'job-2');
+
+    service.startPolling();
+    service.notifyGatewayReady();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    setState({ lastRunAtMs: 1000, lastRunStatus: GatewayStatus.Error });
+    service.notifyGatewayReady();
+
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(request).not.toHaveBeenCalledWith('cron.run', expect.anything());
+    service.stopPolling();
+  });
+
+  test('does not trigger for a run that was never observed in progress', async () => {
+    const { request, setState } = makeChainClient();
+    const service = startChainService(request, () => 'job-2');
+
+    // The very first observation (startPolling's immediate poll) is already
+    // finished — there is no running→finished transition to trigger on.
+    setState({ lastRunAtMs: 1000, lastRunStatus: GatewayStatus.Ok });
+    service.startPolling();
+    service.notifyGatewayReady();
+
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(request).not.toHaveBeenCalledWith('cron.run', expect.anything());
+    service.stopPolling();
+  });
+
+  test('does not trigger when no next task is configured', async () => {
+    const { request, setState } = makeChainClient();
+    const service = startChainService(request);
+
+    service.startPolling();
+    service.notifyGatewayReady();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    setState({ lastRunAtMs: 1000, lastRunStatus: GatewayStatus.Ok });
+    service.notifyGatewayReady();
+
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(request).not.toHaveBeenCalledWith('cron.run', expect.anything());
+    service.stopPolling();
+  });
+
+  test('decoration attaches nextTaskId on listJobs', async () => {
+    const job = makeGatewayJob({ id: 'job-1' });
+    const service = new CronJobService({
+      getGatewayClient: () => ({
+        request: async <T>() => ({ jobs: [job] }) as T,
+      }),
+      ensureGatewayReady: async () => {},
+      getNextTaskId: () => 'job-2',
+    });
+
+    const tasks = await service.listJobs();
+    expect(tasks[0]?.nextTaskId).toBe('job-2');
+  });
+});

@@ -187,6 +187,27 @@ export class BenchmarkStore {
     })();
   }
 
+  /**
+   * Mark runs that were left in a live state (pending/running) as interrupted
+   * when the app starts — the benchmark runner is not alive, so they can never
+   * complete on their own.
+   */
+  reconcileStaleRuns(): void {
+    const stale = this.db
+      .prepare("SELECT id, done FROM benchmark_runs WHERE status IN ('pending', 'running')")
+      .all() as Array<{ id: string; done: number }>;
+    for (const r of stale) {
+      this.db
+        .prepare('UPDATE benchmark_runs SET status = ?, finished_at = ?, error = ? WHERE id = ?')
+        .run(
+          r.done > 0 ? BenchmarkRunStatus.Partial : BenchmarkRunStatus.Failed,
+          Date.now(),
+          '应用重启，评测已中断',
+          r.id,
+        );
+    }
+  }
+
   // ─── Task Results ──────────────────────────────────────────────────────────
   insertTaskResult(result: BenchmarkTaskResult): void {
     this.db

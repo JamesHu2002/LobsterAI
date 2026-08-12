@@ -1789,11 +1789,103 @@ interface IElectronAPI {
       size?: number;
       error?: string;
     }>;
+    importCustomDataset: (filePath: string) => Promise<{
+      success: boolean;
+      tasks?: import('../../benchmark/types').BenchmarkTask[];
+      size?: number;
+      error?: string;
+    }>;
     setHfToken: (token: string) => Promise<{ success: boolean; error?: string }>;
     onProgressUpdate: (callback: (data: import('../../benchmark/types').BenchmarkProgressUpdateEvent) => void) => () => void;
     onTaskCompleted: (callback: (data: import('../../benchmark/types').BenchmarkTaskResult) => void) => () => void;
     onRunStatusChange: (callback: (data: import('../../benchmark/types').BenchmarkRun) => void) => () => void;
     onDatasetLoadProgress: (callback: (data: import('../../benchmark/types').DatasetLoadProgressEvent) => void) => () => void;
+  };
+  skillFactory: {
+    listRuns: () => Promise<{
+      success: boolean;
+      runs?: import('../../skillFactory/types').SkillFactoryRun[];
+      error?: string;
+    }>;
+    getRun: (id: string) => Promise<{
+      success: boolean;
+      run?: import('../../skillFactory/types').SkillFactoryRun | null;
+      error?: string;
+    }>;
+    startRun: (input: import('../../skillFactory/types').SkillFactoryStartInput) => Promise<{
+      success: boolean;
+      runId?: string;
+      error?: string;
+    }>;
+    cancelRun: (id: string) => Promise<{ success: boolean; error?: string }>;
+    deleteRun: (id: string) => Promise<{ success: boolean; error?: string }>;
+    installRun: (id: string) => Promise<import('../../skillFactory/types').SkillFactoryInstallResult>;
+    openOutputDir: (id: string) => Promise<{ success: boolean; error?: string }>;
+    getArtifact: (
+      id: string,
+      relPath: string,
+    ) => Promise<{ success: boolean; text?: string; base64?: string; error?: string }>;
+    listSessions: (limit?: number, offset?: number) => Promise<{
+      success: boolean;
+      rows?: import('../../skillFactory/types').SkillFactorySourceRef[];
+      error?: string;
+    }>;
+    listWorkflowRuns: (limit?: number, offset?: number) => Promise<{
+      success: boolean;
+      rows?: import('../../skillFactory/types').SkillFactorySourceRef[];
+      error?: string;
+    }>;
+    listImConversations: () => Promise<{
+      success: boolean;
+      rows?: import('../../skillFactory/types').SkillFactorySourceRef[];
+      error?: string;
+    }>;
+    listSkillUsageSessions: (skillId: string, limit?: number, offset?: number) => Promise<{
+      success: boolean;
+      rows?: import('../../skillFactory/types').SkillFactorySourceRef[];
+      error?: string;
+    }>;
+    onRunStatusChange: (callback: (data: import('../../skillFactory/types').SkillFactoryRun) => void) => () => void;
+    onProgressUpdate: (
+      callback: (data: { runId: string; stage: import('../../skillFactory/constants').SkillFactoryStage | null }) => void,
+    ) => () => void;
+  };
+  modelEval: {
+    listRuns: () => Promise<{
+      success: boolean;
+      runs?: import('../../modelEval/types').ModelEvalRun[];
+      error?: string;
+    }>;
+    getRun: (id: string) => Promise<{
+      success: boolean;
+      run?: import('../../modelEval/types').ModelEvalRun | null;
+      results?: import('../../modelEval/types').ModelEvalTaskResult[];
+      error?: string;
+    }>;
+    startRun: (config: import('../../modelEval/types').ModelEvalRunConfig) => Promise<{
+      success: boolean;
+      runId?: string;
+      error?: string;
+    }>;
+    cancelRun: (id: string) => Promise<{ success: boolean; error?: string }>;
+    deleteRun: (id: string) => Promise<{ success: boolean; error?: string }>;
+    installStatus: () => Promise<{
+      success: boolean;
+      status?: import('../../modelEval/types').LmEvalInstallInfo;
+      error?: string;
+    }>;
+    ensureInstalled: () => Promise<{
+      success: boolean;
+      status?: import('../../modelEval/types').LmEvalInstallInfo;
+      error?: string;
+    }>;
+    onRunStatusChange: (callback: (data: import('../../modelEval/types').ModelEvalRun) => void) => () => void;
+    onProgressUpdate: (
+      callback: (data: { runId: string; message?: string }) => void,
+    ) => () => void;
+    onInstallProgress: (
+      callback: (data: import('../../modelEval/types').LmEvalInstallProgressEvent) => void,
+    ) => () => void;
   };
   permissions: {
     checkCalendar: () => Promise<{

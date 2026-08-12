@@ -63,6 +63,7 @@ interface TaskCardProps {
 const TaskCard: React.FC<TaskCardProps> = ({ task, onRequestDelete }) => {
   const dispatch = useDispatch();
   const availableModels = useSelector((state: RootState) => state.model.availableModels);
+  const scheduledTasks = useSelector((state: RootState) => state.scheduledTask.tasks);
   const [showMenu, setShowMenu] = React.useState(false);
   const [menuPosition, setMenuPosition] = React.useState<MenuPosition | null>(null);
   const menuButtonRef = React.useRef<HTMLButtonElement>(null);
@@ -314,6 +315,21 @@ const TaskCard: React.FC<TaskCardProps> = ({ task, onRequestDelete }) => {
       <p className="mt-1.5 min-h-[40px] text-[13px] leading-5 text-secondary line-clamp-2">
         {task.description || promptText}
       </p>
+
+      {task.nextTaskId &&
+        (() => {
+          const nextTask = scheduledTasks.find(t => t.id === task.nextTaskId);
+          if (!nextTask) return null;
+          return (
+            <div className="mt-2 flex min-w-0 items-center gap-1 text-xs text-primary/80">
+              <span aria-hidden="true">→</span>
+              <span className="truncate">
+                {i18nService.t('scheduledTasksTriggersNext')}
+                <span className="font-medium">「{nextTask.name}」</span>
+              </span>
+            </div>
+          );
+        })()}
 
       <div className="mt-3 flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-1.5 text-xs text-secondary">

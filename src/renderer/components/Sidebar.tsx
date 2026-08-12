@@ -1,4 +1,4 @@
-import { ExclamationTriangleIcon } from '@heroicons/react/24/outline';
+import { ExclamationTriangleIcon, WrenchScrewdriverIcon } from '@heroicons/react/24/outline';
 import { AgentId } from '@shared/agent';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSelector } from 'react-redux';
@@ -23,9 +23,9 @@ import MyAgentSidebarTree from './agentSidebar/MyAgentSidebarTree';
 import Modal from './common/Modal';
 import { CoworkUiEvent } from './cowork/constants';
 import CoworkSearchModal from './cowork/CoworkSearchModal';
+import ChartBarIcon from './icons/ChartBarIcon';
 import Cog6ToothIcon from './icons/Cog6ToothIcon';
 import ComposeIcon from './icons/ComposeIcon';
-import ChartBarIcon from './icons/ChartBarIcon';
 import SidebarAutomationIcon from './icons/SidebarAutomationIcon';
 import SidebarKitsIcon from './icons/SidebarKitsIcon';
 import SidebarMcpIcon from './icons/SidebarMcpIcon';
@@ -37,7 +37,7 @@ import TrashIcon from './icons/TrashIcon';
 
 interface SidebarProps {
   onShowSettings: () => void;
-  activeView: 'cowork' | 'skills' | 'scheduledTasks' | 'kits' | 'mcp' | 'sites' | 'benchmark';
+  activeView: 'cowork' | 'skills' | 'scheduledTasks' | 'kits' | 'mcp' | 'sites' | 'benchmark' | 'modelEval' | 'skillFactory';
   onShowSkills: () => void;
   onShowCowork: () => void;
   onShowScheduledTasks: () => void;
@@ -45,6 +45,8 @@ interface SidebarProps {
   onShowMcp: () => void;
   onShowSites: () => void;
   onShowBenchmark: () => void;
+  onShowModelEval: () => void;
+  onShowSkillFactory: () => void;
   onNewChat: () => void;
   isCollapsed: boolean;
   onToggleCollapse: () => void;
@@ -137,6 +139,8 @@ const Sidebar: React.FC<SidebarProps> = ({
   onShowMcp,
   onShowSites,
   onShowBenchmark,
+  onShowModelEval,
+  onShowSkillFactory,
   onNewChat,
   isCollapsed,
   onToggleCollapse,
@@ -586,6 +590,32 @@ const Sidebar: React.FC<SidebarProps> = ({
           >
             <ChartBarIcon className="h-4 w-4 shrink-0" />
             {i18nService.t('benchmark')}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              reportSidebarAction('open_skill_factory', { activeView, isCollapsed });
+              setIsSearchOpen(false);
+              onShowSkillFactory();
+            }}
+            className={activeView === 'skillFactory' ? activeSidebarNavItemClassName : sidebarNavItemClassName}
+            aria-current={activeView === 'skillFactory' ? 'page' : undefined}
+          >
+            <WrenchScrewdriverIcon className="h-4 w-4 shrink-0" />
+            {i18nService.t('skillFactory')}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              reportSidebarAction('open_model_eval', { activeView, isCollapsed });
+              setIsSearchOpen(false);
+              onShowModelEval();
+            }}
+            className={activeView === 'modelEval' ? activeSidebarNavItemClassName : sidebarNavItemClassName}
+            aria-current={activeView === 'modelEval' ? 'page' : undefined}
+          >
+            <WrenchScrewdriverIcon className="h-4 w-4 shrink-0" />
+            {i18nService.t('modelEval')}
           </button>
           <button
             type="button"

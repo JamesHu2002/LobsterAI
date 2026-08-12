@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 
 import { IpcChannel as BenchmarkIpc } from '../benchmark/constants';
+import { ModelEvalIpc } from '../modelEval/constants';
 import { IpcChannel as ScheduledTaskIpc } from '../scheduledTask/constants';
 import {
   type ActivityHostExecuteActionInput,
@@ -88,6 +89,7 @@ import type {
   SkinGetActiveResponse,
   SkinListResponse,
 } from '../shared/skin/types';
+import { SkillFactoryIpc } from '../skillFactory/constants';
 import { NimQrLoginIpc } from './ipcHandlers/nimQrLogin';
 import { OpenClawSessionIpc } from './openclawSession/constants';
 import { OpenClawSessionPolicyIpc } from './openclawSessionPolicy/constants';
@@ -1150,6 +1152,8 @@ contextBridge.exposeInMainWorld('electron', {
       ipcRenderer.invoke(BenchmarkIpc.DatasetGetStatus, datasetId),
     datasetLoad: (datasetId: string, opts?: { forceRefresh?: boolean }) =>
       ipcRenderer.invoke(BenchmarkIpc.DatasetLoad, datasetId, opts),
+    importCustomDataset: (filePath: string) =>
+      ipcRenderer.invoke(BenchmarkIpc.ImportCustomDataset, filePath),
     setHfToken: (token: string) => ipcRenderer.invoke(BenchmarkIpc.SetHfToken, token),
     onProgressUpdate: (callback: (data: any) => void) => {
       const handler = (_event: any, data: any) => callback(data);
@@ -1170,6 +1174,58 @@ contextBridge.exposeInMainWorld('electron', {
       const handler = (_event: any, data: any) => callback(data);
       ipcRenderer.on(BenchmarkIpc.DatasetLoadProgress, handler);
       return () => ipcRenderer.removeListener(BenchmarkIpc.DatasetLoadProgress, handler);
+    },
+  },
+  skillFactory: {
+    listRuns: () => ipcRenderer.invoke(SkillFactoryIpc.ListRuns),
+    getRun: (id: string) => ipcRenderer.invoke(SkillFactoryIpc.GetRun, id),
+    startRun: (input: any) => ipcRenderer.invoke(SkillFactoryIpc.StartRun, input),
+    cancelRun: (id: string) => ipcRenderer.invoke(SkillFactoryIpc.CancelRun, id),
+    deleteRun: (id: string) => ipcRenderer.invoke(SkillFactoryIpc.DeleteRun, id),
+    installRun: (id: string) => ipcRenderer.invoke(SkillFactoryIpc.InstallRun, id),
+    openOutputDir: (id: string) => ipcRenderer.invoke(SkillFactoryIpc.OpenOutputDir, id),
+    getArtifact: (id: string, relPath: string) =>
+      ipcRenderer.invoke(SkillFactoryIpc.GetArtifact, id, relPath),
+    listSessions: (limit?: number, offset?: number) =>
+      ipcRenderer.invoke(SkillFactoryIpc.ListSessions, limit, offset),
+    listWorkflowRuns: (limit?: number, offset?: number) =>
+      ipcRenderer.invoke(SkillFactoryIpc.ListWorkflowRuns, limit, offset),
+    listImConversations: () => ipcRenderer.invoke(SkillFactoryIpc.ListImConversations),
+    listSkillUsageSessions: (skillId: string, limit?: number, offset?: number) =>
+      ipcRenderer.invoke(SkillFactoryIpc.ListSkillUsageSessions, skillId, limit, offset),
+    onRunStatusChange: (callback: (data: any) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on(SkillFactoryIpc.RunStatusChange, handler);
+      return () => ipcRenderer.removeListener(SkillFactoryIpc.RunStatusChange, handler);
+    },
+    onProgressUpdate: (callback: (data: any) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on(SkillFactoryIpc.ProgressUpdate, handler);
+      return () => ipcRenderer.removeListener(SkillFactoryIpc.ProgressUpdate, handler);
+    },
+  },
+  modelEval: {
+    listRuns: () => ipcRenderer.invoke(ModelEvalIpc.ListRuns),
+    getRun: (id: string) => ipcRenderer.invoke(ModelEvalIpc.GetRun, id),
+    startRun: (config: any) => ipcRenderer.invoke(ModelEvalIpc.StartRun, config),
+    cancelRun: (id: string) => ipcRenderer.invoke(ModelEvalIpc.CancelRun, id),
+    deleteRun: (id: string) => ipcRenderer.invoke(ModelEvalIpc.DeleteRun, id),
+    installStatus: () => ipcRenderer.invoke(ModelEvalIpc.InstallStatus),
+    ensureInstalled: () => ipcRenderer.invoke(ModelEvalIpc.EnsureInstalled),
+    onRunStatusChange: (callback: (data: any) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on(ModelEvalIpc.RunStatusChange, handler);
+      return () => ipcRenderer.removeListener(ModelEvalIpc.RunStatusChange, handler);
+    },
+    onProgressUpdate: (callback: (data: any) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on(ModelEvalIpc.ProgressUpdate, handler);
+      return () => ipcRenderer.removeListener(ModelEvalIpc.ProgressUpdate, handler);
+    },
+    onInstallProgress: (callback: (data: any) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on(ModelEvalIpc.InstallProgress, handler);
+      return () => ipcRenderer.removeListener(ModelEvalIpc.InstallProgress, handler);
     },
   },
   networkStatus: {

@@ -7,6 +7,7 @@ import {
   SessionTarget as STSessionTarget,
 } from '../../../scheduledTask/constants';
 import type { CronJobService } from '../../../scheduledTask/cronJobService';
+import type { ScheduledTaskMetaStore } from '../../../scheduledTask/metaStore';
 import type {
   ScheduledTask,
   ScheduledTaskDelivery,
@@ -130,6 +131,8 @@ export interface ScheduledTaskHandlerDeps {
       options?: { sessionId?: string | null },
     ) => Promise<unknown>;
   } | null;
+  /** Local store for task chain metadata (next_task_id). Optional for tests. */
+  getScheduledTaskMetaStore?: () => ScheduledTaskMetaStore;
 }
 
 /** Structural view of the OpenClaw gateway client needed for session lookups. */
@@ -541,8 +544,29 @@ async function ensureScheduledTaskGatewayClient(
   return Boolean(adapter.getGatewayClient());
 }
 
+/** Attach the locally-stored chain target to a mapped task, when available. */
+function attachNextTaskId(
+  task: ScheduledTask,
+  getScheduledTaskMetaStore?: ScheduledTaskHandlerDeps['getScheduledTaskMetaStore'],
+): ScheduledTask {
+  const store = getScheduledTaskMetaStore?.();
+  if (!store) return task;
+  return { ...task, nextTaskId: store.getNextTaskId(task.id) ?? null };
+}
+
+/** Persist (or clear) the chain target for a task, when a store is available. */
+function persistNextTaskId(
+  taskId: string,
+  nextTaskId: unknown,
+  getScheduledTaskMetaStore?: ScheduledTaskHandlerDeps['getScheduledTaskMetaStore'],
+): void {
+  const store = getScheduledTaskMetaStore?.();
+  if (!store) return;
+  store.setNextTaskId(taskId, typeof nextTaskId === 'string' && nextTaskId.trim() ? nextTaskId.trim() : null);
+}
+
 export function registerScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps): void {
-  const { getCronJobService, getIMGatewayManager, getOpenClawRuntimeAdapter, getCoworkSessionTitle } = deps;
+  const { getCronJobService, getIMGatewayManager, getOpenClawRuntimeAdapter, getCoworkSessionTitle, getScheduledTaskMetaStore } = deps;
 
   ipcMain.handle(ScheduledTaskIpc.List, async () => {
     try {
@@ -581,8 +605,9 @@ export function registerScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps): v
       });
 
       const task = await getCronJobService().addJob(normalizedInput);
+      persistNextTaskId(task.id, normalizedInput.nextTaskId, getScheduledTaskMetaStore);
       console.log('[IPC][scheduledTask:create] result task id:', task?.id, 'name:', task?.name);
-      return { success: true, task };
+      return { success: true, task: attachNextTaskId(task, getScheduledTaskMetaStore) };
     } catch (error) {
       return {
         success: false,
@@ -605,8 +630,9 @@ export function registerScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps): v
       });
 
       const task = await getCronJobService().updateJob(id, normalizedInput);
+      persistNextTaskId(id, normalizedInput.nextTaskId, getScheduledTaskMetaStore);
       console.log('[IPC][scheduledTask:update] result task id:', task?.id, 'name:', task?.name);
-      return { success: true, task };
+      return { success: true, task: attachNextTaskId(task, getScheduledTaskMetaStore) };
     } catch (error) {
       return {
         success: false,
@@ -618,6 +644,11 @@ export function registerScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps): v
   ipcMain.handle(ScheduledTaskIpc.Delete, async (_event, id: string) => {
     try {
       await getCronJobService().removeJob(id);
+      const store = getScheduledTaskMetaStore?.();
+      if (store) {
+        store.delete(id);
+        store.clearReferencesTo(id);
+      }
       return { success: true, result: true };
     } catch (error) {
       return {

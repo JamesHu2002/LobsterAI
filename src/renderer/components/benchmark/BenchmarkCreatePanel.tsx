@@ -24,6 +24,7 @@ export const BenchmarkCreatePanel: React.FC<BenchmarkCreatePanelProps> = ({ onBa
   const [selectedModels, setSelectedModels] = useState<Model[]>([]);
   const [maxSteps, setMaxSteps] = useState(30);
   const [timeoutMin, setTimeoutMin] = useState(3);
+  const [maxTasks, setMaxTasks] = useState(0);
   const [starting, setStarting] = useState(false);
   const [hfToken, setHfToken] = useState('');
 
@@ -42,6 +43,21 @@ export const BenchmarkCreatePanel: React.FC<BenchmarkCreatePanelProps> = ({ onBa
     }
   };
 
+  const handleImportCustom = async () => {
+    const res = await window.electron?.dialog?.selectFile({
+      title: i18nService.t('benchmarkCustomPick'),
+      filters: [
+        { name: 'Dataset', extensions: ['jsonl', 'json', 'csv', 'ndjson', 'txt'] },
+      ],
+    });
+    if (!res || !res.success || !res.path) return;
+    setSelectedDataset(BenchmarkDatasetId.Custom);
+    const ok = await benchmarkService.importCustomDataset(res.path);
+    if (ok) {
+      await benchmarkService.loadDatasets();
+    }
+  };
+
   const addModel = (model: Model) => {
     if (model && !selectedModels.some((m) => m.id === model.id)) {
       setSelectedModels([...selectedModels, model]);
@@ -52,13 +68,17 @@ export const BenchmarkCreatePanel: React.FC<BenchmarkCreatePanelProps> = ({ onBa
     setSelectedModels(selectedModels.filter((m) => m.id !== modelId));
   };
 
+  const showToast = (message: string) => {
+    window.dispatchEvent(new CustomEvent('app:showToast', { detail: message }));
+  };
+
   const handleStart = async () => {
     if (!selectedDataset) {
-      window.alert(i18nService.t('benchmarkNoDatasetLoaded'));
+      showToast(i18nService.t('benchmarkNoDatasetLoaded'));
       return;
     }
     if (selectedModels.length === 0) {
-      window.alert(i18nService.t('benchmarkNoModelSelected'));
+      showToast(i18nService.t('benchmarkNoModelSelected'));
       return;
     }
     const config: BenchmarkRunConfig = {
@@ -66,6 +86,7 @@ export const BenchmarkCreatePanel: React.FC<BenchmarkCreatePanelProps> = ({ onBa
       modelRefs: selectedModels.map((m) => toOpenClawModelRef(m)),
       maxSteps,
       timeoutMsPerTask: timeoutMin * 60_000,
+      maxTasks: maxTasks > 0 ? maxTasks : undefined,
     };
     const labels = selectedModels.map((m) => m.name || m.id);
     setStarting(true);
@@ -131,37 +152,53 @@ export const BenchmarkCreatePanel: React.FC<BenchmarkCreatePanelProps> = ({ onBa
                     <p className="mt-1 text-[11px] text-amber-600/80">{i18nService.t('benchmarkDatasetGatedHint')}</p>
                   )}
                   <div className="mt-3 flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void handleLoadDataset(ds.id);
-                      }}
-                      disabled={loading}
-                      className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
-                    >
-                      {loading ? (
-                        <span className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />
-                      ) : (
-                        <PlusIcon className="h-3 w-3" />
-                      )}
-                      {loading
-                        ? i18nService.t('benchmarkDatasetDownloading')
-                        : ds.id === BenchmarkDatasetId.Gaia2023Val
-                          ? i18nService.t('benchmarkDatasetDownload')
-                          : i18nService.t('benchmarkDatasetDownload')}
-                    </button>
-                    {cached && (
+                    {ds.id === BenchmarkDatasetId.Custom ? (
                       <button
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
-                          void benchmarkService.loadDataset(ds.id, true);
+                          void handleImportCustom();
                         }}
-                        className="rounded-md px-2 py-1 text-xs text-secondary transition-colors hover:bg-surface-raised hover:text-foreground"
+                        className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-white transition-colors hover:bg-primary-hover"
                       >
-                        {i18nService.t('benchmarkDatasetRefresh')}
+                        <PlusIcon className="h-3 w-3" />
+                        {cached
+                          ? i18nService.t('benchmarkCustomReimport')
+                          : i18nService.t('benchmarkCustomImport')}
                       </button>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void handleLoadDataset(ds.id);
+                          }}
+                          disabled={loading}
+                          className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
+                        >
+                          {loading ? (
+                            <span className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                          ) : (
+                            <PlusIcon className="h-3 w-3" />
+                          )}
+                          {loading
+                            ? i18nService.t('benchmarkDatasetDownloading')
+                            : i18nService.t('benchmarkDatasetDownload')}
+                        </button>
+                        {cached && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void benchmarkService.loadDataset(ds.id, true);
+                            }}
+                            className="rounded-md px-2 py-1 text-xs text-secondary transition-colors hover:bg-surface-raised hover:text-foreground"
+                          >
+                            {i18nService.t('benchmarkDatasetRefresh')}
+                          </button>
+                        )}
+                      </>
                     )}
                     {ds.loadError && (
                       <span className="truncate text-[11px] text-red-500">{ds.loadError}</span>
@@ -232,6 +269,17 @@ export const BenchmarkCreatePanel: React.FC<BenchmarkCreatePanelProps> = ({ onBa
               min={1}
               value={timeoutMin}
               onChange={(e) => setTimeoutMin(Math.max(1, Number(e.target.value) || 3))}
+              className="h-9 w-32 rounded-lg border border-border bg-surface px-3 text-sm text-foreground focus:border-primary/60 focus:outline-none"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-secondary">{i18nService.t('benchmarkMaxTasks')}</span>
+            <input
+              type="number"
+              min={0}
+              value={maxTasks}
+              onChange={(e) => setMaxTasks(Math.max(0, Number(e.target.value) || 0))}
+              placeholder={i18nService.t('benchmarkMaxTasksAll')}
               className="h-9 w-32 rounded-lg border border-border bg-surface px-3 text-sm text-foreground focus:border-primary/60 focus:outline-none"
             />
           </label>

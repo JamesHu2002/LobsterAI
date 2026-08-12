@@ -1,0 +1,1 @@
+export { SkillFactoryView } from './SkillFactoryView';

@@ -11,6 +11,7 @@ import {
   isManualDownloadUrl,
 } from '../shared/appUpdate/constants';
 import { ProviderAuthType, ProviderName, ProviderRegistry } from '../shared/providers';
+import { BenchmarkView } from './components/benchmark';
 import { CoworkView } from './components/cowork';
 import { CoworkShortcutDirection, CoworkUiEvent } from './components/cowork/constants';
 import CoworkPermissionModal from './components/cowork/CoworkPermissionModal';
@@ -18,12 +19,13 @@ import CoworkQuestionWizard from './components/cowork/CoworkQuestionWizard';
 import EngineFailureOverlay from './components/cowork/EngineFailureOverlay';
 import EngineStartupOverlay from './components/cowork/EngineStartupOverlay';
 import KitsView from './components/kits/KitsView';
-import { BenchmarkView } from './components/benchmark';
 import { McpView } from './components/mcp';
+import { ModelEvalView } from './components/modelEval';
 import { ScheduledTasksView } from './components/scheduledTasks';
 import Settings, { type SettingsOpenOptions } from './components/Settings';
 import Sidebar from './components/Sidebar';
 import { SitesView } from './components/sites';
+import { SkillFactoryView } from './components/skillFactory';
 import { SkillsView } from './components/skills';
 import SkinBackdrop, { SkinBackdropVariant } from './components/skin/SkinBackdrop';
 import SkinPresentationScope from './components/skin/SkinPresentationScope';
@@ -44,14 +46,16 @@ import { SkinProvider } from './providers/SkinProvider';
 import type { ApiConfig } from './services/api';
 import { apiService } from './services/api';
 import { authService } from './services/auth';
+import { benchmarkService } from './services/benchmark';
 import { configService } from './services/config';
 import { coworkService } from './services/cowork';
 import { isTestModeEnabled } from './services/endpoints';
-import { benchmarkService } from './services/benchmark';
 import { i18nService } from './services/i18n';
 import { LogReporterAction, reportYdAnalyzer } from './services/logReporter';
+import { modelEvalService } from './services/modelEval';
 import { scheduledTaskService } from './services/scheduledTask';
 import { matchesShortcut } from './services/shortcuts';
+import { skillFactoryService } from './services/skillFactory';
 import { themeService } from './services/theme';
 import { applyTypographyPreferences } from './services/typography';
 import { RootState, store } from './store';
@@ -125,7 +129,7 @@ const logAppUpdateRendererLifecycle = (
 const App: React.FC = () => {
   const [showSettings, setShowSettings] = useState(false);
   const [settingsOptions, setSettingsOptions] = useState<SettingsOpenOptions & { requestId: number }>({ requestId: 0 });
-  const [mainView, setMainView] = useState<'cowork' | 'skills' | 'scheduledTasks' | 'kits' | 'mcp' | 'sites' | 'benchmark'>('cowork');
+  const [mainView, setMainView] = useState<'cowork' | 'skills' | 'scheduledTasks' | 'kits' | 'mcp' | 'sites' | 'benchmark' | 'modelEval' | 'skillFactory'>('cowork');
   const [isInitialized, setIsInitialized] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -295,6 +299,12 @@ const App: React.FC = () => {
         void waitWithTimeout(benchmarkService.init(), 5000, 'benchmarkService.init').catch((error) => {
           console.error('[App] initializeApp: benchmarkService.init failed:', error);
         });
+        void waitWithTimeout(skillFactoryService.init(), 5000, 'skillFactoryService.init').catch((error) => {
+          console.error('[App] initializeApp: skillFactoryService.init failed:', error);
+        });
+        void waitWithTimeout(modelEvalService.init(), 5000, 'modelEvalService.init').catch((error) => {
+          console.error('[App] initializeApp: modelEvalService.init failed:', error);
+        });
 
       } catch (error) {
         const elapsed = Math.round(performance.now() - t0);
@@ -401,6 +411,14 @@ const App: React.FC = () => {
 
   const handleShowBenchmark = useCallback(() => {
     setMainView('benchmark');
+  }, []);
+
+  const handleShowSkillFactory = useCallback(() => {
+    setMainView('skillFactory');
+  }, []);
+
+  const handleShowModelEval = useCallback(() => {
+    setMainView('modelEval');
   }, []);
 
   const handleShowMcp = useCallback(() => {
@@ -1313,6 +1331,8 @@ const App: React.FC = () => {
           onShowCowork={handleShowCowork}
           onShowScheduledTasks={handleShowScheduledTasks}
           onShowBenchmark={handleShowBenchmark}
+          onShowSkillFactory={handleShowSkillFactory}
+          onShowModelEval={handleShowModelEval}
           onShowKits={handleShowKits}
           onShowMcp={handleShowMcp}
           onShowSites={handleShowSites}
@@ -1356,6 +1376,10 @@ const App: React.FC = () => {
                 onNewChat={handleNewChat}
                 updateBadge={collapsedHeaderUpdateBadge}
               />
+            ) : mainView === 'skillFactory' ? (
+              <SkillFactoryView onNewChat={handleNewChat} />
+            ) : mainView === 'modelEval' ? (
+              <ModelEvalView />
             ) : mainView === 'kits' ? (
               <KitsView
                 isSidebarCollapsed={isSidebarCollapsed}

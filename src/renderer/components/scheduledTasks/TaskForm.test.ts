@@ -103,6 +103,21 @@ describe('createScheduledTaskFormState', () => {
     expect(form.weekdays).toEqual([1, 2, 3, 4, 5]);
     expect(form.modelId).toBe(fallbackModelRef);
   });
+
+  test('reads nextTaskId from an existing task', () => {
+    const form = createScheduledTaskFormState(
+      makeTask({ nextTaskId: 'forwarder-1' }),
+      fallbackModelRef,
+    );
+
+    expect(form.nextTaskId).toBe('forwarder-1');
+  });
+
+  test('defaults nextTaskId to empty for new tasks', () => {
+    const form = createScheduledTaskFormState(undefined, fallbackModelRef);
+
+    expect(form.nextTaskId).toBe('');
+  });
 });
 
 describe('scheduleToPlanInfo', () => {

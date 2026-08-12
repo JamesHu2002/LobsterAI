@@ -66,6 +66,8 @@ export interface ScheduledTask {
   delivery: ScheduledTaskDelivery;
   agentId: string | null;
   sessionKey: string | null;
+  /** Task id triggered via `cron.run` after this task's run completes successfully. */
+  nextTaskId?: string | null;
   state: TaskState;
   createdAt: string;
   updatedAt: string;
@@ -100,6 +102,8 @@ export interface ScheduledTaskInput {
   delivery?: ScheduledTaskDelivery;
   agentId?: string | null;
   sessionKey?: string | null;
+  /** Task id triggered via `cron.run` after this task's run completes successfully. */
+  nextTaskId?: string | null;
 }
 
 export interface ScheduledTaskStatusEvent {

@@ -22,6 +22,8 @@ type TurnEndReason = 'final' | 'max_steps' | 'timeout' | 'aborted' | 'cancelled'
 
 interface ActiveTask {
   sessionKey: string;
+  /** Agent-qualified session key as seen in gateway events (e.g. "agent:main:eval-…"). */
+  fullSessionKey: string;
   runId: string;
   taskId: string;
   maxSteps: number;
@@ -30,6 +32,13 @@ interface ActiveTask {
   timer: NodeJS.Timeout | null;
   settle: (outcome: { reason: TurnEndReason; errorMessage?: string }) => void;
   promise: Promise<{ reason: TurnEndReason; errorMessage?: string }>;
+}
+
+/** The gateway qualifies bare session keys with the agent namespace. */
+function sessionKeyMatches(eventKey: string, activeKey: string): boolean {
+  return eventKey === activeKey
+    || eventKey.endsWith(`:${activeKey}`)
+    || eventKey.endsWith(activeKey);
 }
 
 interface ChatEventPayload {
@@ -215,6 +224,7 @@ export class BenchmarkRunner {
       const timer = setTimeout(() => this.settleActive({ reason: 'timeout' }), opts.timeoutMs);
       this.active = {
         sessionKey,
+        fullSessionKey: sessionKey,
         runId,
         taskId: task.id,
         maxSteps: opts.maxSteps,
@@ -246,9 +256,10 @@ export class BenchmarkRunner {
       if (this.active.timer) clearTimeout(this.active.timer);
 
       // Abort the gateway run if it did not finish on its own.
+      const resolvedKey = this.active?.fullSessionKey || sessionKey;
       if (outcome.reason !== 'final') {
         try {
-          await client.request('chat.abort', { sessionKey, runId: gatewayRunId || undefined }, { timeoutMs: 5_000 });
+          await client.request('chat.abort', { sessionKey: resolvedKey, runId: gatewayRunId || undefined }, { timeoutMs: 5_000 });
         } catch {
           // best effort
         }
@@ -257,7 +268,7 @@ export class BenchmarkRunner {
       // Read the authoritative trajectory.
       let historyMessages: unknown[] = [];
       try {
-        const history = await client.request<{ messages?: unknown[] }>('chat.history', { sessionKey }, { timeoutMs: 10_000 });
+        const history = await client.request<{ messages?: unknown[] }>('chat.history', { sessionKey: resolvedKey }, { timeoutMs: 10_000 });
         historyMessages = Array.isArray(history?.messages) ? history.messages : [];
       } catch (error) {
         console.warn('[Benchmark] chat.history failed:', error instanceof Error ? error.message : String(error));
@@ -302,7 +313,7 @@ export class BenchmarkRunner {
     } finally {
       // Clean up the gateway transcript.
       try {
-        await client.request('sessions.delete', { key: sessionKey, deleteTranscript: true }, { timeoutMs: 5_000 });
+        await client.request('sessions.delete', { key: this.active?.fullSessionKey || sessionKey, deleteTranscript: true }, { timeoutMs: 5_000 });
       } catch {
         // best effort
       }
@@ -316,7 +327,13 @@ export class BenchmarkRunner {
     if (!active) return;
     if (event.event !== 'chat') return;
     const payload = (event.payload ?? {}) as ChatEventPayload;
-    if (payload.sessionKey !== active.sessionKey) return;
+    const eventKey = payload.sessionKey ?? '';
+    if (!sessionKeyMatches(eventKey, active.sessionKey)) return;
+    // The gateway qualifies bare keys (e.g. "eval-…") with the agent namespace;
+    // remember the canonical key for chat.history / sessions.delete.
+    if (eventKey !== active.fullSessionKey && eventKey) {
+      active.fullSessionKey = eventKey;
+    }
 
     const state = payload.state;
     if (state === 'final') {

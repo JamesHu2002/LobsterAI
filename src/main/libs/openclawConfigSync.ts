@@ -101,6 +101,15 @@ const mapExecutionModeToSandboxMode = (
  */
 export const OPENCLAW_AGENT_TIMEOUT_SECONDS = 3600;
 export const OPENCLAW_LOBSTERAI_MODEL_TIMEOUT_SECONDS = 330;
+/**
+ * LLM idle timeout for the direct deepseek provider. DeepSeek reasoning models
+ * can stay silent for minutes while "thinking" under load, which trips the
+ * gateway's default 120s network-silence-as-hang watchdog and aborts long cron
+ * runs (e.g. the tech briefing) with "LLM idle timeout (120s)". A provider-level
+ * `models.providers.deepseek.timeoutSeconds` is honored by the gateway as the
+ * idle-timeout ceiling (see resolveLlmIdleTimeoutMs in openclaw).
+ */
+export const OPENCLAW_DEEPSEEK_MODEL_TIMEOUT_SECONDS = 600;
 export const OPENCLAW_HEARTBEAT_EVERY_ENABLED = '1h';
 export const OPENCLAW_HEARTBEAT_EVERY_DISABLED = '0m';
 const DINGTALK_OPENCLAW_CHANNEL = 'dingtalk-connector';
@@ -285,6 +294,26 @@ const MANAGED_OWNER_ALLOW_FROM = [
 ];
 
 const MANAGED_TOOL_DENY = ['web_search'] as const;
+
+/** Paper research pipeline agents allowed to communicate across agents. */
+const PAPER_RESEARCH_AGENT_IDS = [
+  'tech-briefing-dispatcher',
+  'paper-coordinator',
+  'paper-searcher',
+  'paper-fetcher',
+  'paper-analyzer',
+  'paper-summarizer',
+  'paper-evaluator',
+];
+
+/** Skill-factory pipeline agents allowed to communicate across agents. */
+const SKILL_FACTORY_AGENT_IDS = [
+  'skill-coordinator',
+  'skill-requirements-analyst',
+  'skill-content-maker',
+  'skill-evaluator',
+];
+
 const MANAGED_TOOL_LOOP_DETECTION = {
   enabled: true,
   historySize: 40,
@@ -1176,6 +1205,9 @@ export const buildProviderSelection = (options: {
       ...(descriptor.providerId === OpenClawProviderId.LobsteraiServer
         ? { timeoutSeconds: OPENCLAW_LOBSTERAI_MODEL_TIMEOUT_SECONDS }
         : {}),
+      ...(descriptor.providerId === OpenClawProviderId.DeepSeek
+        ? { timeoutSeconds: OPENCLAW_DEEPSEEK_MODEL_TIMEOUT_SECONDS }
+        : {}),
       ...(request ? { request } : {}),
       models: [
         {
@@ -1870,6 +1902,18 @@ export class OpenClawConfigSync {
         ...MANAGED_TOOL_DENY
       ],
 loopDetection: MANAGED_TOOL_LOOP_DETECTION,
+      // Cross-agent communication for the paper research + skill-factory
+      // pipelines: allow the pipeline agents to message each other
+      // (sessions_send with agentId) and let them see each other's sessions.
+      // Required for the coordinators (top-level orchestrators) to delegate to
+      // their specialist sub-agents.
+      agentToAgent: {
+        enabled: true,
+        allow: [...PAPER_RESEARCH_AGENT_IDS, ...SKILL_FACTORY_AGENT_IDS, 'main'],
+      },
+      sessions: {
+        visibility: 'all',
+      },
       web: {
         search: {
           enabled: false,

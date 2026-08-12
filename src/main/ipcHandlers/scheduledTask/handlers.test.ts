@@ -20,6 +20,7 @@ import {
   WakeMode,
 } from '../../../scheduledTask/constants';
 import type { CronJobService } from '../../../scheduledTask/cronJobService';
+import type { ScheduledTaskMetaStore } from '../../../scheduledTask/metaStore';
 import { OpenClawEnginePhase } from '../../../shared/openclawEngine/constants';
 import {
   migrateScheduledTaskAnnounceJobs,
@@ -27,11 +28,32 @@ import {
   type ScheduledTaskHandlerDeps,
 } from './handlers';
 
+/** Lightweight in-memory stand-in for ScheduledTaskMetaStore (avoids native sqlite in tests). */
+function createMetaStoreMock() {
+  const chainTargets = new Map<string, string | null>();
+  const metaStore = {
+    getNextTaskId: vi.fn((taskId: string) => chainTargets.get(taskId) ?? null),
+    setNextTaskId: vi.fn((taskId: string, nextTaskId: string | null) => {
+      chainTargets.set(taskId, nextTaskId);
+    }),
+    delete: vi.fn((taskId: string) => {
+      chainTargets.delete(taskId);
+    }),
+    clearReferencesTo: vi.fn((taskId: string) => {
+      for (const [key, value] of chainTargets) {
+        if (value === taskId) chainTargets.set(key, null);
+      }
+    }),
+  };
+  return metaStore as unknown as ScheduledTaskMetaStore;
+}
+
 function makeDeps(
   enginePhase: OpenClawEnginePhase = OpenClawEnginePhase.Running,
   options: { gatewayClient?: unknown } = {},
 ) {
   let gatewayClient: unknown = options.gatewayClient ?? null;
+  const metaStore = createMetaStoreMock();
   const cronJobService = {
     listJobs: vi.fn(async () => []),
     getJob: vi.fn(async () => null),
@@ -42,6 +64,7 @@ function makeDeps(
       name: input?.name ?? '',
     })),
     runJob: vi.fn(async () => {}),
+    removeJob: vi.fn(async () => {}),
   };
   const adapter = {
     getGatewayClient: vi.fn(() => gatewayClient),
@@ -56,9 +79,10 @@ function makeDeps(
     getIMGatewayManager: () => null,
     getCoworkSessionTitle: () => null,
     getOpenClawRuntimeAdapter: () => adapter,
+    getScheduledTaskMetaStore: () => metaStore,
   };
 
-  return { adapter, cronJobService, deps };
+  return { adapter, cronJobService, metaStore, deps };
 }
 
 beforeEach(() => {
@@ -154,7 +178,10 @@ describe('registerScheduledTaskHandlers', () => {
       to: 'WxId_ZhangSan@im.wechat',
       accountId: 'weixin-bot-1',
     });
-    expect(result).toEqual({ success: true, task: { id: 'job-1', name: '科技早报' } });
+    expect(result).toEqual({
+      success: true,
+      task: { id: 'job-1', name: '科技早报', nextTaskId: null },
+    });
   });
 
   test('restores a WeCom group chat id from case-preserving origin metadata on create', async () => {
@@ -714,5 +741,73 @@ describe('registerScheduledTaskHandlers', () => {
       channel: 'openclaw-weixin',
       to: 'wxid_zhangsan@im.wechat',
     });
+  });
+
+  test('persists nextTaskId on create and returns it on the task', async () => {
+    const { cronJobService, metaStore, deps } = makeDeps();
+    registerScheduledTaskHandlers(deps);
+
+    const handler = registeredHandlers.get(ScheduledTaskIpc.Create);
+    const result = await handler?.(undefined, {
+      name: '早报',
+      enabled: true,
+      schedule: { kind: 'cron', expr: '0 8 * * 1-5' },
+      sessionTarget: SessionTarget.Isolated,
+      wakeMode: WakeMode.Now,
+      payload: { kind: PayloadKind.AgentTurn, message: 'hi' },
+      nextTaskId: 'forwarder-1',
+    });
+
+    expect(cronJobService.addJob).toHaveBeenCalledTimes(1);
+    expect(metaStore.getNextTaskId('job-1')).toBe('forwarder-1');
+    expect(result).toEqual({
+      success: true,
+      task: { id: 'job-1', name: '早报', nextTaskId: 'forwarder-1' },
+    });
+  });
+
+  test('persists and clears nextTaskId on update', async () => {
+    const { cronJobService, metaStore, deps } = makeDeps();
+    registerScheduledTaskHandlers(deps);
+
+    const update = registeredHandlers.get(ScheduledTaskIpc.Update);
+    await update?.(undefined, 'job-1', {
+      name: '早报',
+      enabled: true,
+      schedule: { kind: 'cron', expr: '0 8 * * 1-5' },
+      sessionTarget: SessionTarget.Isolated,
+      wakeMode: WakeMode.Now,
+      payload: { kind: PayloadKind.AgentTurn, message: 'hi' },
+      nextTaskId: 'forwarder-1',
+    });
+    expect(metaStore.getNextTaskId('job-1')).toBe('forwarder-1');
+
+    await update?.(undefined, 'job-1', {
+      name: '早报',
+      enabled: true,
+      schedule: { kind: 'cron', expr: '0 8 * * 1-5' },
+      sessionTarget: SessionTarget.Isolated,
+      wakeMode: WakeMode.Now,
+      payload: { kind: PayloadKind.AgentTurn, message: 'hi' },
+      nextTaskId: null,
+    });
+    expect(metaStore.getNextTaskId('job-1')).toBe(null);
+    expect(cronJobService.updateJob).toHaveBeenCalledTimes(2);
+  });
+
+  test('deletes local chain metadata and clears references to the deleted task', async () => {
+    const { cronJobService, metaStore, deps } = makeDeps();
+    registerScheduledTaskHandlers(deps);
+
+    metaStore.setNextTaskId('job-1', 'job-2');
+    metaStore.setNextTaskId('job-0', 'job-1');
+
+    const del = registeredHandlers.get(ScheduledTaskIpc.Delete);
+    const result = await del?.(undefined, 'job-1');
+
+    expect(cronJobService.removeJob).toHaveBeenCalledWith('job-1');
+    expect(metaStore.getNextTaskId('job-1')).toBe(null);
+    expect(metaStore.getNextTaskId('job-0')).toBe(null);
+    expect(result).toEqual({ success: true, result: true });
   });
 });

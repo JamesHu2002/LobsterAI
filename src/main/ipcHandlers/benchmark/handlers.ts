@@ -54,10 +54,23 @@ export function registerBenchmarkHandlers(deps: BenchmarkHandlerDeps): void {
         }
         const loader = getDatasetLoader();
         const tasks = await loader.getTasks(config.datasetId);
-        const total = config.taskIds && config.taskIds.length > 0 ? config.taskIds.length : tasks.length;
+
+        // Resolve the task subset: explicit taskIds, or the first maxTasks tasks.
+        let selectedTasks = config.taskIds && config.taskIds.length > 0
+          ? tasks.filter((t) => config.taskIds?.includes(t.id))
+          : tasks;
+        if (config.maxTasks && config.maxTasks > 0) {
+          selectedTasks = selectedTasks.slice(0, config.maxTasks);
+        }
+        const total = selectedTasks.length;
         if (total === 0) {
           return { success: false, error: '评测集为空，请先加载数据集。' };
         }
+        // Pin the subset into the config snapshot so the runner runs exactly these tasks.
+        const resolvedConfig: BenchmarkRunConfig = {
+          ...config,
+          taskIds: selectedTasks.map((t) => t.id),
+        };
 
         const store = getBenchmarkStore();
         const runner = getBenchmarkRunner();
@@ -75,7 +88,7 @@ export function registerBenchmarkHandlers(deps: BenchmarkHandlerDeps): void {
             datasetLabel,
             modelRef: ref,
             modelLabel,
-            config,
+            config: resolvedConfig,
             status: BenchmarkRunStatus.Pending,
             total,
             done: 0,
@@ -86,7 +99,7 @@ export function registerBenchmarkHandlers(deps: BenchmarkHandlerDeps): void {
             error: null,
           };
           store.insertRun(run);
-          void runner.run(runId, config, ref, modelLabel);
+          void runner.run(runId, resolvedConfig, ref, modelLabel);
           runIds.push(runId);
         }
         return { success: true, runIds };
@@ -161,6 +174,18 @@ export function registerBenchmarkHandlers(deps: BenchmarkHandlerDeps): void {
       }
     },
   );
+
+  ipcMain.handle(IpcChannel.ImportCustomDataset, async (_event, filePath: string) => {
+    try {
+      if (!filePath || typeof filePath !== 'string') {
+        return { success: false, error: '未提供数据集文件路径。' };
+      }
+      const { tasks, size } = await getDatasetLoader().importCustomDataset(filePath);
+      return { success: true, tasks, size };
+    } catch (error) {
+      return errorPayload(error, '自定义数据集导入失败');
+    }
+  });
 
   ipcMain.handle(IpcChannel.SetHfToken, async (_event, token: string) => {
     try {

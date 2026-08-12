@@ -1,5 +1,5 @@
-import React from 'react';
-import { ArrowLeftIcon, PlusIcon } from '@heroicons/react/24/outline';
+import React, { useState } from 'react';
+import { ArrowLeftIcon, ExclamationTriangleIcon, PlusIcon } from '@heroicons/react/24/outline';
 import { useDispatch, useSelector } from 'react-redux';
 import { BenchmarkRunStatus } from '../../../benchmark/constants';
 import type { BenchmarkRun } from '../../../benchmark/types';
@@ -59,10 +59,15 @@ export const BenchmarkRunList: React.FC<BenchmarkRunListProps> = ({
   const runs = useSelector((state: RootState) => state.benchmark.runs);
   const runListStatus = useSelector((state: RootState) => state.benchmark.runListStatus);
 
-  const handleDelete = async (id: string) => {
-    if (window.confirm(i18nService.t('benchmarkDelete') + '?')) {
-      await benchmarkService.deleteRun(id);
-    }
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+
+  const pendingDeleteRun = runs.find((r) => r.id === pendingDeleteId) ?? null;
+
+  const handleConfirmDelete = async () => {
+    if (!pendingDeleteId) return;
+    const id = pendingDeleteId;
+    setPendingDeleteId(null);
+    await benchmarkService.deleteRun(id);
   };
 
   return (
@@ -171,7 +176,7 @@ export const BenchmarkRunList: React.FC<BenchmarkRunListProps> = ({
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
-                      void handleDelete(run.id);
+                      setPendingDeleteId(run.id);
                     }}
                     className="rounded-md px-2 py-1 text-xs text-red-500/80 transition-colors hover:bg-red-500/10"
                   >
@@ -183,6 +188,46 @@ export const BenchmarkRunList: React.FC<BenchmarkRunListProps> = ({
           </div>
         )}
       </div>
+
+      {/* Delete confirmation */}
+      {pendingDeleteRun && (
+        <div
+          className="fixed inset-0 z-[9999] flex items-center justify-center"
+          onClick={() => setPendingDeleteId(null)}
+        >
+          <div className="absolute inset-0 bg-black/40 dark:bg-black/60" />
+          <div
+            className="relative w-80 rounded-xl border border-border bg-surface p-5 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex flex-col items-center text-center">
+              <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-red-100 dark:bg-red-900/30">
+                <ExclamationTriangleIcon className="h-5 w-5 text-red-500" />
+              </div>
+              <h3 className="mb-2 text-sm font-semibold text-foreground">{i18nService.t('benchmarkDelete')}</h3>
+              <p className="mb-5 text-sm text-secondary">
+                {pendingDeleteRun.datasetLabel} · {pendingDeleteRun.modelLabel}
+              </p>
+              <div className="flex w-full items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setPendingDeleteId(null)}
+                  className="flex-1 rounded-lg border border-border px-4 py-2 text-sm text-foreground transition-colors hover:bg-surface-raised"
+                >
+                  {i18nService.t('benchmarkCancel')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleConfirmDelete()}
+                  className="flex-1 rounded-lg bg-red-500 px-4 py-2 text-sm text-white transition-colors hover:bg-red-600"
+                >
+                  {i18nService.t('benchmarkDelete')}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

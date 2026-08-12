@@ -10,6 +10,8 @@
 export const BenchmarkDatasetId = {
   Gaia2023Val: 'gaia2023val',
   AgentBenchLateral: 'agentbench-lateral',
+  /** User-imported dataset; at most one active (the latest import). */
+  Custom: 'custom',
 } as const;
 export type BenchmarkDatasetId =
   typeof BenchmarkDatasetId[keyof typeof BenchmarkDatasetId];
@@ -97,7 +99,8 @@ export const DatasetSource = {
    *  default to the public mirror. Overridable via app_config if needed. */
   hfBaseUrl: 'https://hf-mirror.com',
   gaiaRepo: 'gaia-benchmark/GAIA',
-  gaiaValidationMetadataPath: '2023/validation/metadata.jsonl',
+  // GAIA metadata is now parquet-backed; the former metadata.jsonl no longer exists.
+  gaiaValidationMetadataPath: '2023/validation/metadata.parquet',
   /** GitHub raw for AgentBench LTP data, proxied through the same mirror used
    *  for git operations because raw.githubusercontent.com is unreachable. */
   agentBenchRepo: 'THUDM/AgentBench',
@@ -118,6 +121,7 @@ export const IpcChannel = {
   DatasetGetStatus: 'benchmark:datasetGetStatus',
   DatasetLoad: 'benchmark:datasetLoad',
   SetHfToken: 'benchmark:setHfToken',
+  ImportCustomDataset: 'benchmark:importCustomDataset',
   // push events
   ProgressUpdate: 'benchmark:progressUpdate',
   TaskCompleted: 'benchmark:taskCompleted',

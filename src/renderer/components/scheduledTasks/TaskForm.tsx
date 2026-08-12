@@ -8,7 +8,15 @@ import { PlatformRegistry } from '@shared/platform';
 import React, { useEffect, useRef, useState } from 'react';
 import { useSelector } from 'react-redux';
 
-import { DeliveryMode, PayloadKind, ScheduleKind, SessionTarget, WakeMode } from '../../../scheduledTask/constants';
+import {
+  DeliveryMode,
+  PayloadKind,
+  ScheduleKind,
+  SessionTarget,
+  TechBriefingDispatcherAgentId,
+  TechBriefingForwarderMarker,
+  WakeMode,
+} from '../../../scheduledTask/constants';
 import type {
   ScheduledTask,
   ScheduledTaskChannelOption,
@@ -32,7 +40,7 @@ import {
   serializeAnalyticsList,
 } from './analytics';
 import ScheduledTaskTemplatePickerModal from './ScheduledTaskTemplatePickerModal';
-import { SCHEDULED_TASK_TEMPLATES, type ScheduledTaskTemplate } from './taskTemplates';
+import { SCHEDULED_TASK_TEMPLATES, type ScheduledTaskTemplate,ScheduledTaskTemplateId } from './taskTemplates';
 import {
   channelOptionMatchesSelection,
   conversationOptionMatchesValue,
@@ -103,6 +111,8 @@ interface FormState {
   cronBuilder: CronBuilder;
   notifyAccountId: string | undefined;
   modelId: string;
+  /** Task id triggered after this task's run completes successfully ('' = none). */
+  nextTaskId: string;
 }
 
 function nowDefaults() {
@@ -133,6 +143,7 @@ const DEFAULT_FORM_STATE: FormState = {
   cronBuilder: { ...DEFAULT_CRON_BUILDER },
   notifyAccountId: undefined,
   modelId: '',
+  nextTaskId: '',
 };
 
 // Cron quick-pick examples: [label key, expr]
@@ -208,6 +219,7 @@ export function createScheduledTaskFormState(
     cronBuilder: parsedBuilder,
     notifyAccountId: task.delivery.accountId,
     modelId: taskModelRef,
+    nextTaskId: task.nextTaskId ?? '',
   };
 }
 
@@ -293,6 +305,7 @@ const TaskForm: React.FC<TaskFormProps> = ({
 }) => {
   const availableModels = useSelector((state: RootState) => state.model.availableModels);
   const defaultSelectedModel = useSelector((state: RootState) => state.model.defaultSelectedModel);
+  const scheduledTasks = useSelector((state: RootState) => state.scheduledTask.tasks);
   const fallbackModelRef = defaultSelectedModel ? toOpenClawModelRef(defaultSelectedModel) : '';
   const [form, setForm] = useState<FormState>(() =>
     createScheduledTaskFormState(
@@ -366,6 +379,23 @@ const TaskForm: React.FC<TaskFormProps> = ({
     setForm(nextForm);
     setAppliedTemplate(mode === 'create' ? initialTemplate : null);
   }, [task, fallbackModelRef, initialTemplate, mode]);
+
+  // Pre-select the auto-provisioned tech-briefing forwarding task as the chain
+  // target when creating a task from the tech-briefing template. Only runs once,
+  // so a user change afterwards is respected.
+  const nextTaskPrefilledRef = useRef(false);
+  useEffect(() => {
+    if (mode !== 'create' || nextTaskPrefilledRef.current) return;
+    if (appliedTemplate?.id !== ScheduledTaskTemplateId.TechBriefing) return;
+    const forwarder = scheduledTasks.find(
+      t =>
+        (t.agentId ?? '') === TechBriefingDispatcherAgentId &&
+        (t.description ?? '').includes(TechBriefingForwarderMarker),
+    );
+    if (!forwarder) return;
+    nextTaskPrefilledRef.current = true;
+    setForm(current => ({ ...current, nextTaskId: forwarder.id }));
+  }, [mode, appliedTemplate, scheduledTasks]);
 
   useEffect(() => {
     reportScheduledTaskAction('form_open', {
@@ -649,6 +679,7 @@ const TaskForm: React.FC<TaskFormProps> = ({
                 ...(form.notifyTo ? { to: form.notifyTo } : {}),
                 ...(form.notifyAccountId ? { accountId: form.notifyAccountId } : {}),
               },
+        nextTaskId: form.nextTaskId.trim() || undefined,
       };
 
       if (mode === 'create') {
@@ -1600,6 +1631,26 @@ const TaskForm: React.FC<TaskFormProps> = ({
 
           {/* Notification */}
           {renderNotifyRow()}
+
+          {/* Trigger next task (completion-triggered chain) */}
+          <div>
+            <label className={labelClass}>{i18nService.t('scheduledTasksFormNextTask')}</label>
+            <select
+              value={form.nextTaskId}
+              onChange={event => updateForm({ nextTaskId: event.target.value })}
+              className={inputClass}
+            >
+              <option value="">{i18nService.t('scheduledTasksFormNextTaskNone')}</option>
+              {scheduledTasks
+                .filter(t => mode !== 'edit' || t.id !== task?.id)
+                .map(t => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+            </select>
+            <p className={hintClass}>{i18nService.t('scheduledTasksFormNextTaskHint')}</p>
+          </div>
         </div>
       </div>
 

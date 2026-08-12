@@ -106,6 +106,12 @@ export const InternalTaskMarker = {
   MemoryCorePayloadPrefix: '__openclaw_memory_core_',
 } as const;
 
+// ─── Task Chain (completion-triggered) ─────────────────────────────────────
+/** Agent id of the tech-briefing → paper-research dispatcher agent. */
+export const TechBriefingDispatcherAgentId = 'tech-briefing-dispatcher' as const;
+/** Stable description marker for the auto-provisioned tech-briefing forwarder task. */
+export const TechBriefingForwarderMarker = '[chain=tech-briefing-forwarder]' as const;
+
 // ─── Policy Run-Behavior Descriptions ───────────────────────────────────────
 export const RunBehavior = {
   newSession: 'Creates a new session on each trigger',

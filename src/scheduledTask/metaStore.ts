@@ -18,7 +18,7 @@ export class ScheduledTaskMetaStore {
 
   private ensureTable(): void {
     this.db.exec(
-      'CREATE TABLE IF NOT EXISTS scheduled_task_meta (task_id TEXT PRIMARY KEY, origin TEXT NOT NULL, binding TEXT NOT NULL)'
+      'CREATE TABLE IF NOT EXISTS scheduled_task_meta (task_id TEXT PRIMARY KEY, origin TEXT NOT NULL, binding TEXT NOT NULL, next_task_id TEXT)'
     );
   }
 
@@ -40,6 +40,36 @@ export class ScheduledTaskMetaStore {
 
   delete(taskId: string): void {
     this.db.prepare('DELETE FROM scheduled_task_meta WHERE task_id = ?').run(taskId);
+  }
+
+  /** The next task id this task triggers on successful completion, or null. */
+  getNextTaskId(taskId: string): string | null {
+    const row = this.db
+      .prepare('SELECT next_task_id FROM scheduled_task_meta WHERE task_id = ?')
+      .get(taskId) as { next_task_id: string | null } | undefined;
+    return row ? (row.next_task_id ?? null) : null;
+  }
+
+  /**
+   * Set (or clear with null) which task runs after this task completes
+   * successfully. Creates the meta row when absent, preserving any existing
+   * origin/binding.
+   */
+  setNextTaskId(taskId: string, nextTaskId: string | null): void {
+    this.db
+      .prepare(
+        `INSERT INTO scheduled_task_meta (task_id, origin, binding, next_task_id)
+         VALUES (?, '{}', '{}', ?)
+         ON CONFLICT(task_id) DO UPDATE SET next_task_id = excluded.next_task_id`,
+      )
+      .run(taskId, nextTaskId);
+  }
+
+  /** Clear any task that references `taskId` as its next task. */
+  clearReferencesTo(taskId: string): void {
+    this.db
+      .prepare('UPDATE scheduled_task_meta SET next_task_id = NULL WHERE next_task_id = ?')
+      .run(taskId);
   }
 
   list(): TaskMeta[] {

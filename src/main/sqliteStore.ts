@@ -358,6 +358,79 @@ export class SqliteStore {
       ON benchmark_task_results(run_id);
     `);
 
+    // Skill-factory (multi-agent skill authoring) run table
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS skill_factory_runs (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        requirement TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'manual',
+        source_refs TEXT,
+        docs_dir TEXT,
+        output_dir TEXT NOT NULL,
+        status TEXT NOT NULL,
+        stage TEXT,
+        eval_report TEXT,
+        security_report TEXT,
+        skill_name TEXT,
+        installed_skill_id TEXT,
+        installed_at INTEGER,
+        created_at INTEGER NOT NULL,
+        finished_at INTEGER,
+        last_error TEXT
+      );
+    `);
+
+    // Model-eval (lm-evaluation-harness) tables
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS model_eval_runs (
+        id TEXT PRIMARY KEY,
+        model_ref TEXT NOT NULL,
+        model_label TEXT NOT NULL,
+        config TEXT NOT NULL,
+        status TEXT NOT NULL,
+        tasks TEXT,
+        total INTEGER NOT NULL DEFAULT 0,
+        output_dir TEXT NOT NULL,
+        started_at INTEGER NOT NULL,
+        finished_at INTEGER,
+        error TEXT
+      );
+    `);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS model_eval_task_results (
+        run_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        exact_match REAL,
+        f1 REAL,
+        gaia_exact REAL,
+        gaia_containment REAL,
+        samples TEXT,
+        stderr REAL,
+        UNIQUE(run_id, task_id)
+      );
+    `);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_model_eval_task_results_run
+      ON model_eval_task_results(run_id);
+    `);
+
+    // Migration: add source columns to skill_factory_runs (v2: interaction mining)
+    try {
+      const sfCols = this.db.pragma('table_info(skill_factory_runs)') as Array<{ name: string }>;
+      const sfColNames = sfCols.map(c => c.name);
+      if (!sfColNames.includes('source')) {
+        this.db.exec("ALTER TABLE skill_factory_runs ADD COLUMN source TEXT NOT NULL DEFAULT 'manual';");
+        this.didRunMigration = true;
+      }
+      if (!sfColNames.includes('source_refs')) {
+        this.db.exec("ALTER TABLE skill_factory_runs ADD COLUMN source_refs TEXT;");
+        this.didRunMigration = true;
+      }
+    } catch {
+      // Table or columns already in the desired state.
+    }
+
     // Migration: add config column to user_plugins
     try {
       const pluginCols = this.db.pragma('table_info(user_plugins)') as Array<{ name: string }>;
@@ -517,6 +590,25 @@ export class SqliteStore {
       if (!agentColNames.includes('subagent_allow_agent_ids')) {
         this.db.exec("ALTER TABLE agents ADD COLUMN subagent_allow_agent_ids TEXT NOT NULL DEFAULT '[]';");
         this.didRunMigration = true;
+      }
+    } catch {
+      // Column already exists or migration not needed.
+    }
+
+    // Migration: Add next_task_id column to scheduled_task_meta (task chains).
+    try {
+      const metaTable = this.db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='scheduled_task_meta'",
+        )
+        .get() as { name: string } | undefined;
+      if (metaTable) {
+        const metaCols = this.db.pragma('table_info(scheduled_task_meta)') as Array<{ name: string }>;
+        const metaColNames = metaCols.map(c => c.name);
+        if (!metaColNames.includes('next_task_id')) {
+          this.db.exec('ALTER TABLE scheduled_task_meta ADD COLUMN next_task_id TEXT;');
+          this.didRunMigration = true;
+        }
       }
     } catch {
       // Column already exists or migration not needed.

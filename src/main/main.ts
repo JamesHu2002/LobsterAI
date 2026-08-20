@@ -12397,6 +12397,16 @@ if (!gotTheLock) {
     console.log('[Main] initApp: store initialized');
     provisionPaperResearchAgents();
     provisionSkillFactoryAgents();
+    getAgentManager().addPresetAgent('quote-master-assistant');
+    const quoteMasterPreset = PRESET_AGENTS.find(preset => preset.id === 'quote-master-assistant');
+    if (quoteMasterPreset) {
+      const quoteMasterRequest = presetToCreateRequest(quoteMasterPreset);
+      getAgentManager().updateAgent('quote-master-assistant', {
+        identity: quoteMasterRequest.identity,
+        systemPrompt: quoteMasterRequest.systemPrompt,
+        skillIds: quoteMasterRequest.skillIds,
+      });
+    }
     createTechBriefingDispatcherAgent();
     initializeKeyfromAttribution(store);
     refreshEndpointsTestMode(store);
